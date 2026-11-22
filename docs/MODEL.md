@@ -126,6 +126,23 @@ Zimmerman et al. (2013):
   wetted and dry areas, scaled by `h_in_mult`. Outside: natural convection (0.59·Ra^¼) combined
   with wind over a cylinder (Hilpert), scaled by `h_ext_mult`; absorbed sunlight on the projected
   area; infrared exchange with ambient; heater power.
+- Optional wall model, **off by default** (each is a parameter of the vessel; left off, the
+  equations and results are exactly as before):
+  - `wall_split = 1`: two wall temperatures instead of one. The tube (a share `wall_tube_frac` of
+    the wall mass) exchanges heat with the liquid over its wetted part and with the ullage over
+    its dry part, and takes the sun and the heater; the ends take the bottom to the liquid and the
+    top to the ullage; `wall_link_W_K` conducts between them. A thin tube follows the contents in
+    seconds while heavy bulkheads lag for minutes, which one temperature cannot do.
+  - `h_fill_mult`: adds the stirring of the liquid by the incoming jet to the wall-to-liquid
+    coefficient (Dittus-Boelter on the tank diameter with the jet velocity decayed as 6·d/D,
+    combined with natural convection as the cube root of the sum of cubes).
+  - `h_boil_mult`: a wetted wall hotter than saturation boils the liquid against it,
+    100·ΔT² W/m²K capped at 2e4. That is the right order for nucleate boiling and no better.
+  These exist because thermistors on a tank wall were seen within about 1 K of the liquid through
+  a long hold, and falling 28 K within seconds of a fill starting, where the single wall
+  temperature with HF4's fitted coupling sits several kelvin above the liquid. They are not yet
+  fitted: with the other fitted values left alone, no setting tried improves every log at once
+  (stronger coupling helps the thermistor log and hurts HF4's vents and heater period).
 - Ports draw liquid or ullage by height: fully liquid once the level is 1 cm above the port.
 - Inflow through a port below the liquid level joins the liquid with all its enthalpy (flash
   vapour bubbling up through the liquid heats it; if that leaves it superheated it boils at the

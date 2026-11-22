@@ -448,6 +448,41 @@ end
     @test_throws ErrorException F.apply_overrides!(rig(), ["BOTTLE.h_in_mul=0"])
 end
 
+@testset "two-node wall, fill-jet and boiling heat transfer (all off unless asked for)" begin
+    function run(sets; until = 60.0)
+        s = rig(bottle_T = 28.0, tank_T = 28.0)
+        F.apply_overrides!(s, sets)
+        sim = F.Sim(s)
+        F.act!(sim, "FILL", "open"); F.act!(sim, "VENT", "open")
+        F.run_until!(sim, until)
+        sim
+    end
+    last_(sim, k) = sim.hist[k][end]
+    plain = run(String[])
+    split = run(["TANK.wall_split=1"])
+    @test isempty(split.failed) && closes(split) && split.net.unconverged == 0
+    @test !haskey(plain.hist, "TANK.Tw_tube") && haskey(split.hist, "TANK.Tw_tube")
+    # the wall temperature reported is the mass-weighted mean of the two
+    @test last_(split, "TANK.Tw") ≈ 0.5 * last_(split, "TANK.Tw_tube") + 0.5 * last_(split, "TANK.Tw_ends")
+    # a thin tube with a tenth of the mass follows the cold liquid; the heavy ends lag behind it
+    thin = run(["TANK.wall_split=1", "TANK.wall_tube_frac=0.1", "TANK.wall_link_W_K=1"])
+    @test last_(thin, "TANK.Tw_tube") - last_(thin, "TANK.T") < 0.5 * (last_(thin, "TANK.Tw_ends") - last_(thin, "TANK.T"))
+    @test closes(thin)
+    # tied together by a strong link, the two halves behave as the one wall did
+    tied = run(["TANK.wall_split=1", "TANK.wall_link_W_K=1e5"])
+    @test abs(last_(tied, "TANK.Tw_tube") - last_(tied, "TANK.Tw_ends")) < 0.01
+    @test abs(last_(tied, "TANK.P") - last_(plain, "TANK.P")) < 0.5 * F.PSI && abs(last_(tied, "TANK.m") - last_(plain, "TANK.m")) < 0.01
+    # the fill jet and boiling on a warm wall both pull the wall towards the liquid faster
+    gap(sim) = last_(sim, "TANK.Tw") - last_(sim, "TANK.T")
+    jet, boil = run(["TANK.h_fill_mult=1"]; until = 30.0), run(["TANK.h_boil_mult=1"]; until = 30.0)
+    base = run(String[]; until = 30.0)
+    @test gap(jet) < 0.8 * gap(base) && gap(boil) < 0.5 * gap(base) && gap(base) > 2
+    @test closes(jet) && closes(boil) && jet.net.unconverged == 0 && boil.net.unconverged == 0
+    # none of it allocates in the equations
+    allocated(sim) = (du = similar(sim.u); F.rhs!(du, sim.u, sim.net, 0.0); @allocated F.rhs!(du, sim.u, sim.net, 0.0))
+    @test allocated(thin) == allocated(plain) && allocated(jet) == allocated(plain)
+end
+
 @testset "venting lets more in and costs vented mass" begin
     closed = F.Sim(rig(bottle_T = 28.0)); F.act!(closed, "FILL", "open"); F.run_until!(closed, 200.0)
     vented = F.Sim(rig(bottle_T = 28.0)); F.act!(vented, "FILL", "open"); F.act!(vented, "VENT", "open"); F.run_until!(vented, 200.0)

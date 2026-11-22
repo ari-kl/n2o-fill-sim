@@ -111,6 +111,8 @@ function compile(s::Scene)
         n.A_in = π * n.D * n.H + π * n.D^2 / 2
         n.absorb, n.emiss, n.shade, n.heater_W = g("absorptivity"), g("emissivity"), g("shade"), g("heater_W")
         n.h_in, n.h_mixed = g("h_in_mult"), g("h_in_W_m2K")
+        n.split, n.tube_frac, n.link = g("wall_split") > 0.5, clamp(g("wall_tube_frac"), 0.02, 0.98), g("wall_link_W_K")
+        n.h_fill, n.h_boil, n.A_inlet = g("h_fill_mult"), g("h_boil_mult"), π * (g("inlet_d_mm") * 1e-3)^2 / 4
         push!(nodes, n)
         for pin in KINDS[p.kind].pins
             height = p.kind == "Bottle" ? g("draw_height_frac") : pin.name == "bottom" ? 0.0 : pin.name == "vent" ? g("vent_height_frac") : 1.0
@@ -204,6 +206,7 @@ function compile(s::Scene)
             air && ρ < N2O_RHOC && (u0[n.i+5] = max(env.P_atm - eos(ρ, T).P, 0.0) * n.V / (R_AIR * T))
         end
         u0[n.i], u0[n.i+4] = m, T
+        n.split && (u0[n.i+6] = T)
         switch_mode!(n, u0)
     end
     net, u0
@@ -883,12 +886,12 @@ function node_report(net::Net, n::Node, u)
         return (; P = n.P, T = f.T, m = 0.0, level = 0.0, liquid_frac = 0.0, Tv = f.T, Tw = f.T, Psat = NaN, x = f.x)
     elseif n.strat
         s = strat(n, u)
-        return (; P = s.P, T = s.Tl, m = s.ml + s.mv, level = s.level, liquid_frac = s.Vl / n.V, Tv = s.Tv, Tw = u[n.i+4],
+        return (; P = s.P, T = s.Tl, m = s.ml + s.mv, level = s.level, liquid_frac = s.Vl / n.V, Tv = s.Tv, Tw = wall_T(n, u),
                 Psat = Psat(s.Tl), x = s.mv / (s.ml + s.mv))
     end
     f = homog(n, u)
     lf = f.twophase ? (1 - f.x) * f.ρ / sat_T(f.T).ρl : f.x >= 1 ? 0.0 : 1.0
-    (; P = f.P + air_pressure(n, u, f), T = f.T, m = u[n.i], level = lf * n.H, liquid_frac = lf, Tv = f.T, Tw = u[n.i+4],
+    (; P = f.P + air_pressure(n, u, f), T = f.T, m = u[n.i], level = lf * n.H, liquid_frac = lf, Tv = f.T, Tw = wall_T(n, u),
      Psat = f.T < SAT_TMAX ? Psat(f.T) : NaN, x = f.x)
 end
 
@@ -905,6 +908,7 @@ function sample!(sim::Sim)
             put(n.name * ".m", r.m); put(n.name * ".level", r.level); put(n.name * ".liquid_frac", r.liquid_frac)
             put(n.name * ".liquid_vol_pct", 100 * r.liquid_frac); put(n.name * ".liquid_mass_pct", 100 * (1 - r.x))
             put(n.name * ".Tv", r.Tv); put(n.name * ".Tw", r.Tw); put(n.name * ".Psat", r.Psat)
+            n.split && (put(n.name * ".Tw_tube", u[n.i+4]); put(n.name * ".Tw_ends", u[n.i+6]))
         end
     end
     for e in net.edges

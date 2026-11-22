@@ -43,6 +43,12 @@ const _VESSEL_PARAMS = [
 const _WALL_COUPLING = [
     Param("h_in_mult", 1.0, "this vessel's own multiplier on wall-to-contents heat transfer (applied on top of the setting of the same name)"),
     Param("h_in_W_m2K", 300.0, "wall-to-contents coefficient while the contents are one mixed fluid (always for a Bottle; a Tank only when liquid-full or without liquid)"),
+    Param("wall_split", 0.0, "1 = treat the wall as two masses with a temperature each: the thin tube, which follows the contents in seconds, and the heavy ends and fittings, which lag by minutes"),
+    Param("wall_tube_frac", 0.5, "with wall_split: share of the wall's mass that is in the tube"),
+    Param("wall_link_W_K", 5.0, "with wall_split: heat conducted between tube and ends per kelvin of difference"),
+    Param("h_fill_mult", 0.0, "multiplier on the extra wall-to-liquid heat transfer from the fill jet stirring the liquid (0 = off)"),
+    Param("inlet_d_mm", 10.0, "bore the fill jet enters through, for h_fill_mult"),
+    Param("h_boil_mult", 0.0, "multiplier on boiling against a wetted wall hotter than saturation (0 = off)"),
 ]
 
 _two_pin(params, help) = Kind([Pin("a", -1, 0), Pin("b", 1, 0)], params, help)

@@ -49,6 +49,12 @@ Base.@kwdef mutable struct Node
     A_in::Float64 = 0.0           # m² inside wall area
     h_in::Float64 = 1.0           # this vessel's multiplier on wall-to-fluid heat transfer
     h_mixed::Float64 = 300.0      # W/m²K wall-to-fluid coefficient when the contents are one mixed fluid
+    split::Bool = false           # the wall as two masses (thin tube, heavy ends) with a temperature each
+    tube_frac::Float64 = 0.5      # share of the wall's heat capacity that is in the tube
+    link::Float64 = 5.0           # W/K conducted between tube and ends
+    h_fill::Float64 = 0.0         # multiplier on wall heat transfer driven by the fill jet (0: off)
+    h_boil::Float64 = 0.0         # multiplier on boiling against a wall hotter than saturation (0: off)
+    A_inlet::Float64 = 7.85e-5    # m² area of the inlet the fill jet comes through
     absorb::Float64 = 0.0
     emiss::Float64 = 0.0
     shade::Float64 = 0.0
@@ -78,7 +84,10 @@ end
 
 Node(name, kind) = Node(; name, kind)
 
-nstates(n::Node) = n.kind === :vessel ? 6 : 0
+nstates(n::Node) = n.kind === :vessel ? (n.split ? 7 : 6) : 0
+
+"Wall temperature: the one state, or with a split wall the mean of tube and ends weighted by heat capacity."
+wall_T(n::Node, u) = n.split ? n.tube_frac * u[n.i+4] + (1 - n.tube_frac) * u[n.i+6] : u[n.i+4]
 
 # Stratified state layout: [m_liquid, T_liquid, m_vapour, T_vapour, T_wall, m_air]
 # Homogeneous vessel:      [m, U, -, -, T_wall, m_air]
@@ -211,23 +220,52 @@ end
 h_surface(ρ, cp, β, μ, k, ΔT) = 0.15 * k * cbrt(_ra_group(ρ, cp, β, μ, k, ΔT))
 h_wall(ρ, cp, β, μ, k, ΔT, L) = 0.021 * k / L * (_ra_group(ρ, cp, β, μ, k, ΔT) * L^3)^0.4
 
-"""
-Heat flow into a wall from outside [W]: convection, sunlight, infrared exchange and any heater.
-Air properties are fixed at round room-temperature values. Convection is natural (0.59·Ra^¼,
-vertical surface) combined with wind across a cylinder (Hilpert, 0.193·Re^0.618·Pr^⅓).
-"""
-function q_external(n::Node, Tw, env::Env)
+"Film coefficient on the outside of a wall at `Tw`: natural convection and wind, W/m²K."
+function h_outside(n::Node, Tw, env::Env)
     k, ν, α, Pr = 0.026, 1.6e-5, 2.2e-5, 0.71
     ΔT = env.T_amb - Tw
     L = n.H
     Ra = G0 / env.T_amb * (abs(ΔT) + 1e-3) * L^3 / (ν * α)
     h_nat = 0.59 * Ra^0.25 * k / L
     h_wind = 0.193 * (env.wind * n.D / ν + 1e-9)^0.618 * cbrt(Pr) * k / n.D
+    env.h_ext_mult * cbrt(h_nat^3 + h_wind^3)
+end
+"""
+Heat flow into a wall from outside [W]: convection, sunlight, infrared exchange and any heater.
+Air properties are fixed at round room-temperature values. Convection is natural (0.59·Ra^¼,
+vertical surface) combined with wind across a cylinder (Hilpert, 0.193·Re^0.618·Pr^⅓).
+"""
+function q_external(n::Node, Tw, env::Env)
+    ΔT = env.T_amb - Tw
     A = π * n.D * n.H + π * n.D^2 / 2
-    env.h_ext_mult * cbrt(h_nat^3 + h_wind^3) * A * ΔT +
+    h_outside(n, Tw, env) * A * ΔT +
         n.absorb * (1 - n.shade) * env.solar * n.D * n.H +
         n.emiss * SIGMA * A * (env.T_amb^4 - Tw^4) +
         (n.heater_on ? n.heater_W : 0.0)
+end
+# The same in two pieces, for a split wall: what an outside area A at its own temperature takes by
+# convection and radiation, and what lands on the tube alone (sun on its side, the heater).
+q_outside(n::Node, Tw, env::Env, A) = h_outside(n, Tw, env) * A * (env.T_amb - Tw) + n.emiss * SIGMA * A * (env.T_amb^4 - Tw^4)
+q_sun_heater(n::Node, env::Env) = n.absorb * (1 - n.shade) * env.solar * n.D * n.H + (n.heater_on ? n.heater_W : 0.0)
+
+"""
+Wall-to-liquid film coefficient. Natural convection always. With `h_fill` on, the stirring of the
+liquid by the incoming jet is added (Dittus-Boelter on the tank diameter, with the jet's velocity
+decayed over one diameter as 6·d/D, combined as the cube root of the sum of cubes so that it
+takes over smoothly). With `h_boil` on, a wetted wall hotter than saturation boils the liquid on
+it: 100·ΔT² W/m²K, capped at 2e4, which is the right order for nucleate boiling but no more than
+that. Both multipliers are there to be fitted.
+"""
+function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, Tsat, lvl)
+    h = h_wall(s.ρl, cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
+    if n.h_fill > 0
+        d = sqrt(4 * n.A_inlet / π)
+        v = n.min_l / (s.ρl * n.A_inlet) * min(6 * d / n.D, 1.0)
+        Re, Pr = s.ρl * v * n.D / μl, cpl * μl / kl
+        h = cbrt(h^3 + (n.h_fill * 0.023 * Re^0.8 * Pr^0.4 * kl / n.D)^3)
+    end
+    n.h_boil > 0 && (h += n.h_boil * min(100.0 * max(Tw - Tsat, 0.0)^2, 2e4))
+    h
 end
 
 # ---------------------------------------------------------------- time derivatives
@@ -241,6 +279,16 @@ function derivative!(du, n::Node, u, env::Env)
         Tw = u[i+4]
         # One fixed film coefficient while liquid-full / supercritical. Good enough to
         # get the warm-soak pressure rise; use the correlations if this regime ever matters more.
+        if n.split
+            Te, At, Ae = u[i+6], π * n.D * n.H, π * n.D^2 / 2
+            hm = env.h_in_mult * n.h_in * n.h_mixed
+            qt, qe, ql = hm * At * (Tw - f.T), hm * Ae * (Te - f.T), n.link * (Te - Tw)
+            qxt, qxe = q_outside(n, Tw, env, At) + q_sun_heater(n, env), q_outside(n, Te, env, Ae)
+            du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qt + qe, 0.0, 0.0
+            du[i+4], du[i+5] = (qxt - qt + ql) / (n.Cw * n.tube_frac), n.dair
+            du[i+6] = (qxe - qe - ql) / (n.Cw * (1 - n.tube_frac))
+            return qxt + qxe
+        end
         qw = env.h_in_mult * n.h_in * n.h_mixed * n.A_in * (Tw - f.T)
         qx = q_external(n, Tw, env)
         du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qw, 0.0, 0.0
@@ -271,9 +319,29 @@ function derivative!(du, n::Node, u, env::Env)
     end
     # Wall.
     lvl = min(s.level, n.H)
-    q_wl = wet * env.h_in_mult * n.h_in * h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01)) * (π * n.D * lvl + As) * (Tw - s.Tl)
-    q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
-    qx = q_external(n, Tw, env)
+    extra = n.h_fill > 0 || n.h_boil > 0           # the fill-jet and boiling terms are off unless asked for
+    dTw_tube = dTw_ends = 0.0
+    if n.split
+        # Tube: its wetted part to the liquid, its dry part to the ullage, sun and heater on its
+        # outside. Ends: the bottom one to the liquid, the top one to the ullage. A link between.
+        Te, c = u[i+6], env.h_in_mult * n.h_in
+        hl_t = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
+        hl_e = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Te, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Te - s.Tl, max(lvl, 0.01))
+        hv_t = h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01))
+        hv_e = h_wall(s.ρv, cpv, βv, μv, kv, Te - s.Tv, max(n.H - lvl, 0.01))
+        ql_t, ql_e = wet * c * hl_t * (π * n.D * lvl) * (Tw - s.Tl), wet * c * hl_e * As * (Te - s.Tl)
+        qv_t, qv_e = c * hv_t * (π * n.D * (n.H - lvl)) * (Tw - s.Tv), c * hv_e * As * (Te - s.Tv)
+        link = n.link * (Te - Tw)
+        qxt, qxe = q_outside(n, Tw, env, π * n.D * n.H) + q_sun_heater(n, env), q_outside(n, Te, env, 2As)
+        q_wl, q_wv, qx = ql_t + ql_e, qv_t + qv_e, qxt + qxe
+        dTw_tube = (qxt - ql_t - qv_t + link) / (n.Cw * n.tube_frac)
+        dTw_ends = (qxe - ql_e - qv_e - link) / (n.Cw * (1 - n.tube_frac))
+    else
+        h_l = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
+        q_wl = wet * env.h_in_mult * n.h_in * h_l * (π * n.D * lvl + As) * (Tw - s.Tl)
+        q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
+        qx = q_external(n, Tw, env)
+    end
 
     dml = n.dm_l - m_evap + m_cond
     Hl = n.Hin_l - n.min_l * s.hl - q_ls + q_wl + m_cond * (h_cond - s.hl)
@@ -287,8 +355,9 @@ function derivative!(du, n::Node, u, env::Env)
     du[i+1] = dTl
     du[i+2] = dmv
     du[i+3] = (dUv - s.ev.u * dmv - s.mv * du_dρ * dρv) / (s.mv * s.ev.cv)
-    du[i+4] = (qx - q_wl - q_wv) / n.Cw
+    du[i+4] = n.split ? dTw_tube : (qx - q_wl - q_wv) / n.Cw
     du[i+5] = n.dair
+    n.split && (du[i+6] = dTw_ends)
     qx
 end
 
@@ -298,9 +367,9 @@ function inventory(n::Node, u)
     i = n.i
     if n.strat
         s = strat(n, u)
-        return s.ml + s.mv, s.ml * s.ul + s.mv * s.ev.u + n.Cw * u[i+4]
+        return s.ml + s.mv, s.ml * s.ul + s.mv * s.ev.u + n.Cw * wall_T(n, u)
     end
-    u[i], u[i+1] + n.Cw * u[i+4]
+    u[i], u[i+1] + n.Cw * wall_T(n, u)
 end
 
 """

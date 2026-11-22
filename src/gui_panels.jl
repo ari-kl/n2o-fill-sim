@@ -162,7 +162,8 @@ function tanks_tab(app::App)
         app.window_time[n.name] = (max(length(ph), 1), in_window)
         text("  $(fmt(app, :mass, r.m))" * (windowed ? ", time in window $(round(Int, in_window)) s" : ""))
         text("  liquid: $(round(Int, 100 * r.liquid_frac)) % of volume, $(round(Int, 100 * (1 - r.x))) % of mass")
-        text("  liquid $(fmt(app, :temperature, r.T))  ullage $(fmt(app, :temperature, r.Tv))  wall $(fmt(app, :temperature, r.Tw))")
+        text("  liquid $(fmt(app, :temperature, r.T))  ullage $(fmt(app, :temperature, r.Tv))  wall " *
+             (n.split ? "$(fmt(app, :temperature, sim.u[n.i+4])) tube, $(fmt(app, :temperature, sim.u[n.i+6])) ends" : fmt(app, :temperature, r.Tw)))
         isnan(r.Psat) || text("  liquid's vapour pressure $(fmt(app, :pressure, r.Psat))")
         soaks = [Ts for Ts in (30.0, 35.0) if r.m > 0.05 && Ts + 273.15 > r.T]   # nothing to say about an empty tank, or one already hotter
         isempty(soaks) || text("  if closed and left to warm:")

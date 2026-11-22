@@ -183,7 +183,7 @@ end
 "What kind of quantity a recorded signal is, from its name."
 function signal_kind(key)
     endswith(key, ".P") || endswith(key, ".Psat") || endswith(key, ".set") ? :pressure :
-    endswith(key, ".T") || endswith(key, ".Tv") || endswith(key, ".Tw") ? :temperature :
+    endswith(key, ".T") || endswith(key, ".Tv") || endswith(key, ".Tw") || endswith(key, ".Tw_tube") || endswith(key, ".Tw_ends") ? :temperature :
     endswith(key, ".mdot") ? :flow :
     endswith(key, ".m") ? :mass :
     endswith(key, "_pct") ? :share :
