@@ -193,6 +193,39 @@ end
     @test [(a.t, a.action) for a in F.log_schedule(c2, cols2; t0 = 0.0)] == [(0.0, "open"), (3.0, "close")]
 end
 
+@testset "command line: overrides, schedule file, columns, defaults, warnings" begin
+    dir = mktempdir()
+    scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")
+    F.save_scene(scene, rig())
+    write(sched, "t_s,part,action,value\n1.0,FILL,open,0.0\n")
+    quiet(args) = redirect_stdout(() -> F.main(args), devnull)
+    r = quiet([scene, "--headless", "--set", "BOTTLE.T_C=20", "--set", "settings.T_amb_C=20", "--schedule", sched, "--until", "10",
+               "--sample-dt", "0.5", "--csv", out, "--columns", "TANK.P, TANK.m"])
+    @test isempty(r.failed) && abs(r.t_s - 10) < 1e-6 && abs(r.mass_error) < 1e-6
+    names, cols = F.read_csv(out)
+    @test names == ["t_s", "TANK.P", "TANK.m"] && 3 <= length(cols["t_s"]) <= 21 && minimum(diff(cols["t_s"])) >= 0.5 - 1e-6
+    @test cols["TANK.m"][end] > 0.5                              # the schedule file opened the fill valve
+    @test length(F.read_events(F.events_path(out))) == 1
+    @test_throws ErrorException quiet([scene, "--headless", "--set", "TANK.volume=1"])          # no such parameter
+    @test_throws ErrorException quiet([scene, "--headless", "--set", "settings.T_amb=1"])       # no such setting
+    @test_throws ErrorException quiet([scene, "--headless", "--until", "1", "--csv", out, "--columns", "TANK.nope"])
+    @test_throws ErrorException quiet([scene, "--headless", "--bogus"])
+    @test_throws ErrorException quiet([joinpath(dir, "missing.toml"), "--headless"])
+    # a replay runs to the end of its log unless told otherwise
+    root = joinpath(@__DIR__, "..")
+    r = quiet([joinpath(root, "scenes", "hf3cf.toml"), "--headless", "--replay", joinpath(root, "test", "data", "hf3cf_fill_10hz.csv"), "--t0", "15290"])
+    @test abs(r.t_s - 269.9) < 0.2 && isempty(r.failed)
+    # a heater nobody can switch on is worth a warning when nobody is watching, and only then
+    s = rig()
+    s.parts[F.find_part(s, "TANK")].p["heater_W"] = 100.0
+    @test !any(occursin("heater", w) for w in F.check(s)[2])
+    @test any(occursin("never switches on", w) for w in F.check(s; unattended = true)[2])
+    push!(s.schedule, F.Action(5.0, "TANK", "on", 0.0))
+    @test !any(occursin("heater", w) for w in F.check(s; unattended = true)[2])
+    push!(s.schedule, F.Action(5.0, "BOTTLE", "on", 0.0))
+    @test any(occursin("heater_W is 0", w) for w in F.check(s)[2])
+end
+
 @testset "unvented fill stalls below bottle pressure, conserving mass and energy" begin
     sim = F.Sim(rig(bottle_T = 28.0))
     F.act!(sim, "FILL", "open")

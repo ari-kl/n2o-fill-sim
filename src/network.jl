@@ -851,7 +851,15 @@ function advance!(sim::Sim, dt; max_steps = 2000)
     sim.t - t_start
 end
 
-"Run until simulation time `t`, or until the solver fails or `wall_limit` seconds have passed."
+"""
+Run until simulation time `t`, or until the solver fails or `wall_limit` seconds have passed.
+
+The history is recorded where the solver's steps fall (no closer together than `sample_dt`), so it
+is dense through a transient and sparse through a quiet hold. Reading the run at other times means
+interpolating the history. Stopping at fixed times instead is not free: every stop re-solves the
+junctions at that instant, which on the HF4 replay tripled the run time and moved the end state by
+0.16 psi through the pressures that shut-off sections hold.
+"""
 function run_until!(sim::Sim, t; wall_limit = Inf)
     start = Base.time()
     while simtime(sim) < t - 1e-9 && isempty(sim.failed) && Base.time() - start < wall_limit
@@ -961,9 +969,11 @@ end
 "Path of the events file that goes with a signal CSV: `run.csv` → `run_events.csv`."
 events_path(csv) = splitext(csv)[1] * "_events.csv"
 
-"Write the recorded history as CSV (SI units, one column per signal)."
-function write_csv(path, sim::Sim)
-    keys_ = sort!(collect(keys(sim.hist)))
+"Write the recorded history as CSV (SI units, one column per signal; `columns` picks and orders them)."
+function write_csv(path, sim::Sim; columns = nothing)
+    keys_ = columns === nothing ? sort!(collect(keys(sim.hist))) : columns
+    missing_ = [k for k in keys_ if !haskey(sim.hist, k)]
+    isempty(missing_) || error("no recorded signal named $(join(missing_, ", ")). Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
     open(path, "w") do io
         println(io, "t_s,", join(keys_, ","))
         for i in eachindex(sim.t_hist)

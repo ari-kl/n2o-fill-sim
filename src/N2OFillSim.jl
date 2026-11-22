@@ -17,19 +17,61 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   --run                   start in run mode
   --replay log.csv        drive the run from a test log (valve and heater columns) and overlay its readings
   --t0 SECONDS            log time that corresponds to simulation time zero (default: first row)
+  --set NAME=VALUE        change a parameter for this run: PART.param=value or settings.key=value (repeatable)
+  --schedule file.csv     add scripted actions from a file with columns t_s,part,action,value
   --headless              no window: run the schedule / replay and print a summary
-  --until SECONDS         how long to run headless (default: end of the schedule + 60 s)
+  --until SECONDS         how long to run headless (default: the end of the log when replaying,
+                          otherwise the last action + 60 s)
+  --sample-dt SECONDS     headless: shortest interval between recorded samples (default 0.1); samples
+                          fall on the solver's steps, so they are further apart when little is changing
   --csv out.csv           headless: write the recorded signals, and the action log as out_events.csv
+  --columns A,B,...       with --csv: write only these signals (for example TANK.P,TANK.m)
 """
 
+const _VALUED = ("--replay", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
+const _FLAGS = ("--help", "--run", "--headless")
+
+"Split a command line into positional arguments and options (an option may be given more than once)."
+function options(args)
+    files, opts, i = String[], Dict{String,Vector{String}}(), 1
+    while i <= length(args)
+        a = args[i]
+        if a in _VALUED
+            i < length(args) || error("$a needs a value")
+            push!(get!(opts, a, String[]), args[i+1])
+            i += 1
+        elseif a in _FLAGS
+            get!(opts, a, String[])
+        elseif startswith(a, "--")
+            error("unknown option $a (see --help)")
+        else
+            push!(files, a)
+        end
+        i += 1
+    end
+    files, opts
+end
+
+"""
+What a finished (or failed) run comes to: how far it got, why it stopped if it failed, how many
+junction solves did not settle, the mass and energy balance errors, what was vented, wall time.
+"""
+function run_summary(sim::Sim, wall_s = NaN)
+    m, E = closure(sim)
+    (t_s = simtime(sim), failed = sim.failed, unconverged = sim.net.unconverged, mass_error = m, energy_error = E,
+     vented_kg = sim.u[end-2], wall_s = wall_s)
+end
+
 function main(args = ARGS)
-    opt(name, default = nothing) = (i = findfirst(==(name), args); i === nothing ? default : args[i+1])
-    flag(name) = name in args
+    files, opts = options(args)
+    opt(name, default = nothing) = haskey(opts, name) ? opts[name][end] : default
+    flag(name) = haskey(opts, name)
     flag("--help") && return print(USAGE)
-    files = [a for (i, a) in enumerate(args) if !startswith(a, "--") && (i == 1 || !(args[i-1] in ("--replay", "--t0", "--until", "--csv", "--shot", "--frames")))]
     path = isempty(files) ? "" : files[1]
+    isempty(path) || isfile(path) || flag("--headless") && error("no such scene file: $path")
     scene = isempty(path) || !isfile(path) ? Scene() : load_scene(path)
-    app = App(scene, path)
+    apply_overrides!(scene, get(opts, "--set", String[]))
+    overlay, log_end = nothing, nothing
     if opt("--replay") !== nothing
         names, cols = read_csv(opt("--replay"); min_dt = 0.05)
         columns = guess_log_columns(names, scene)
@@ -38,34 +80,44 @@ function main(args = ARGS)
         scene.schedule = log_schedule(cols, columns; t0)
         unsure = [c.name for c in columns if c.role === :valve && c.one_means === :unknown]
         isempty(unsure) || println("not replayed, because whether 1 means open or closed is not known: ", join(unsure, ", "), "  (load the log in the window to choose)")
-        set_overlay!(app, t .- t0, log_overlay(cols, columns, scene.settings["P_atm_kPa"] * 1e3))
+        overlay = (t .- t0, log_overlay(cols, columns, scene.settings["P_atm_kPa"] * 1e3))
+        log_end = t[end] - t0
     end
+    for file in get(opts, "--schedule", String[])
+        append!(scene.schedule, read_events(file))
+    end
+    sort!(scene.schedule; by = a -> a.t)
     if flag("--headless")
-        sim = Sim(scene)
-        until = parse(Float64, opt("--until", string((isempty(scene.schedule) ? 0.0 : scene.schedule[end].t) + 60)))
+        errors, warnings = check(scene; unattended = true)
+        foreach(w -> println("warning: ", w), warnings)
+        isempty(errors) || error("cannot run: " * join(errors, "; "))
+        sim = Sim(scene; sample_dt = parse(Float64, opt("--sample-dt", "0.1")))
+        until = parse(Float64, opt("--until", string(something(log_end, (isempty(scene.schedule) ? 0.0 : scene.schedule[end].t) + 60))))
         wall = @elapsed run_until!(sim, until)
-        println("simulated $(round(simtime(sim), digits = 1)) s in $(round(wall, digits = 1)) s of wall time")
-        isempty(sim.failed) || println("FAILED: ", sim.failed)
+        r = run_summary(sim, wall)
+        println("simulated $(round(r.t_s, digits = 1)) s in $(round(wall, digits = 1)) s of wall time")
+        isempty(r.failed) || println("FAILED: ", r.failed)
         for n in sim.net.nodes
             n.kind === :vessel || continue
-            r = node_report(sim.net, n, sim.u)
-            println(rpad(n.name, 10), round(Int, (r.P - sim.net.env.P_atm) / PSI), " psig  ", round(r.T - 273.15, digits = 1), " °C  ",
-                    round(r.m, digits = 2), " kg  liquid ", round(Int, 100 * r.liquid_frac), " % of volume, ", round(Int, 100 * (1 - r.x)), " % of mass")
+            v = node_report(sim.net, n, sim.u)
+            println(rpad(n.name, 10), round(Int, (v.P - sim.net.env.P_atm) / PSI), " psig  ", round(v.T - 273.15, digits = 1), " °C  ",
+                    round(v.m, digits = 2), " kg  liquid ", round(Int, 100 * v.liquid_frac), " % of volume, ", round(Int, 100 * (1 - v.x)), " % of mass")
         end
-        println("vented ", round(sim.u[end-2], digits = 3), " kg; mass/energy balance error ", round.(closure(sim), sigdigits = 2))
+        println("vented ", round(r.vented_kg, digits = 3), " kg; mass/energy balance error ", round.((r.mass_error, r.energy_error), sigdigits = 2),
+                r.unconverged > 0 ? "; junction solves that did not settle: $(r.unconverged)" : "")
         if opt("--csv") !== nothing
-            write_csv(opt("--csv"), sim)
+            columns = opt("--columns") === nothing ? nothing : String.(strip.(split(opt("--columns"), ',')))
+            write_csv(opt("--csv"), sim; columns)
             write_events(events_path(opt("--csv")), sim)
         end
-        return
+        return r
     end
+    app = App(scene, path)
+    overlay === nothing || set_overlay!(app, overlay...)
     flag("--run") && start_run!(app)
     gui(app; shot = opt("--shot", ""), frames = parse(Int, opt("--frames", "0")))
 end
 
-# Compile the simulation path into the package image by running a small fill once at precompile
-# time. Without this the first press of Run freezes for several seconds while Julia compiles the
-# solver.
 using PrecompileTools: @compile_workload
 @compile_workload begin
     s = Scene()
@@ -89,6 +141,21 @@ using PrecompileTools: @compile_workload
     closure(sim)
     for n in sim.net.nodes
         node_report(sim.net, n, sim.u)
+    end
+    # the file and log handling a headless replay goes through before it reaches the solver
+    mktempdir() do dir
+        file, log = joinpath(dir, "s.toml"), joinpath(dir, "log.csv")
+        save_scene(file, s)
+        s2 = load_scene(file)
+        apply_overrides!(s2, ["T.fill_kg=0", "settings.T_amb_C=20"])
+        write(log, "t_s,PT202_psig,LCFill_kg,V,W\n0.0,1.0,0.0,0,0\n1.0,2.0,0.1,1,0\n2.0,3.0,0.2,1,1\n")
+        names, cols = read_csv(log; min_dt = 0.05)
+        columns = guess_log_columns(names, s2)
+        log_schedule(cols, columns; t0 = 0.0)
+        log_overlay(cols, columns, 101325.0)
+        run_summary(sim, 0.0)
+        write_csv(joinpath(dir, "out.csv"), sim)
+        write_events(events_path(joinpath(dir, "out.csv")), sim)
     end
 end
 # The window code cannot be run here (no display while precompiling), so ask for it to be compiled

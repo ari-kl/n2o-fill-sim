@@ -280,7 +280,7 @@ const FLOW_KINDS = ("Pipe", "Valve", "Orifice", "Regulator", "CheckValve", "Reli
 const VESSEL_KINDS = ("Bottle", "Tank")
 
 "Problems that stop a scene from running (errors) or that are probably mistakes (warnings)."
-function check(s::Scene)
+function check(s::Scene; unattended = false)
     errors, warnings = String[], String[]
     net, n = nets(s)
     kind = Dict(p.name => p.kind for p in s.parts)
@@ -307,7 +307,18 @@ function check(s::Scene)
             push!(errors, "$(p.name).$(q.key) must be positive")
     end
     for a in s.schedule
-        find_part(s, a.part) === nothing && push!(warnings, "schedule refers to missing part $(a.part)")
+        i = find_part(s, a.part)
+        i === nothing && push!(warnings, "schedule refers to missing part $(a.part)")
+        i !== nothing && a.action == "on" && get(s.parts[i].p, "heater_W", 0.0) <= 0 &&
+            push!(warnings, "the schedule switches on $(a.part)'s heater at $(a.t) s, but its heater_W is 0")
+    end
+    # A heater does nothing until something switches it on. In the window that can be a click;
+    # in a run nobody is watching it can only be the schedule.
+    if unattended
+        for p in s.parts
+            get(p.p, "heater_W", 0.0) > 0 && !any(a -> a.part == p.name && a.action == "on", s.schedule) &&
+                push!(warnings, "$(p.name) has a $(round(Int, p.p["heater_W"])) W heater that the schedule never switches on, so it stays off")
+        end
     end
     errors, warnings
 end

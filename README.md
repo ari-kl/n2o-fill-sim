@@ -48,6 +48,21 @@ julia --project bin/n2o-fill-sim.jl scenes/regulated_fill.toml --headless --unti
 julia --project bin/n2o-fill-sim.jl --help
 ```
 
+Headless runs take changes on the command line, so a scene file does not have to be edited to
+try something:
+
+```
+julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
+    --replay test/data/hf4_fill_10hz.csv --t0 9020 \
+    --set VENT_ORIFICE.Cd=0.85 --set settings.interphase_E=300 \
+    --schedule extra_actions.csv --csv out.csv --columns TANK.P,TANK.m
+```
+
+`--set` changes a part's parameter or a setting by name and refuses a name that does not exist.
+`--schedule` adds actions from a file with columns `t_s,part,action,value` (the format of the
+exported `_events.csv`). A replay runs to the end of its log unless `--until` says otherwise.
+Warnings (for example a heater that nothing switches on) are printed before the run.
+
 The window appears about 3 s after launch (the first launch after installing or changing the code
 compiles first, which can take a minute). The HF4 fill, 16 minutes of real time, simulates in about a third of a second.
 
