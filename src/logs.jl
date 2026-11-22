@@ -450,7 +450,9 @@ function write_log(path, log::Log)
             for (k, name) in enumerate(log.names)
                 v = log.cols[name][i]
                 k > 1 && print(io, ",")
-                isnan(v) || print(io, flip[k] ? 1 - v : v == round(v) && abs(v) < 1e15 && k > 1 && log.columns[k].role in (:valve, :heater) ? Int(v) : round(v, digits = 3))
+                isnan(v) && continue
+                flip[k] && (v = 1 - v)
+                print(io, log.columns[k].role in (:valve, :heater) ? round(Int, v) : round(v, digits = 3))
             end
             println(io)
         end
