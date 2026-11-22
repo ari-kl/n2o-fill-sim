@@ -38,44 +38,45 @@ mutable struct Env
     h_ext_mult::Float64
 end
 
-mutable struct Node
+Base.@kwdef mutable struct Node
     name::String
     kind::Symbol                  # :vessel, :junction or :atm
-    i::Int                        # index of its first state; 0 for :junction and :atm
-    V::Float64                    # m³
-    D::Float64                    # m inside diameter
-    H::Float64                    # m height
-    Cw::Float64                   # wall heat capacity, J/K
-    A_in::Float64                 # m² inside wall area
-    absorb::Float64
-    emiss::Float64
-    shade::Float64
-    heater_W::Float64
-    heater_on::Bool
-    strat::Bool
-    ports::Vector{Float64}        # height of each connection, as a fraction of H
+    i::Int = 0                    # index of its first state; 0 for :junction and :atm
+    V::Float64 = 0.0              # m³
+    D::Float64 = 0.0              # m inside diameter
+    H::Float64 = 0.0              # m height
+    Cw::Float64 = 0.0             # wall heat capacity, J/K
+    A_in::Float64 = 0.0           # m² inside wall area
+    h_in::Float64 = 1.0           # this vessel's multiplier on wall-to-fluid heat transfer
+    h_mixed::Float64 = 300.0      # W/m²K wall-to-fluid coefficient when the contents are one mixed fluid
+    absorb::Float64 = 0.0
+    emiss::Float64 = 0.0
+    shade::Float64 = 0.0
+    heater_W::Float64 = 0.0
+    heater_on::Bool = false
+    strat::Bool = false
+    ports::Vector{Float64} = Float64[]        # height of each connection, as a fraction of H
     # evaluated from the state each time the equations are evaluated
-    P::Float64                    # for a junction: solved so that its flows balance
-    T::Float64                    # liquid (stratified) or bulk temperature
-    hl_sat::Float64               # saturated liquid / vapour enthalpy at P, for splitting inflow
-    hv_sat::Float64
-    hl::Float64
-    hv::Float64
-    port_h::Vector{Float64}       # specific enthalpy a flow leaving through each port carries
-    port_fl::Vector{Float64}      # liquid mass fraction of that flow
-    port_cover::Vector{Float64}   # 0..1: how far the liquid level covers the port
+    P::Float64 = 0.0              # for a junction: solved so that its flows balance
+    T::Float64 = 0.0              # liquid (stratified) or bulk temperature
+    hl_sat::Float64 = 0.0         # saturated liquid / vapour enthalpy at P, for splitting inflow
+    hv_sat::Float64 = 0.0
+    hl::Float64 = 0.0
+    hv::Float64 = 0.0
+    port_h::Vector{Float64} = Float64[]       # specific enthalpy a flow leaving through each port carries
+    port_fl::Vector{Float64} = Float64[]      # liquid mass fraction of that flow
+    port_cover::Vector{Float64} = Float64[]   # 0..1: how far the liquid level covers the port
     # flow totals collected from the edges
-    dm_l::Float64                 # net mass rate into the liquid zone (or the whole volume)
-    min_l::Float64                # inflow-only part of dm_l
-    Hin_l::Float64                # enthalpy rate carried by that inflow
-    dm_v::Float64                 # net mass rate into the ullage
-    dE_v::Float64                 # net enthalpy rate into the ullage (or the whole volume)
-    dair::Float64                 # net air mass rate
-    P_hold::Float64               # junction: its pressure at the last accepted step
+    dm_l::Float64 = 0.0           # net mass rate into the liquid zone (or the whole volume)
+    min_l::Float64 = 0.0          # inflow-only part of dm_l
+    Hin_l::Float64 = 0.0          # enthalpy rate carried by that inflow
+    dm_v::Float64 = 0.0           # net mass rate into the ullage
+    dE_v::Float64 = 0.0           # net enthalpy rate into the ullage (or the whole volume)
+    dair::Float64 = 0.0           # net air mass rate
+    P_hold::Float64 = 0.0         # junction: its pressure at the last accepted step
 end
 
-Node(name, kind) = Node(name, kind, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, false,
-                        Float64[], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Float64[], Float64[], Float64[], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+Node(name, kind) = Node(; name, kind)
 
 nstates(n::Node) = n.kind === :vessel ? 6 : 0
 
@@ -240,7 +241,7 @@ function derivative!(du, n::Node, u, env::Env)
         Tw = u[i+4]
         # One fixed film coefficient while liquid-full / supercritical. Good enough to
         # get the warm-soak pressure rise; use the correlations if this regime ever matters more.
-        qw = env.h_in_mult * 300.0 * n.A_in * (Tw - f.T)
+        qw = env.h_in_mult * n.h_in * n.h_mixed * n.A_in * (Tw - f.T)
         qx = q_external(n, Tw, env)
         du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qw, 0.0, 0.0
         du[i+4], du[i+5] = (qx - qw) / n.Cw, n.dair
@@ -270,8 +271,8 @@ function derivative!(du, n::Node, u, env::Env)
     end
     # Wall.
     lvl = min(s.level, n.H)
-    q_wl = wet * env.h_in_mult * h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01)) * (π * n.D * lvl + As) * (Tw - s.Tl)
-    q_wv = env.h_in_mult * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
+    q_wl = wet * env.h_in_mult * n.h_in * h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01)) * (π * n.D * lvl + As) * (Tw - s.Tl)
+    q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
     qx = q_external(n, Tw, env)
 
     dml = n.dm_l - m_evap + m_cond

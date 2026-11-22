@@ -38,6 +38,12 @@ const _VESSEL_PARAMS = [
     Param("shade", 0.0, "fraction of sunlight blocked, 0..1"),
     Param("heater_W", 0.0, "heater power delivered to the wall when switched on"),
 ]
+# Wall-to-contents coupling belongs to the vessel it describes: a value fitted for the run tank
+# must not silently change the bottle. The setting `h_in_mult` remains as a common factor.
+const _WALL_COUPLING = [
+    Param("h_in_mult", 1.0, "this vessel's own multiplier on wall-to-contents heat transfer (applied on top of the setting of the same name)"),
+    Param("h_in_W_m2K", 300.0, "wall-to-contents coefficient while the contents are one mixed fluid (always for a Bottle; a Tank only when liquid-full or without liquid)"),
+]
 
 _two_pin(params, help) = Kind([Pin("a", -1, 0), Pin("b", 1, 0)], params, help)
 const _RESTRICTION = [
@@ -58,10 +64,11 @@ const KINDS = Dict{String,Kind}(
          Param("absorptivity", 0.5, "fraction of solar flux absorbed"),
          Param("emissivity", 0.8, "infrared emissivity"),
          Param("shade", 0.0, "fraction of sunlight blocked, 0..1"),
-         Param("heater_W", 0.0, "heater power when switched on")],
+         Param("heater_W", 0.0, "heater power when switched on"),
+         _WALL_COUPLING...],
         "Supply cylinder: a two-phase vessel that cools as it delivers."),
     "Tank" => Kind([Pin("top", 0, -3), Pin("vent", 1, -2), Pin("bottom", 0, 3)],
-        vcat(_VESSEL_PARAMS, [Param("vent_height_frac", 0.9, "height of the `vent` pin's dip-tube inlet, as a fraction of tank height; liquid reaches the vent at this level")]),
+        vcat(_VESSEL_PARAMS, [Param("vent_height_frac", 0.9, "height of the `vent` pin's dip-tube inlet, as a fraction of tank height; liquid reaches the vent at this level")], _WALL_COUPLING),
         "Run tank. `bottom` draws liquid, `top` draws ullage, `vent` switches from vapour to liquid when the level reaches the dip tube."),
     "Pipe" => _two_pin(
         [Param("L_m", 1.0, "length"),
@@ -303,6 +310,34 @@ function check(s::Scene)
         find_part(s, a.part) === nothing && push!(warnings, "schedule refers to missing part $(a.part)")
     end
     errors, warnings
+end
+
+"""
+    apply_overrides!(scene, ["PART.param=value", "settings.key=value", ...])
+
+Change parameters by name, for sweeps and one-off runs without editing the scene file. Every name
+is checked: a part, parameter or setting that does not exist is an error that lists what does, so
+a typo cannot pass as a run with the value silently unchanged.
+"""
+function apply_overrides!(s::Scene, specs)
+    for spec in specs
+        m = match(r"^(.+)\.([^.=]+)=(.+)$", spec)
+        m === nothing && error("cannot read \"$spec\": expected PART.param=value or settings.key=value")
+        target, key, v = strip(m[1]), strip(m[2]), tryparse(Float64, strip(m[3]))
+        v === nothing && error("\"$spec\": $(strip(m[3])) is not a number")
+        if target == "settings"
+            any(p -> p.key == key, SETTINGS) || error("there is no setting \"$key\". Settings: $(join((p.key for p in SETTINGS), ", "))")
+            s.settings[key] = v
+        else
+            i = find_part(s, target)
+            i === nothing && error("there is no part named \"$target\". Parts: $(join((p.name for p in s.parts), ", "))")
+            part = s.parts[i]
+            any(p -> p.key == key, KINDS[part.kind].params) ||
+                error("$target is a $(part.kind) and has no parameter \"$key\". It has: $(join((p.key for p in KINDS[part.kind].params), ", "))")
+            part.p[key] = v
+        end
+    end
+    s
 end
 
 # ---------------------------------------------------------------- file I/O

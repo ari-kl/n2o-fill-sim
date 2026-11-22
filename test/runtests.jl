@@ -206,6 +206,24 @@ end
     @test closes(sim)
 end
 
+@testset "wall coupling is set per vessel" begin
+    # Cutting the bottle's wall off from its contents leaves the tank's wall coupling alone.
+    function run(bottle_mult)
+        s = rig()
+        s.parts[F.find_part(s, "BOTTLE")].p["h_in_mult"] = bottle_mult
+        sim = F.Sim(s)
+        F.act!(sim, "FILL", "open")
+        F.run_until!(sim, 40.0)
+        sim
+    end
+    a, b = run(1.0), run(0.0)
+    drop(sim, key) = sim.hist[key][1] - sim.hist[key][end]
+    @test drop(a, "BOTTLE.T") > 1                                 # the bottle cools as it delivers
+    @test drop(a, "BOTTLE.Tw") > 10 * abs(drop(b, "BOTTLE.Tw"))   # and takes its wall with it only when coupled
+    @test drop(b, "BOTTLE.T") > drop(a, "BOTTLE.T")               # uncoupled, the contents get no heat back from the wall
+    @test_throws ErrorException F.apply_overrides!(rig(), ["BOTTLE.h_in_mul=0"])
+end
+
 @testset "venting lets more in and costs vented mass" begin
     closed = F.Sim(rig(bottle_T = 28.0)); F.act!(closed, "FILL", "open"); F.run_until!(closed, 200.0)
     vented = F.Sim(rig(bottle_T = 28.0)); F.act!(vented, "FILL", "open"); F.act!(vented, "VENT", "open"); F.run_until!(vented, 200.0)

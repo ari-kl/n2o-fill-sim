@@ -110,6 +110,7 @@ function compile(s::Scene)
         n.Cw = max(g("wall_kg") * g("wall_cp_J_kgK"), 1.0)
         n.A_in = π * n.D * n.H + π * n.D^2 / 2
         n.absorb, n.emiss, n.shade, n.heater_W = g("absorptivity"), g("emissivity"), g("shade"), g("heater_W")
+        n.h_in, n.h_mixed = g("h_in_mult"), g("h_in_W_m2K")
         push!(nodes, n)
         for pin in KINDS[p.kind].pins
             height = p.kind == "Bottle" ? g("draw_height_frac") : pin.name == "bottom" ? 0.0 : pin.name == "vent" ? g("vent_height_frac") : 1.0
