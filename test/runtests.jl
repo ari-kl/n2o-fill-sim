@@ -417,6 +417,11 @@ end
     # the pieces
     x, fx, n = F.nelder_mead(v -> (v[1] - 0.3)^2 + 10 * (v[2] - 0.8)^2 + (v[3] - 1.2)^2, [0.5, 0.5, 0.5]; max_evals = 600)
     @test abs(x[1] - 0.3) < 0.01 && abs(x[2] - 0.8) < 0.01 && x[3] == 1.0             # the third wants to leave the cube and is held at its edge
+    # looking ahead with spare cores evaluates more points but takes the same path to the same answer
+    q(v) = (v[1] - 0.3)^2 + 10 * (v[2] - 0.8)^2 + (v[3] - 1.2)^2
+    asked = Ref(0)
+    xb, fb, nb = F.nelder_mead(q, [0.5, 0.5, 0.5]; max_evals = 600, batch = pts -> (asked[] += length(pts); q.(pts)))
+    @test xb == x && fb == fx && nb == n && asked[] > n
     J = [1.0 2.0 0.0; 2.0 4.0 0.0; 0.5 1.0 0.0; 0.0 0.0 0.0]                         # column 2 is twice column 1; column 3 does nothing
     _, _, said = F.identifiability(J .+ [0 0 0; 0 0 0; 0 0 0; 1e-9 0 0], ["a", "b", "c"])
     @test any(occursin("c has no measurable effect", t) for t in said) && any(occursin("a", t) && occursin("b", t) for t in said)

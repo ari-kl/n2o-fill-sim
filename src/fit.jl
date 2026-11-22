@@ -137,22 +137,30 @@ function fit_score(fit::Fit, residuals)
 end
 
 """
-    nelder_mead(f, x0; step, max_evals, xtol, ftol) -> (x, fx, evals)
+    nelder_mead(f, x0; step, max_evals, xtol, ftol, batch) -> (x, fx, evals)
 
 Minimise `f` over the unit cube from `x0` by the Nelder-Mead simplex method (with the
 dimension-dependent coefficients of Gao and Han, 2012, which keep it working beyond a few
 parameters). No derivatives are needed, which suits a model whose output has solver noise. Points
 are kept inside the cube by clamping.
+
+`batch`, if given, evaluates several points at once (`batch(points) -> values`), and is how spare
+processor cores are used. The method's next step depends on the last, so it cannot simply be run
+in parallel; but the points it might ask for next (reflected, expanded, contracted outside and
+inside) are all known before any of them is evaluated, so with `batch` all four are evaluated
+together and the unneeded ones thrown away. The path taken and the answer are exactly those of
+the one-at-a-time method, and `evals` counts only the evaluations that method would have made.
 """
-function nelder_mead(f, x0; step = 0.1, max_evals = 500, xtol = 2e-3, ftol = 1e-4)
+function nelder_mead(f, x0; step = 0.1, max_evals = 500, xtol = 2e-3, ftol = 1e-4, batch = nothing)
     n = length(x0)
     α, β, γ, δ = 1.0, 1 + 2 / n, 0.75 - 1 / (2n), 1 - 1 / n
     clampx(x) = clamp.(x, 0.0, 1.0)
+    all_at_once(points) = batch === nothing ? [f(x) for x in points] : batch(points)
     X = [copy(x0) for _ in 0:n]
     for k in 1:n
         X[k+1][k] += X[k+1][k] + step <= 1 ? step : -step      # step inwards if the bound is in the way
     end
-    F = [f(x) for x in X]
+    F = all_at_once(X)
     evals = n + 1
     while evals < max_evals
         order = sortperm(F)
@@ -160,21 +168,28 @@ function nelder_mead(f, x0; step = 0.1, max_evals = 500, xtol = 2e-3, ftol = 1e-
         size = maximum(maximum(abs.(X[k] .- X[1])) for k in 2:n+1)
         (size < xtol && F[end] - F[1] < ftol * max(F[1], 1e-12)) && break
         centre = sum(X[1:n]) ./ n
-        xr = clampx(centre .+ α .* (centre .- X[end])); fr = f(xr); evals += 1
+        xr = clampx(centre .+ α .* (centre .- X[end]))
+        xe = clampx(centre .+ β .* (xr .- centre))
+        xo = clampx(centre .+ γ .* (xr .- centre))             # contraction on the reflected side
+        xi = clampx(centre .+ γ .* (X[end] .- centre))         # contraction on the worst point's side
+        ahead = batch === nothing ? nothing : batch([xr, xe, xo, xi])
+        fr = ahead === nothing ? f(xr) : ahead[1]; evals += 1
         if fr < F[1]
-            xe = clampx(centre .+ β .* (xr .- centre)); fe = f(xe); evals += 1
+            fe = ahead === nothing ? f(xe) : ahead[2]; evals += 1
             X[end], F[end] = fe < fr ? (xe, fe) : (xr, fr)
         elseif fr < F[n]
             X[end], F[end] = xr, fr
         else
             outside = fr < F[end]
-            xc = clampx(centre .+ γ .* ((outside ? xr : X[end]) .- centre)); fc = f(xc); evals += 1
+            xc = outside ? xo : xi
+            fc = ahead === nothing ? f(xc) : ahead[outside ? 3 : 4]; evals += 1
             if fc < (outside ? fr : F[end])
                 X[end], F[end] = xc, fc
             else                                               # shrink towards the best point
                 for k in 2:n+1
-                    X[k] = clampx(X[1] .+ δ .* (X[k] .- X[1])); F[k] = f(X[k])
+                    X[k] = clampx(X[1] .+ δ .* (X[k] .- X[1]))
                 end
+                F[2:end] .= all_at_once(X[2:end])
                 evals += n
             end
         end
@@ -238,31 +253,47 @@ function fit(path; write_scenes = false, quiet = false)
     println(log_io, "eval,score,", join((p.label for p in ft.params), ","), ",", join(("score." * n for n in ft.names), ","), ",failed")
     evals = Ref(0)
     best = Ref((Inf, Float64[]))
-    function objective(x)
-        residuals, _, failed = evaluate(ft, x)
-        s = fit_score(ft, residuals)
-        evals[] += 1
-        s < best[][1] && (best[] = (s, copy(x)))
-        println(log_io, evals[], ",", round(s, sigdigits = 7), ",", join((round(_value(p, x[j]), sigdigits = 7) for (j, p) in enumerate(ft.params)), ","), ",",
-                join((round(v, sigdigits = 5) for v in _dataset_scores(ft, residuals)), ","), ",", join(filter(!isempty, failed), " | "))
-        flush(log_io)
-        s
+    # Evaluate several positions at once (each is itself several datasets run side by side), then
+    # score and log them in the order given, so that the log does not depend on which finished first.
+    function several(xs; reltol = nothing)
+        out = Vector{Any}(undef, length(xs))
+        @sync for (i, x) in enumerate(xs)
+            Threads.@spawn out[i] = evaluate(ft, x; reltol)
+        end
+        out
     end
+    function objectives(xs)
+        scores = Float64[]
+        for (x, (residuals, _, failed)) in zip(xs, several(xs))
+            s = fit_score(ft, residuals)
+            evals[] += 1
+            s < best[][1] && (best[] = (s, copy(x)))
+            println(log_io, evals[], ",", round(s, sigdigits = 7), ",", join((round(_value(p, x[j]), sigdigits = 7) for (j, p) in enumerate(ft.params)), ","), ",",
+                    join((round(v, sigdigits = 5) for v in _dataset_scores(ft, residuals)), ","), ",", join(filter(!isempty, failed), " | "))
+            push!(scores, s)
+        end
+        flush(log_io)
+        scores
+    end
+    objective(x) = objectives([x])[1]
+    # With more threads than datasets there are cores to spare: use them to look ahead in the search.
+    spare = Threads.nthreads() > length(ft.datasets)
     x0 = [_unit(p, p.start) for p in ft.params]
     f0 = objective(x0)
     say("fit \"", ft.name, "\": ", np, " parameters, ", length(ft.datasets), " datasets, ", Threads.nthreads(), " thread(s). Score at the start: ", round(f0, digits = 3))
     if ft.explore > 0                                          # a Latin hypercube over the bounds, to start from the best basin found
         g = _Lcg(UInt64(ft.seed))
         perms = [(p = collect(1:ft.explore); for i in ft.explore:-1:2; j = 1 + floor(Int, _next!(g) * i); p[i], p[j] = p[j], p[i]; end; p) for _ in 1:np]
-        for i in 1:ft.explore
-            objective([(perms[k][i] - 1 + _next!(g)) / ft.explore for k in 1:np])
+        points = [[(perms[k][i] - 1 + _next!(g)) / ft.explore for k in 1:np] for i in 1:ft.explore]
+        for chunk in Iterators.partition(points, max(1, Threads.nthreads() ÷ 2))
+            objectives(collect(chunk))
         end
         say("after ", ft.explore, " exploratory runs: best ", round(best[][1], digits = 3))
     end
     x, fx = best[][2], best[][1]
     for (round_, step) in enumerate((0.1, 0.03))               # a second, tighter pass from where the first stopped
         budget = ft.max_evals ÷ 2
-        x, fx, used = nelder_mead(objective, x; step, max_evals = budget)
+        x, fx, used = nelder_mead(objective, x; step, max_evals = budget, batch = spare ? objectives : nothing)
         say("search ", round_, ": score ", round(fx, digits = 4), " after ", used, " evaluations")
     end
     close(log_io)
@@ -270,10 +301,12 @@ function fit(path; write_scenes = false, quiet = false)
     # Sensitivities at the optimum, with the solver tightened so that differences are signal, not solver noise.
     r0, rms, failed = evaluate(ft, x; reltol = ft.jac_reltol)
     J = zeros(length(r0), np)
+    steps = [x[k] + ft.jac_step <= 1 ? ft.jac_step : -ft.jac_step for k in 1:np]
+    moved = [(xk = copy(x); xk[k] += steps[k]; xk) for k in 1:np]
+    shifted = reduce(vcat, [several(collect(chunk); reltol = ft.jac_reltol) for chunk in Iterators.partition(moved, max(1, Threads.nthreads() ÷ 2))])
     for k in 1:np
-        h = x[k] + ft.jac_step <= 1 ? ft.jac_step : -ft.jac_step
-        xk = copy(x); xk[k] += h
-        rk, _, _ = evaluate(ft, xk; reltol = ft.jac_reltol)
+        h = steps[k]
+        rk = shifted[k][1]
         J[:, k] .= (rk .- r0) ./ h
     end
     labels = [p.label for p in ft.params]

@@ -78,7 +78,12 @@ the commonest way to fit nonsense.
 Optionally a Latin hypercube over the bounds (`explore`), then the Nelder-Mead simplex method from
 the best point, run twice (the second pass restarts from where the first stopped, with a smaller
 simplex). It uses no derivatives, which suits a model whose output carries solver noise. Values
-are kept inside their bounds. Datasets are run in parallel on Julia's threads.
+are kept inside their bounds.
+
+Start Julia with as many threads as there are cores (`-t 8`). Each evaluation runs its datasets
+side by side; the exploratory runs and the sensitivity runs go several at a time; and when there
+are more threads than datasets the search looks ahead, evaluating together the four points its
+next step could need. That takes the same path to the same answer as doing them one at a time.
 
 Nelder-Mead finds a nearby minimum, not necessarily the best one, and slows down beyond a dozen or
 so parameters. `evals.csv` records every evaluation; if the exploratory runs show several separate
