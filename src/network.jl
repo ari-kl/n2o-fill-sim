@@ -225,7 +225,7 @@ Mass flow a → b through an edge (negative for b → a), given the pressure at 
 enthalpy each end would send if it were upstream.
 """
 function edge_flow(e::Edge, Pa, Pb, ha, hb)
-    TALLY.edge_flow += 1
+    TALLY.on && (TALLY.edge_flow += 1)
     forward = Pa >= Pb
     forward || e.kind in (:valve, :orifice, :pipe) || return 0.0     # the rest are one-way
     A = flow_area(e, Pa, Pb)
@@ -461,7 +461,7 @@ function _solve_active!(net::Net)
     end
     for iter in 1:40
         converged = worst < 1e-9 * scale + 1e-10       # kg/s; 1e-10 is a third of a milligram an hour
-        TALLY.newton += 1
+        TALLY.on && (TALLY.newton += 1)
         fill!(J, 0.0)
         for (k, e) in enumerate(net.edges)
             net.live[k] || continue
@@ -594,7 +594,7 @@ end
 
 "The right-hand side of the ODE system. The last three states total vented mass, vented enthalpy and heat taken in."
 function rhs!(du, u, net::Net, t)
-    TALLY.rhs += 1
+    TALLY.on && (TALLY.rhs += 1)
     nodes, env = net.nodes, net.env
     for n in nodes
         evaluate!(n, u, env)
@@ -627,7 +627,7 @@ Jacobian of `rhs!` by forward differences with a relative step (the library defa
 absolute floor that is far too coarse for small states). The bookkeeping states do not feed back.
 """
 function jac!(J, u, net::Net, t)
-    TALLY.jac += 1
+    TALLY.on && (TALLY.jac += 1)
     n = length(u)
     f0, f1 = zeros(n), zeros(n)
     rhs!(f0, u, net, t)

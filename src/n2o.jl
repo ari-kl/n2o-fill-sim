@@ -31,14 +31,17 @@ Jacobians. `test/bench.jl` prints them: unlike wall time they are the same on ev
 show what a change did.
 """
 mutable struct Tally
+    on::Bool                      # counting is off unless asked for: see below
     eos::Int; edge_flow::Int; choke::Int; newton::Int; rhs::Int; jac::Int
 end
-const TALLY = Tally(0, 0, 0, 0, 0, 0)
-reset_tally!() = (for f in fieldnames(Tally); setfield!(TALLY, f, 0); end)
+const TALLY = Tally(false, 0, 0, 0, 0, 0, 0)
+# Counting writes to one shared place, which simulations running on several threads would all be
+# writing to at once. So it is switched on only by the benchmark, which runs one at a time.
+reset_tally!(on = true) = (TALLY.on = on; TALLY.eos = TALLY.edge_flow = TALLY.choke = TALLY.newton = TALLY.rhs = TALLY.jac = 0)
 
 "Single-phase properties at (ρ, T) straight from the Helmholtz energy. Valid in metastable states too."
 function eos(ρ, T)
-    TALLY.eos += 1
+    TALLY.on && (TALLY.eos += 1)
     δ, τ = ρ / N2O_RHOC, N2O_TC / T
     ar = ar_d = ar_t = ar_dd = ar_dt = ar_tt = 0.0
     for k in 1:12

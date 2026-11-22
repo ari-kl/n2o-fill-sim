@@ -147,7 +147,7 @@ function hem_flux(up::Fluid, P2, memo = nothing)
         memo === nothing || (memo.m_Pu = P2)
         return g2
     end
-    TALLY.choke += 1
+    TALLY.on && (TALLY.choke += 1)
     if up.twophase && up.P < SAT_PMAX
         # From inside the dome the whole expansion stays inside it, so search along the saturation
         # table itself: no pressure has to be turned back into a place on the table at each trial.
