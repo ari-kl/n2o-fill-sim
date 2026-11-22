@@ -249,14 +249,40 @@ q_outside(n::Node, Tw, env::Env, A) = h_outside(n, Tw, env) * A * (env.T_amb - T
 q_sun_heater(n::Node, env::Env) = n.absorb * (1 - n.shade) * env.solar * n.D * n.H + (n.heater_on ? n.heater_W : 0.0)
 
 """
+    boiling_flux(P, ΔT, st) -> W/m²
+
+Heat flux from a wall `ΔT` kelvin hotter than saturation into liquid boiling on it at pressure
+`P`. This is the pool-boiling data of Gorenflo and Kotthoff (2005) for carbon dioxide in the form
+Zimmerman (2015, eqs 5.76-5.77) fitted it for tank models, taken over to nitrous oxide by reduced
+pressure Pr = P/Pc (the two fluids are close analogues): the coefficient at 20 kW/m² is
+
+    ln h20 [kW/m²K] = 0.3092 (ln Pr)³ + 1.649 (ln Pr)² + 3.641 ln Pr + 5.272
+
+and the coefficient grows with flux as h ∝ q^n, n = 1 - 0.3 Pr^0.3, so that
+q = (h20 ΔT)^(1/(1-n)) / q20^(n/(1-n)). It rises about as ΔT⁴: a wetted wall cannot stay more than
+a kelvin or two above saturation. The data stop at Pr = 0.625, so warm tanks are an extrapolation.
+The flux is capped at the critical heat flux (Zuber: 0.131 h_fg √ρv [σ g (ρl - ρv)]^¼), beyond
+which a real surface dries out; that drying-out is not modelled. `st` is the saturation state at P.
+"""
+function boiling_flux(P, ΔT, st)
+    ΔT > 0 || return 0.0
+    Pr = clamp(P / N2O_PC, 0.05, 0.99)
+    L = log(Pr)
+    h20 = exp(((0.3092 * L + 1.649) * L + 3.641) * L + 5.272)       # kW/m²K at q = 20 kW/m²
+    n = 1 - 0.3 * Pr^0.3
+    q = 1e3 * (h20 * ΔT)^(1 / (1 - n)) / 20.0^(n / (1 - n))
+    chf = 0.131 * (st.hv - st.hl) * sqrt(st.ρv) * sqrt(sqrt(surface_tension(st.T) * G0 * (st.ρl - st.ρv)))
+    min(q, chf)
+end
+
+"""
 Wall-to-liquid film coefficient. Natural convection always. With `h_fill` on, the stirring of the
 liquid by the incoming jet is added (Dittus-Boelter on the tank diameter, with the jet's velocity
 decayed over one diameter as 6·d/D, combined as the cube root of the sum of cubes so that it
 takes over smoothly). With `h_boil` on, a wetted wall hotter than saturation boils the liquid on
-it: 100·ΔT² W/m²K, capped at 2e4, which is the right order for nucleate boiling but no more than
-that. Both multipliers are there to be fitted.
+it (`boiling_flux`). Both multipliers are there to be fitted.
 """
-function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, Tsat, lvl)
+function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, ss, lvl)
     h = h_wall(s.ρl, cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
     if n.h_fill > 0
         d = sqrt(4 * n.A_inlet / π)
@@ -264,13 +290,14 @@ function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, Tsat, lvl)
         Re, Pr = s.ρl * v * n.D / μl, cpl * μl / kl
         h = cbrt(h^3 + (n.h_fill * 0.023 * Re^0.8 * Pr^0.4 * kl / n.D)^3)
     end
-    n.h_boil > 0 && (h += n.h_boil * min(100.0 * max(Tw - Tsat, 0.0)^2, 2e4))
+    # Boiling moves heat from the wall to saturated liquid at the wall; expressed as a coefficient
+    # on (Tw - Tl) so that it adds to the others. (Below saturation, or with the liquid as warm as
+    # the wall, there is none.)
+    if n.h_boil > 0 && Tw > ss.T && Tw > s.Tl
+        h += n.h_boil * boiling_flux(ss.P, Tw - ss.T, ss) / (Tw - s.Tl)
+    end
     h
 end
-
-# ---------------------------------------------------------------- time derivatives
-
-"Time derivatives of one vessel's states. Returns the heat it took in from outside [W]."
 function derivative!(du, n::Node, u, env::Env)
     n.kind === :vessel || return 0.0
     i = n.i
@@ -325,8 +352,8 @@ function derivative!(du, n::Node, u, env::Env)
         # Tube: its wetted part to the liquid, its dry part to the ullage, sun and heater on its
         # outside. Ends: the bottom one to the liquid, the top one to the ullage. A link between.
         Te, c = u[i+6], env.h_in_mult * n.h_in
-        hl_t = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
-        hl_e = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Te, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Te - s.Tl, max(lvl, 0.01))
+        hl_t = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
+        hl_e = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Te, ss, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Te - s.Tl, max(lvl, 0.01))
         hv_t = h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01))
         hv_e = h_wall(s.ρv, cpv, βv, μv, kv, Te - s.Tv, max(n.H - lvl, 0.01))
         ql_t, ql_e = wet * c * hl_t * (π * n.D * lvl) * (Tw - s.Tl), wet * c * hl_e * As * (Te - s.Tl)
@@ -337,7 +364,7 @@ function derivative!(du, n::Node, u, env::Env)
         dTw_tube = (qxt - ql_t - qv_t + link) / (n.Cw * n.tube_frac)
         dTw_ends = (qxe - ql_e - qv_e - link) / (n.Cw * (1 - n.tube_frac))
     else
-        h_l = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss.T, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
+        h_l = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
         q_wl = wet * env.h_in_mult * n.h_in * h_l * (π * n.D * lvl + As) * (Tw - s.Tl)
         q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
         qx = q_external(n, Tw, env)

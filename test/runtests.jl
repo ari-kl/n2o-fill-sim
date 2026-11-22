@@ -80,6 +80,23 @@ end
     @test F.warm_soak(0.80 * st.ρl * 0.01916 + 0.20 * st.ρv * 0.01916, 0.01916, 303.15)[2] == 1.0
 end
 
+@testset "surface tension and boiling on a wall" begin
+    for T in (200.0, 250.0, 280.0, 300.0)
+        @test F.surface_tension(T) ≈ PropsSI("surface_tension", "T", T, "Q", 0, "NitrousOxide") rtol = 2e-3
+    end
+    @test F.surface_tension(F.N2O_TC + 1) == 0
+    # the correlation is pinned at 20 kW/m²: with ΔT = q20 / h20 it must return exactly that
+    P = 0.5 * F.N2O_PC
+    st = F.sat_P(P)
+    L = log(0.5); h20 = exp(0.3092L^3 + 1.649L^2 + 3.641L + 5.272)
+    @test 25 < h20 < 40                                           # kW/m²K: a strong coefficient
+    @test F.boiling_flux(P, 20 / h20, st) ≈ 20e3 rtol = 1e-9
+    @test F.boiling_flux(P, 0.0, st) == 0 && F.boiling_flux(P, -3.0, st) == 0
+    @test F.boiling_flux(P, 2 * 20 / h20, st) / 20e3 ≈ 2^(1 / (0.3 * 0.5^0.3)) rtol = 1e-9     # q ∝ ΔT^(1/(1-n))
+    @test 2e5 < F.boiling_flux(P, 50.0, st) < 2e6                 # capped at the critical heat flux, a few hundred kW/m²
+    @test F.boiling_flux(0.98 * F.N2O_PC, 50.0, F.sat_P(0.98 * F.N2O_PC)) < F.boiling_flux(P, 50.0, st)   # which falls away towards the critical point
+end
+
 @testset "properties: ESDU 91022 transport tables" begin
     @test F.visc_l(273.15) * 1e3 ≈ 0.0774 atol = 1e-4
     @test F.visc_l(293.15) * 1e3 ≈ 0.0570 atol = 1e-4

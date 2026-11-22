@@ -277,5 +277,5 @@ studies/              example study files
 ## Licence
 
 MIT; see `LICENSE`. The equation-of-state coefficients in `src/n2o.jl` were copied from
-[CoolProp](https://github.com/CoolProp/CoolProp) (MIT licence), and the viscosity and thermal
-conductivity correlations are those of ESDU 91022 (1991).
+[CoolProp](https://github.com/CoolProp/CoolProp) (MIT licence), as were the surface tension
+coefficients; the viscosity and thermal conductivity correlations are those of ESDU 91022 (1991).

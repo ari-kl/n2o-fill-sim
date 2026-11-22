@@ -48,7 +48,7 @@ const _WALL_COUPLING = [
     Param("wall_link_W_K", 5.0, "with wall_split: heat conducted between tube and ends per kelvin of difference"),
     Param("h_fill_mult", 0.0, "multiplier on the extra wall-to-liquid heat transfer from the fill jet stirring the liquid (0 = off)"),
     Param("inlet_d_mm", 10.0, "bore the fill jet enters through, for h_fill_mult"),
-    Param("h_boil_mult", 0.0, "multiplier on boiling against a wetted wall hotter than saturation (0 = off)"),
+    Param("h_boil_mult", 0.0, "multiplier on boiling against a wetted wall hotter than saturation (0 = off, 1 = the pool-boiling correlation as published)"),
 ]
 
 _two_pin(params, help) = Kind([Pin("a", -1, 0), Pin("b", 1, 0)], params, help)

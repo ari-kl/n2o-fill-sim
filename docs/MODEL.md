@@ -136,8 +136,14 @@ Zimmerman et al. (2013):
   - `h_fill_mult`: adds the stirring of the liquid by the incoming jet to the wall-to-liquid
     coefficient (Dittus-Boelter on the tank diameter with the jet velocity decayed as 6·d/D,
     combined with natural convection as the cube root of the sum of cubes).
-  - `h_boil_mult`: a wetted wall hotter than saturation boils the liquid against it,
-    100·ΔT² W/m²K capped at 2e4. That is the right order for nucleate boiling and no better.
+  - `h_boil_mult`: a wetted wall hotter than saturation boils the liquid against it. The flux is
+    the pool-boiling data of Gorenflo and Kotthoff (2005) for carbon dioxide as Zimmerman (2015,
+    eqs 5.76-5.77) fitted it for tank models, carried over to nitrous oxide by reduced pressure:
+    ln h20 = 0.3092 (ln Pr)³ + 1.649 (ln Pr)² + 3.641 ln Pr + 5.272 (kW/m²K at 20 kW/m²) with
+    h ∝ q^n, n = 1 − 0.3·Pr^0.3. It rises about as ΔT⁴, so a wetted wall cannot stay more than a
+    kelvin or two above saturation. Capped at Zuber's critical heat flux; drying-out beyond it
+    is not modelled. The data stop at Pr = 0.625 (about 14 °C for nitrous), so warm tanks are an
+    extrapolation, and Zimmerman expected the relation to need adjusting: hence the multiplier.
   These exist because thermistors on a tank wall were seen within about 1 K of the liquid through
   a long hold, and falling 28 K within seconds of a fill starting, where the single wall
   temperature with HF4's fitted coupling sits several kelvin above the liquid. They are not yet
@@ -383,6 +389,15 @@ replace them:
   J. Chem. Eng. Data 51 (2006), doi:10.1021/je050186n. Coefficients via CoolProp,
   `dev/fluids/NitrousOxide.json`.
 - ESDU 91022, "Thermophysical properties of nitrous oxide" (1991), eqs 4.9-4.12.
+- Zimmerman, J. E., "Self-Pressurizing Propellant Tank Dynamics", PhD dissertation, Stanford
+  University (2015): evaluation of the equilibrium, Zilliac-Karabeyoglu and Casalino-Pastrone
+  models (E between 240 and 1300 with no pattern, mean 693), the wall-boiling relation used here,
+  and the observation that boiling dominates heat and mass transfer in these tanks.
+- Gorenflo, D. and Kotthoff, S., "Review on pool boiling heat transfer of carbon dioxide",
+  Int. J. Refrigeration 28 (2005) 1169-1185.
+- Zuber, N., "On the stability of boiling heat transfer", Trans. ASME 80 (1958) (critical heat flux).
+- Mulero, A., Cachadiña, I. and Parra, M. I., "Recommended correlations for the surface tension
+  of common fluids", J. Phys. Chem. Ref. Data 41 (2012); coefficients via CoolProp.
 - Zimmerman, Waxman, Cantwell and Zilliac, "Review and Evaluation of Models for Self-Pressurizing
   Propellant Tank Dynamics", AIAA 2013-4045 (tank model, Dyer flow model, convection constants).
 - Zilliac and Karabeyoglu, "Modeling of Propellant Tank Pressurization", AIAA 2005-3549.

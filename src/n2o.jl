@@ -359,6 +359,9 @@ end
 # extrapolate: viscosity is given for -90..30 °C and conductivity for -90..10 °C, so outside those
 # ranges the nearest in-range value is used. Most of the underlying table values are flagged by
 # ESDU as not backed by measurements. Each heat-transfer use has a multiplier for that reason.
+"Surface tension, N/m: σ = 0.07087 (1 - T/Tc)^1.204 (Mulero, Cachadiña and Parra 2012, as carried by CoolProp)."
+surface_tension(T) = 0.07087 * max(1 - T / N2O_TC, 0.0)^1.204
+
 const _ESDU_TC = 309.57
 "Saturated-liquid viscosity, Pa·s."
 function visc_l(T)
