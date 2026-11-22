@@ -52,6 +52,7 @@ Base.@kwdef mutable struct Node
     split::Bool = false           # the wall as two masses (thin tube, heavy ends) with a temperature each
     tube_frac::Float64 = 0.5      # share of the wall's heat capacity that is in the tube
     link::Float64 = 5.0           # W/K conducted between tube and ends
+    G_ends::Float64 = 0.0         # W/K from the bulk of the end metal to its wetted face (0: no such limit)
     h_fill::Float64 = 0.0         # multiplier on wall heat transfer driven by the fill jet (0: off)
     h_boil::Float64 = 0.0         # multiplier on boiling against a wall hotter than saturation (0: off)
     A_inlet::Float64 = 7.85e-5    # m² area of the inlet the fill jet comes through
@@ -248,6 +249,11 @@ end
 q_outside(n::Node, Tw, env::Env, A) = h_outside(n, Tw, env) * A * (env.T_amb - Tw) + n.emiss * SIGMA * A * (env.T_amb^4 - Tw^4)
 q_sun_heater(n::Node, env::Env) = n.absorb * (1 - n.shade) * env.solar * n.D * n.H + (n.heater_on ? n.heater_W : 0.0)
 
+# A surface conductance `ua` in series with a conduction path `G` through the metal behind it
+# (G = 0: no such path is modelled). A thick bulkhead gives up its heat only as fast as the metal
+# conducts it to the wetted face, however hard the liquid boils there.
+_through(ua, G) = G > 0 ? ua * G / (ua + G) : ua
+
 """
     boiling_flux(P, ΔT, st) -> W/m²
 
@@ -309,7 +315,7 @@ function derivative!(du, n::Node, u, env::Env)
         if n.split
             Te, At, Ae = u[i+6], π * n.D * n.H, π * n.D^2 / 2
             hm = env.h_in_mult * n.h_in * n.h_mixed
-            qt, qe, ql = hm * At * (Tw - f.T), hm * Ae * (Te - f.T), n.link * (Te - Tw)
+            qt, qe, ql = hm * At * (Tw - f.T), _through(hm * Ae, n.G_ends) * (Te - f.T), n.link * (Te - Tw)
             qxt, qxe = q_outside(n, Tw, env, At) + q_sun_heater(n, env), q_outside(n, Te, env, Ae)
             du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qt + qe, 0.0, 0.0
             du[i+4], du[i+5] = (qxt - qt + ql) / (n.Cw * n.tube_frac), n.dair
@@ -356,8 +362,8 @@ function derivative!(du, n::Node, u, env::Env)
         hl_e = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Te, ss, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Te - s.Tl, max(lvl, 0.01))
         hv_t = h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01))
         hv_e = h_wall(s.ρv, cpv, βv, μv, kv, Te - s.Tv, max(n.H - lvl, 0.01))
-        ql_t, ql_e = wet * c * hl_t * (π * n.D * lvl) * (Tw - s.Tl), wet * c * hl_e * As * (Te - s.Tl)
-        qv_t, qv_e = c * hv_t * (π * n.D * (n.H - lvl)) * (Tw - s.Tv), c * hv_e * As * (Te - s.Tv)
+        ql_t, ql_e = wet * c * hl_t * (π * n.D * lvl) * (Tw - s.Tl), _through(wet * c * hl_e * As, n.G_ends) * (Te - s.Tl)
+        qv_t, qv_e = c * hv_t * (π * n.D * (n.H - lvl)) * (Tw - s.Tv), _through(c * hv_e * As, n.G_ends) * (Te - s.Tv)
         link = n.link * (Te - Tw)
         qxt, qxe = q_outside(n, Tw, env, π * n.D * n.H) + q_sun_heater(n, env), q_outside(n, Te, env, 2As)
         q_wl, q_wv, qx = ql_t + ql_e, qv_t + qv_e, qxt + qxe

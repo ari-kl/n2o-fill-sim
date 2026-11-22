@@ -133,6 +133,9 @@ Zimmerman et al. (2013):
     its dry part, and takes the sun and the heater; the ends take the bottom to the liquid and the
     top to the ullage; `wall_link_W_K` conducts between them. A thin tube follows the contents in
     seconds while heavy bulkheads lag for minutes, which one temperature cannot do.
+    `wall_ends_W_K`, if set, puts a conduction path in series with the ends' contact with the
+    contents: a thick bulkhead gives up its heat only as fast as the metal conducts it to the
+    wetted face, however hard the liquid boils there.
   - `h_fill_mult`: adds the stirring of the liquid by the incoming jet to the wall-to-liquid
     coefficient (Dittus-Boelter on the tank diameter with the jet velocity decayed as 6·d/D,
     combined with natural convection as the cube root of the sum of cubes).

@@ -112,6 +112,7 @@ function compile(s::Scene)
         n.absorb, n.emiss, n.shade, n.heater_W = g("absorptivity"), g("emissivity"), g("shade"), g("heater_W")
         n.h_in, n.h_mixed = g("h_in_mult"), g("h_in_W_m2K")
         n.split, n.tube_frac, n.link = g("wall_split") > 0.5, clamp(g("wall_tube_frac"), 0.02, 0.98), g("wall_link_W_K")
+        n.G_ends = g("wall_ends_W_K")
         n.h_fill, n.h_boil, n.A_inlet = g("h_fill_mult"), g("h_boil_mult"), π * (g("inlet_d_mm") * 1e-3)^2 / 4
         push!(nodes, n)
         for pin in KINDS[p.kind].pins

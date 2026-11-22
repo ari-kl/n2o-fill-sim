@@ -46,6 +46,7 @@ const _WALL_COUPLING = [
     Param("wall_split", 0.0, "1 = treat the wall as two masses with a temperature each: the thin tube, which follows the contents in seconds, and the heavy ends and fittings, which lag by minutes"),
     Param("wall_tube_frac", 0.5, "with wall_split: share of the wall's mass that is in the tube"),
     Param("wall_link_W_K", 5.0, "with wall_split: heat conducted between tube and ends per kelvin of difference"),
+    Param("wall_ends_W_K", 0.0, "with wall_split: heat conducted from the bulk of the end metal to its wetted face per kelvin (0 = no limit). Thick bulkheads and fittings give up their heat this slowly however well the contents take it"),
     Param("h_fill_mult", 0.0, "multiplier on the extra wall-to-liquid heat transfer from the fill jet stirring the liquid (0 = off)"),
     Param("inlet_d_mm", 10.0, "bore the fill jet enters through, for h_fill_mult"),
     Param("h_boil_mult", 0.0, "multiplier on boiling against a wetted wall hotter than saturation (0 = off, 1 = the pool-boiling correlation as published)"),
