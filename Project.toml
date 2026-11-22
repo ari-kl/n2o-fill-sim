@@ -1,0 +1,19 @@
+name = "N2OFillSim"
+uuid = "d5caaa26-7931-4520-b6c2-4aa41725a868"
+version = "0.1.0"
+
+[deps]
+CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
+GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
+ImPlot = "e8efc688-5342-4ad4-b4ba-9025a731b363"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+ModernGL = "66fc600b-dfda-50eb-8b99-91cfa97b1301"
+OrdinaryDiffEqRosenbrock = "43230ef6-c299-4910-a778-202eb28ce4ce"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[compat]
+LinearAlgebra = "1.13.0"
+PrecompileTools = "1.4.0"
+TOML = "1.0.3"

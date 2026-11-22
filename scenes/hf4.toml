@@ -1,0 +1,282 @@
+# HF4 hot fire, 2026-07-11: fill panel and run tank as drawn in the Chimera FDR (Fig. 35).
+# PT201 sits upstream of AV201 and the AV202 dump tees off downstream of it: in the HF3 log,
+# opening AV202 with AV201 closed leaves PT201 untouched.
+# Topology and the tank volume, bore sizes marked [FDR] come from the report. Everything marked
+# [fit] was adjusted to reproduce the HF4 log (see docs/MODEL.md, "Calibration"); everything
+# marked [guess] is a placeholder for a number nobody has written down yet.
+
+[settings]
+T_amb_C          = 28.0       # [guess] July afternoon
+solar_W_m2       = 600.0      # [guess]
+wind_m_s         = 1.0        # [guess]
+P_atm_kPa        = 101.325
+meop_psig        = 1000.0
+interphase_E     = 700.0      # literature mid-range; HF4 does not pin it down
+cond_tau_s       = 0.5
+h_in_mult        = 0.3        # [fit]
+h_ext_mult       = 1.0
+
+[[part]]
+kind = "Bottle"
+name = "BOTTLE"
+x = 2
+y = 11
+rot = 0
+volume_L = 40.0               # [guess] size of the supply cylinder
+diameter_mm = 230.0
+fill_kg = 20.0                # [fit] with volume: sets how fast the bottle cools as it empties
+T_C = 32.2                    # [fit] PT201 read 934-952 psig before the fill
+draw_height_frac = 0.0        # tipped for liquid draw
+wall_kg = 30.0
+wall_cp_J_kgK = 470.0
+absorptivity = 0.5
+emissivity = 0.8
+shade = 0.0
+heater_W = 0.0
+
+[[part]]
+kind = "Orifice"
+name = "BOTTLE_VALVE"
+x = 2
+y = 7
+rot = 3
+d_mm = 2.5                    # [fit] everything between bottle and panel: bottle valve, CGA 326 nipple, 1/4" hose, MV201
+Cd = 0.7
+
+[[part]]
+kind = "Pipe"
+name = "HOSE1"
+x = 5
+y = 4
+rot = 0
+L_m = 3.0                     # [guess]
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Junction"
+name = "PANEL"
+x = 9
+y = 4
+rot = 0
+
+[[part]]
+kind = "Gauge"
+name = "PT201"
+x = 9
+y = 2
+rot = 0
+
+[[part]]
+kind = "Junction"
+name = "DUMP_TEE"
+x = 14
+y = 4
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV202"
+x = 14
+y = 7
+rot = 1
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.3
+
+[[part]]
+kind = "Atmosphere"
+name = "DUMP"
+x = 14
+y = 10
+rot = 1
+
+[[part]]
+kind = "Valve"
+name = "AV201"
+x = 12
+y = 4
+rot = 0
+d_mm = 15.0                   # 3/4" ball valve [FDR]
+Cd = 0.8
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.5
+
+[[part]]
+kind = "Pipe"
+name = "HOSE2"
+x = 15
+y = 4
+rot = 0
+L_m = 4.0                     # [guess]
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Orifice"
+name = "QD"
+x = 18
+y = 4
+rot = 0
+d_mm = 9.5                    # 3/8" effective [FDR]
+Cd = 0.7
+
+[[part]]
+kind = "Valve"
+name = "AV203"
+x = 21
+y = 4
+rot = 0
+d_mm = 9.4                    # 0.372" poppet stem [FDR]
+Cd = 0.5
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.2
+
+[[part]]
+kind = "Tank"
+name = "TANK"
+x = 25
+y = 0
+rot = 0
+volume_L = 19.16
+diameter_mm = 143.0           # from the 24.9 in² bulkhead area [FDR]
+fill_kg = 0.0
+T_C = 28.0
+air = 1.0
+wall_kg = 10.0                # [guess] 6061 tube + bulkheads
+wall_cp_J_kgK = 900.0
+absorptivity = 0.4
+emissivity = 0.8
+shade = 0.0
+heater_W = 300.0              # [fit]
+vent_height_frac = 0.9        # [guess] short dip tube
+
+[[part]]
+kind = "Gauge"
+name = "PT202"
+x = 23
+y = -5
+rot = 0
+
+[[part]]
+kind = "ReliefValve"
+name = "PRV202"
+x = 28
+y = -5
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+set_psig = 1000.0
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_PRV"
+x = 32
+y = -5
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV204"
+x = 29
+y = -2
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 1.0           # spring-open vent [FDR]
+travel_s = 0.2
+
+[[part]]
+kind = "Orifice"
+name = "VENT_ORIFICE"
+x = 33
+y = -2
+rot = 0
+d_mm = 2.0                    # 2 mm outlet [FDR]
+Cd = 0.7
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_VENT"
+x = 40
+y = -2
+rot = 0
+
+[[wire]]
+from = "BOTTLE.out"
+to = "BOTTLE_VALVE.a"
+
+[[wire]]
+from = "BOTTLE_VALVE.b"
+to = "HOSE1.a"
+
+[[wire]]
+from = "HOSE1.b"
+to = "PANEL.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "PT201.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "AV202.a"
+
+[[wire]]
+from = "AV202.b"
+to = "DUMP.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "AV201.a"
+
+[[wire]]
+from = "AV201.b"
+to = "DUMP_TEE.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "HOSE2.a"
+
+[[wire]]
+from = "HOSE2.b"
+to = "QD.a"
+
+[[wire]]
+from = "QD.b"
+to = "AV203.a"
+
+[[wire]]
+from = "AV203.b"
+to = "TANK.bottom"
+
+[[wire]]
+from = "TANK.top"
+to = "PT202.a"
+
+[[wire]]
+from = "TANK.top"
+to = "PRV202.a"
+
+[[wire]]
+from = "PRV202.b"
+to = "ATM_PRV.a"
+
+[[wire]]
+from = "TANK.vent"
+to = "AV204.a"
+
+[[wire]]
+from = "AV204.b"
+to = "VENT_ORIFICE.a"
+
+[[wire]]
+from = "VENT_ORIFICE.b"
+to = "ATM_VENT.a"

@@ -1,0 +1,330 @@
+# Hot-day regulated fill: the HF4 plumbing with a regulator added after the supply hose, a 30 °C
+# bottle, sun on the tank and no heater. The schedule fills with the vent open, then closes up at
+# 90 s; after that the tank warms and its pressure drifts up.
+# Hardware numbers are the HF4 fits and guesses (see scenes/hf4.toml). Units are in the names.
+
+[settings]
+T_amb_C          = 30.0       # ambient air temperature
+solar_W_m2       = 800.0      # solar flux on exposed surfaces (clear summer noon ≈ 900)
+wind_m_s         = 1.0        # wind speed
+P_atm_kPa        = 101.325    # local atmospheric pressure; gauge readings are relative to this
+meop_psig        = 1000.0     # maximum expected operating pressure (warning threshold)
+interphase_E     = 700.0      # boiling enhancement on liquid-to-surface heat transfer (Zilliac-Karabeyoglu E; fitted, literature 240-1300)
+cond_tau_s       = 0.5        # time constant for supersaturated ullage vapour to condense
+h_in_mult        = 0.3        # multiplier on wall-to-fluid natural convection inside vessels
+h_ext_mult       = 1.0        # multiplier on outside convection (0 = perfectly insulated)
+
+[[part]]
+kind = "Bottle"
+name = "BOTTLE"
+x = 2
+y = 11
+rot = 0
+volume_L = 40.0
+diameter_mm = 230.0
+fill_kg = 20.0
+T_C = 30.0
+draw_height_frac = 0.0
+wall_kg = 30.0
+wall_cp_J_kgK = 470.0
+absorptivity = 0.5
+emissivity = 0.8
+shade = 0.0
+heater_W = 0.0
+
+[[part]]
+kind = "Orifice"
+name = "BOTTLE_VALVE"
+x = 2
+y = 7
+rot = 3
+d_mm = 2.5
+Cd = 0.7
+
+[[part]]
+kind = "Pipe"
+name = "HOSE1"
+x = 5
+y = 4
+rot = 0
+L_m = 3.0
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Junction"
+name = "PANEL"
+x = 9
+y = 4
+rot = 0
+
+[[part]]
+kind = "Gauge"
+name = "PT201"
+x = 9
+y = 2
+rot = 0
+
+[[part]]
+kind = "Junction"
+name = "DUMP_TEE"
+x = 14
+y = 4
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV202"
+x = 14
+y = 7
+rot = 1
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.3
+
+[[part]]
+kind = "Atmosphere"
+name = "DUMP"
+x = 14
+y = 10
+rot = 1
+
+[[part]]
+kind = "Valve"
+name = "AV201"
+x = 12
+y = 4
+rot = 0
+d_mm = 15.0
+Cd = 0.8
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.5
+
+[[part]]
+kind = "Pipe"
+name = "HOSE2"
+x = 15
+y = 4
+rot = 0
+L_m = 4.0
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Orifice"
+name = "QD"
+x = 18
+y = 4
+rot = 0
+d_mm = 9.5
+Cd = 0.7
+
+[[part]]
+kind = "Valve"
+name = "AV203"
+x = 21
+y = 4
+rot = 0
+d_mm = 9.4
+Cd = 0.5
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.2
+
+[[part]]
+kind = "Tank"
+name = "TANK"
+x = 25
+y = 0
+rot = 0
+volume_L = 19.16
+diameter_mm = 143.0
+fill_kg = 0.0
+T_C = 30.0
+air = 1.0
+wall_kg = 10.0
+wall_cp_J_kgK = 900.0
+absorptivity = 0.4
+emissivity = 0.8
+shade = 0.0
+heater_W = 0.0
+vent_height_frac = 0.9
+
+[[part]]
+kind = "Gauge"
+name = "PT202"
+x = 23
+y = -5
+rot = 0
+
+[[part]]
+kind = "ReliefValve"
+name = "PRV202"
+x = 28
+y = -5
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+set_psig = 1000.0
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_PRV"
+x = 32
+y = -5
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV204"
+x = 29
+y = -2
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 1.0
+travel_s = 0.2
+
+[[part]]
+kind = "Orifice"
+name = "VENT_ORIFICE"
+x = 33
+y = -2
+rot = 0
+d_mm = 2.0
+Cd = 0.7
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_VENT"
+x = 40
+y = -2
+rot = 0
+
+[[part]]
+kind = "Regulator"
+name = "REG"
+x = 7
+y = 4
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+set_psig = 700.0
+droop_psi = 30.0
+
+[[wire]]
+from = "BOTTLE.out"
+to = "BOTTLE_VALVE.a"
+
+[[wire]]
+from = "BOTTLE_VALVE.b"
+to = "HOSE1.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "PT201.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "AV202.a"
+
+[[wire]]
+from = "AV202.b"
+to = "DUMP.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "AV201.a"
+
+[[wire]]
+from = "AV201.b"
+to = "DUMP_TEE.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "HOSE2.a"
+
+[[wire]]
+from = "HOSE2.b"
+to = "QD.a"
+
+[[wire]]
+from = "QD.b"
+to = "AV203.a"
+
+[[wire]]
+from = "AV203.b"
+to = "TANK.bottom"
+
+[[wire]]
+from = "TANK.top"
+to = "PT202.a"
+
+[[wire]]
+from = "TANK.top"
+to = "PRV202.a"
+
+[[wire]]
+from = "PRV202.b"
+to = "ATM_PRV.a"
+
+[[wire]]
+from = "TANK.vent"
+to = "AV204.a"
+
+[[wire]]
+from = "AV204.b"
+to = "VENT_ORIFICE.a"
+
+[[wire]]
+from = "VENT_ORIFICE.b"
+to = "ATM_VENT.a"
+
+[[wire]]
+from = "HOSE1.b"
+to = "REG.a"
+
+[[wire]]
+from = "REG.b"
+to = "PANEL.a"
+
+[[schedule]]
+t = 0.0
+part = "AV204"
+action = "close"
+
+[[schedule]]
+t = 5.0
+part = "AV201"
+action = "open"
+
+[[schedule]]
+t = 10.0
+part = "AV203"
+action = "open"
+
+[[schedule]]
+t = 10.0
+part = "AV204"
+action = "open"
+
+[[schedule]]
+t = 90.0
+part = "AV204"
+action = "close"
+
+[[schedule]]
+t = 92.0
+part = "AV203"
+action = "close"
+
+[[schedule]]
+t = 93.0
+part = "AV201"
+action = "close"
