@@ -58,6 +58,10 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
     --schedule extra_actions.csv --csv out.csv --columns TANK.P,TANK.m
 ```
 
+To run a scene many times with parameters varied and each run scored against a log, describe it
+in a study file: `julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml` (see
+`docs/STUDIES.md`).
+
 `--set` changes a part's parameter or a setting by name and refuses a name that does not exist.
 `--schedule` adds actions from a file with columns `t_s,part,action,value` (the format of the
 exported `_events.csv`). A replay runs to the end of its log unless `--until` says otherwise.
@@ -254,13 +258,16 @@ src/flow.jl           mass flux through a restriction
 src/vessel.jl         bottle / tank model and heat transfer
 src/scene.jl          part catalogue, scene file, edit operations
 src/network.jl        scene -> equations, junction solve, time stepping, recording
-src/logs.jl           reading test logs, column meaning, overlay and replay
+src/logs.jl           reading test logs, column meaning, manifests, overlay and replay
+src/study.jl          studies: parameter sets, scoring, metrics
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
 scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4.toml (further logs),
                       regulated_fill.toml (regulated hot-day fill)
 test/                 tests, benchmark, stress cases, and extracts of the fill logs
 docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
 docs/LOGS.md          how test logs are read; the manifest format
+docs/STUDIES.md       running a scene many times with parameters varied, scored against a log
+studies/              example study files
 ```
 
 ## Licence

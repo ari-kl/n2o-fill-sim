@@ -295,6 +295,88 @@ end
     @test F.debounce([0.0, 1, 1.2, 1.4, 3, 4], [0.0, 1, 0, 1, 1, 0], 0.5) == [0.0, 0, 0, 1, 1, 0]
 end
 
+@testset "studies: expansion, scoring, metrics, resume, failures, threads" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), rig())
+    study(body) = (p = joinpath(dir, "s$(hash(body)).toml"); write(p, body); p)
+    table(path) = (lines = readlines(path); (split(lines[1], ','), [split(l, ',') for l in lines[2:end]]))
+    # `top` is the part of a study file that must come before any table; `rest` is the tables
+    top = "scene = \"rig.toml\"\nuntil = 20\n"
+    rest = """
+        [[case]]
+        name = "fill"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }]
+        [metrics]
+        loaded_kg = { fn = "final", signal = "TANK.m" }
+        peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
+        t_100_psig = { fn = "first_crossing", signal = "TANK.P", value_psig = 100 }
+        """
+    vary_grid = "[vary]\n\"BOTTLE.T_C\" = [15, 25]\n\"FILL.d_mm\" = { from = 2, to = 6, n = 3 }\n"
+    grid = study(top * rest * vary_grid)
+    st = F.read_study(grid)
+    @test length(st.runs) == 6 && st.varied == ["BOTTLE.T_C", "FILL.d_mm"] && st.runs[1].id == "BOTTLE.T_C=15.0;FILL.d_mm=2.0|fill"
+    out = F.study(grid; quiet = true)
+    head, rows = table(out)
+    col(name) = [r[findfirst(==(name), head)] for r in rows]
+    @test length(rows) == 6 && all(isempty, col("failed")) && Set(col("id")) == Set(r.id for r in st.runs)
+    num(name, id) = parse(Float64, rows[findfirst(r -> r[1] == id, rows)][findfirst(==(name), head)])
+    @test num("loaded_kg", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") > num("loaded_kg", "BOTTLE.T_C=25.0;FILL.d_mm=2.0|fill")      # a bigger valve fills faster
+    @test num("peak_psig", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") > num("peak_psig", "BOTTLE.T_C=15.0;FILL.d_mm=6.0|fill") > 100  # a warmer bottle pushes harder
+    @test 1 < num("t_100_psig", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") < 20
+    # resume: only what is missing is run again
+    lines = readlines(out)
+    write(out, join(lines[1:3], "\n") * "\n")
+    F.study(grid; resume = true, quiet = true)
+    again = readlines(out)
+    @test length(again) == 7 && again[2:3] == lines[2:3] && Set(first.(split.(again[2:end], ','))) == Set(r.id for r in st.runs)
+    # the other ways of choosing runs
+    oat = F.read_study(study(top * "mode = \"oat\"\n" * rest * "[vary]\n\"BOTTLE.T_C\" = [15, 25]\n\"FILL.d_mm\" = [2, 4, 6]\n"))
+    @test length(oat.runs) == 6 && isempty(oat.runs[1].overrides) && all(length(r.overrides) == 1 for r in oat.runs[2:end])
+    lhs_body = top * "mode = \"lhs\"\nn = 8\nseed = 3\n" * rest * "[vary]\n\"BOTTLE.T_C\" = { from = 10, to = 30 }\n\"FILL.d_mm\" = { from = 1, to = 8, log = true }\n"
+    lhs = F.read_study(study(lhs_body))
+    temps = sort([Dict(r.overrides)["BOTTLE.T_C"] for r in lhs.runs])
+    @test length(lhs.runs) == 8 && all(10 + 2.5(k - 1) <= temps[k] <= 10 + 2.5k for k in 1:8)       # one draw in each of the eight strata
+    @test [r.id for r in F.read_study(study(lhs_body)).runs] == [r.id for r in lhs.runs]             # the same seed draws the same runs
+    # a run that cannot be made, or fails, is a row that says why; a mistake in the file stops before anything runs
+    out = F.study(study(top * rest * "[vary]\n\"TANK.volume_L\" = [19.16, -1]\n"); quiet = true)
+    head, rows = table(out)
+    failed = [r[findfirst(==("failed"), head)] for r in rows]
+    @test length(rows) == 2 && count(isempty, failed) == 1 && any(occursin("must be positive", f) for f in failed)
+    @test_throws ErrorException F.read_study(study(top * rest * "[vary]\n\"TANK.volume\" = [1, 2]\n"))      # no such parameter
+    @test_throws ErrorException F.read_study(study(top * "sample = 1\n" * rest))                                # no such key
+    @test_throws ErrorException F.read_study(study(top * replace(rest, "\"final\"" => "\"last\"")))             # no such metric
+    @test_throws ErrorException F.read_study(study(top * rest * "oops = 1\n"))                                  # a key that landed in [metrics]
+    # scored against a log: a one-run study gives what a single replay gives
+    root = joinpath(@__DIR__, "..")
+    one = study("""
+        scene = "$(joinpath(root, "scenes", "hf3cf.toml"))"
+        replay = "$(joinpath(root, "test", "data", "hf3cf_fill_10hz.csv"))"
+        t0 = 15290
+        until = 265
+        [score]
+        channels = [{ log = "PT202_psig", model = "TANK.P" }, { log = "PT201_psig", model = "PT201.P", weight = 0.5 }]
+        phases = { sealed = [106.4, 200.8], fill = { from = "AV201 open", to = "AV201 close#3" } }
+        """)
+    st1 = F.read_study(one)
+    @test all(isapprox.(Dict(st1.phases)["fill"], (24.4, 103.4); atol = 1e-6))     # first opening to third closing of AV201
+    head, rows = table(F.study(one; quiet = true))
+    names, D = F.read_csv(joinpath(root, "test", "data", "hf3cf_fill_10hz.csv"))
+    s = F.load_scene(joinpath(root, "scenes", "hf3cf.toml"))
+    s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0 = 15290.0)
+    sim = F.Sim(s; sample_dt = 0.5)
+    F.run_until!(sim, 265.0)
+    direct = sqrt(sum(((F.signal_at(sim, "TANK.P", t - 15290) - 101325) / F.PSI - D["PT202_psig"][i])^2 for (i, t) in enumerate(D["t_s"]) if 106.4 <= t - 15290 <= 200.8) /
+                  count(t -> 106.4 <= t - 15290 <= 200.8, D["t_s"]))
+    @test parse(Float64, rows[1][findfirst(==("rms.PT202_psig.sealed"), head)]) ≈ direct rtol = 1e-6
+    @test 2 < direct < 3
+    # on two threads the results are the same to the last digit
+    script = "using N2OFillSim; N2OFillSim.study(ARGS[1]; quiet = true)"
+    two = study(top * rest * vary_grid * "# threaded\n")
+    run(`$(Base.julia_cmd()) -t 2 --project=$(Base.active_project()) -e $script $two`)
+    strip_wall(path) = sort([join(split(l, ',')[1:end-1], ',') for l in readlines(path)[2:end]])
+    @test strip_wall(splitext(two)[1] * "_results/results.csv") == strip_wall(splitext(grid)[1] * "_results/results.csv")
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

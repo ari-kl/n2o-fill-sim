@@ -1,0 +1,22 @@
+# How do the vent's discharge coefficient and the boiling enhancement E change the fit to the HF4
+# log? Ten runs on a grid, each scored against the logged tank pressure in four phases.
+#   julia -t 4 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml
+scene = "../scenes/hf4.toml"
+replay = "../test/data/hf4_fill_10hz.csv"
+t0 = 9020
+until = 990
+mode = "grid"
+
+[vary]
+"VENT_ORIFICE.Cd" = { from = 0.6, to = 1.0, n = 5 }
+"settings.interphase_E" = [300, 700]
+
+[score]
+channels = [{ log = "PT202_psig", model = "TANK.P" }]
+phases = { stall = [140, 236], vent1 = [236, 310], vent2 = [310, 352], heater = [367, 836] }
+
+[metrics]
+loaded_kg = { fn = "final", signal = "TANK.m" }
+vented_kg = { fn = "final", signal = "vented.m" }
+peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
+seconds_above_800_psig = { fn = "time_in_band", signal = "TANK.P", lo_psig = 800, hi_psig = 2000 }

@@ -10,6 +10,7 @@ include("vessel.jl")
 include("network.jl")
 include("logs.jl")
 include("gui.jl")
+include("study.jl")
 
 const USAGE = """
 usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
@@ -28,6 +29,9 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   --csv out.csv           headless: write the recorded signals, and the action log as out_events.csv
   --columns A,B,...       with --csv: write only these signals (for example TANK.P,TANK.m)
 
+       julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces]
+  runs a scene many times with parameters varied and scores each run (see docs/STUDIES.md);
+  it uses as many threads as Julia was started with (-t)
        julia --project bin/n2o-fill-sim.jl manifest suggest log.csv scene.toml
   prints a draft manifest for a log, to be checked and corrected by hand
        julia --project bin/n2o-fill-sim.jl manifest extract log.toml out.csv
@@ -35,7 +39,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
 """
 
 const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
-const _FLAGS = ("--help", "--run", "--headless")
+const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
 function options(args)
@@ -82,6 +86,10 @@ function main(args = ARGS)
         end
         (length(files) == 4 && files[2] == "suggest") || error("usage: manifest suggest log.csv scene.toml   or   manifest extract log.toml out.csv")
         return print(suggest_manifest(files[3], load_scene(files[4])))
+    end
+    if !isempty(files) && files[1] == "study"
+        length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]")
+        return study(files[2]; resume = flag("--resume"), keep_traces = flag("--keep-traces"))
     end
     path = isempty(files) ? "" : files[1]
     isempty(path) || isfile(path) || flag("--headless") && error("no such scene file: $path")
