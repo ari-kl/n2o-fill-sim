@@ -1,0 +1,392 @@
+# Fitting: find the parameter values that bring the model closest to one or several test logs at
+# once, and say how well those logs actually determine them. A fit is described by a TOML file;
+# see docs/FITTING.md.
+#
+# Two things matter more than the optimiser. Fitting several logs together is what exposes a model
+# that cannot satisfy them all with one set of values. And reporting which parameters the data
+# cannot tell apart is what stops a fit from handing back a confident number for something it never
+# measured.
+
+using LinearAlgebra: svd, pinv, diag
+
+"One fitted quantity: a scene parameter, its bounds, and the datasets whose scenes it applies to."
+struct FitParam
+    label::String                 # "VENT_ORIFICE.Cd", or "BOTTLE.fill_kg@hf4" when it belongs to some datasets only
+    name::String                  # PART.param or settings.key
+    lo::Float64
+    hi::Float64
+    start::Float64
+    log::Bool                     # search in even ratios (for a quantity known only to an order of magnitude)
+    datasets::Vector{Int}
+end
+
+"A fit file, read and checked."
+struct Fit
+    name::String
+    dir::String
+    datasets::Vector{Study}
+    names::Vector{String}
+    weights::Vector{Float64}
+    params::Vector{FitParam}
+    explore::Int                  # runs spread over the bounds before the search starts
+    seed::Int
+    max_evals::Int
+    jac_reltol::Float64           # solver tolerance for the sensitivity runs
+    jac_step::Float64             # their step, as a fraction of each parameter's range
+end
+
+const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "jacobian_reltol", "jacobian_step")
+const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "score", "set")
+const _PARAM_KEYS = ("name", "from", "to", "start", "log", "datasets")
+
+# Position of a value within its bounds, 0..1 (on a ratio scale for `log` parameters), and back.
+_unit(p::FitParam, v) = p.log ? log(v / p.lo) / log(p.hi / p.lo) : (v - p.lo) / (p.hi - p.lo)
+_value(p::FitParam, x) = p.log ? p.lo * (p.hi / p.lo)^x : p.lo + (p.hi - p.lo) * x
+
+"""
+    read_fit(path) -> Fit
+
+Read a fit file: the datasets (each a scene, a log and what to score, exactly as in a study), and
+the parameters to fit with their bounds. A parameter applies to every dataset unless it names the
+ones it belongs to; the same name listed twice with different datasets is fitted separately for each.
+"""
+function read_fit(path)
+    d = TOML.parsefile(path)
+    for k in keys(d)
+        k in _FIT_KEYS || error("$path: unknown key \"$k\". Keys: $(join(_FIT_KEYS, ", "))")
+    end
+    base = dirname(abspath(path))
+    dir = splitext(abspath(path))[1] * "_results"
+    isempty(get(d, "dataset", [])) && error("$path: no [[dataset]]")
+    names = String[String(get(ds, "name", "dataset$k")) for (k, ds) in enumerate(d["dataset"])]
+    allunique(names) || error("$path: two datasets share a name")
+    datasets = Study[_study(Dict(k => v for (k, v) in ds if !(k in ("name", "weight"))), base, "$path, dataset $(names[k])", dir, _DATASET_KEYS)
+                     for (k, ds) in enumerate(d["dataset"])]
+    for (k, st) in enumerate(datasets)
+        isempty(st.channels) && error("$path: dataset $(names[k]) scores nothing (it needs a log and [dataset.score] channels, or a manifest with maps_to)")
+    end
+    params = FitParam[]
+    for p in get(d, "parameter", [])
+        for k in keys(p)
+            k in _PARAM_KEYS || error("$path: unknown parameter key \"$k\". Keys: $(join(_PARAM_KEYS, ", "))")
+        end
+        name = String(p["name"])
+        lo, hi = Float64(p["from"]), Float64(p["to"])
+        hi > lo || error("$path: parameter $name needs from < to")
+        logscale = Bool(get(p, "log", false))
+        logscale && lo <= 0 && error("$path: parameter $name is on a log scale, so its bounds must be positive")
+        which = haskey(p, "datasets") ? [something(findfirst(==(String(n)), names), 0) for n in p["datasets"]] : collect(eachindex(datasets))
+        all(>(0), which) || error("$path: parameter $name names a dataset that does not exist. Datasets: $(join(names, ", "))")
+        for k in which                                         # the name must exist in each scene it applies to
+            apply_overrides!(deepcopy(datasets[k].scene), ["$name=$lo"])
+        end
+        start = haskey(p, "start") ? Float64(p["start"]) : NaN
+        if isnan(start)                                        # default: what the first scene it applies to has now
+            s = datasets[which[1]].scene
+            m = match(r"^(.+)\.([^.]+)$", name)
+            start = m[1] == "settings" ? s.settings[m[2]] : s.parts[find_part(s, m[1])].p[m[2]]
+        end
+        label = haskey(p, "datasets") ? name * "@" * join(names[which], "+") : name
+        push!(params, FitParam(label, name, lo, hi, clamp(start, lo, hi), logscale, which))
+    end
+    isempty(params) && error("$path: no [[parameter]]")
+    allunique(p.label for p in params) || error("$path: a parameter is listed twice for the same datasets")
+    for k in eachindex(datasets), name in unique(p.name for p in params)
+        count(p -> p.name == name && k in p.datasets, params) <= 1 || error("$path: $name is fitted twice for dataset $(names[k])")
+    end
+    Fit(String(get(d, "name", splitext(basename(path))[1])), dir, datasets, names, Float64[Float64(get(ds, "weight", 1.0)) for ds in d["dataset"]],
+        params, Int(get(d, "explore", 0)), Int(get(d, "seed", 1)), Int(get(d, "max_evals", 60 * length(params))),
+        Float64(get(d, "jacobian_reltol", 1e-7)), Float64(get(d, "jacobian_step", 0.01)))
+end
+
+"""
+    evaluate(fit, x; reltol) -> (residuals, rms, failed)
+
+Run every dataset with the parameters at position `x` (each 0..1 within its bounds). `residuals`
+is all datasets' residual vectors end to end, each scaled by the square root of its dataset's
+weight; its sum of squares is what the fit minimises. `rms` is the per-channel, per-phase RMS of
+each dataset in physical units. A dataset that fails counts as far from its log, so the search
+moves away from it.
+"""
+function evaluate(fit::Fit, x; reltol = nothing)
+    n = length(fit.datasets)
+    parts = Vector{Vector{Float64}}(undef, n)
+    rms = Vector{Vector{Pair{String,Float64}}}(undef, n)
+    failed = fill("", n)
+    Threads.@threads :dynamic for k in 1:n
+        st = fit.datasets[k]
+        overrides = [p.name => _value(p, x[j]) for (j, p) in enumerate(fit.params) if k in p.datasets]
+        sim, why = simulate(st, overrides; reltol = something(reltol, st.reltol))
+        pairs = length(st.channels) * length(st.phases)
+        if sim === nothing || !isempty(why)
+            failed[k] = why
+            parts[k] = fill(100.0 * sqrt(fit.weights[k]), pairs)        # as bad as 100 sigma in every phase
+            rms[k] = ["rms.$(c[1]).$p" => NaN for c in st.channels for (p, _) in st.phases]
+        else
+            rms[k], r = score_run(st, sim)
+            parts[k] = r .* sqrt(fit.weights[k])
+        end
+    end
+    reduce(vcat, parts), rms, failed
+end
+
+"The fit's one number: as a study's score, over every dataset's channels and phases together."
+function fit_score(fit::Fit, residuals)
+    pairs = sum(length(st.channels) * length(st.phases) for st in fit.datasets)
+    sqrt(sum(abs2, residuals) / pairs)
+end
+
+"""
+    nelder_mead(f, x0; step, max_evals, xtol, ftol) -> (x, fx, evals)
+
+Minimise `f` over the unit cube from `x0` by the Nelder-Mead simplex method (with the
+dimension-dependent coefficients of Gao and Han, 2012, which keep it working beyond a few
+parameters). No derivatives are needed, which suits a model whose output has solver noise. Points
+are kept inside the cube by clamping.
+"""
+function nelder_mead(f, x0; step = 0.1, max_evals = 500, xtol = 2e-3, ftol = 1e-4)
+    n = length(x0)
+    α, β, γ, δ = 1.0, 1 + 2 / n, 0.75 - 1 / (2n), 1 - 1 / n
+    clampx(x) = clamp.(x, 0.0, 1.0)
+    X = [copy(x0) for _ in 0:n]
+    for k in 1:n
+        X[k+1][k] += X[k+1][k] + step <= 1 ? step : -step      # step inwards if the bound is in the way
+    end
+    F = [f(x) for x in X]
+    evals = n + 1
+    while evals < max_evals
+        order = sortperm(F)
+        X, F = X[order], F[order]
+        size = maximum(maximum(abs.(X[k] .- X[1])) for k in 2:n+1)
+        (size < xtol && F[end] - F[1] < ftol * max(F[1], 1e-12)) && break
+        centre = sum(X[1:n]) ./ n
+        xr = clampx(centre .+ α .* (centre .- X[end])); fr = f(xr); evals += 1
+        if fr < F[1]
+            xe = clampx(centre .+ β .* (xr .- centre)); fe = f(xe); evals += 1
+            X[end], F[end] = fe < fr ? (xe, fe) : (xr, fr)
+        elseif fr < F[n]
+            X[end], F[end] = xr, fr
+        else
+            outside = fr < F[end]
+            xc = clampx(centre .+ γ .* ((outside ? xr : X[end]) .- centre)); fc = f(xc); evals += 1
+            if fc < (outside ? fr : F[end])
+                X[end], F[end] = xc, fc
+            else                                               # shrink towards the best point
+                for k in 2:n+1
+                    X[k] = clampx(X[1] .+ δ .* (X[k] .- X[1])); F[k] = f(X[k])
+                end
+                evals += n
+            end
+        end
+    end
+    k = argmin(F)
+    X[k], F[k], evals
+end
+
+"""
+    identifiability(J, labels) -> (std, corr, statements)
+
+What a set of data can and cannot say about fitted parameters, from the sensitivity `J` of the
+residuals to each parameter's position in its range. `std` is each parameter's approximate
+standard error (in the same 0..1 units, to be scaled by the misfit), `corr` their correlations,
+and `statements` plain sentences naming every pair the data cannot tell apart (|correlation| over
+0.9) and every combination of parameters the data do not determine at all (a singular value of
+`J` under a thousandth of the largest).
+"""
+function identifiability(J, labels)
+    n = size(J, 2)
+    scale = [max(sqrt(sum(abs2, view(J, :, k))), 1e-300) for k in 1:n]
+    U = svd(J ./ scale')                                       # columns scaled, so a weak parameter is not mistaken for a null direction
+    statements = String[]
+    for k in 1:n
+        scale[k] < 1e-9 * maximum(scale) && push!(statements, "$(labels[k]) has no measurable effect on any scored reading: these data say nothing about it.")
+    end
+    for (i, sv) in enumerate(U.S)
+        sv < 1e-3 * U.S[1] || continue
+        v = U.V[:, i]
+        terms = [(v[k], labels[k]) for k in sortperm(abs.(v); rev = true) if abs(v[k]) > 0.2 && scale[k] >= 1e-9 * maximum(scale)]
+        length(terms) < 2 && continue
+        push!(statements, "The data do not determine the combination " * join(["$(round(c / terms[1][1], digits = 2))·$l" for (c, l) in terms], " + ") *
+                          " (moving along it changes no reading)." )
+    end
+    cov = pinv(J' * J; rtol = 1e-10)
+    std = sqrt.(max.(diag(cov), 0.0))
+    corr = [std[i] > 0 && std[j] > 0 ? cov[i, j] / (std[i] * std[j]) : 0.0 for i in 1:n, j in 1:n]
+    for i in 1:n, j in i+1:n
+        abs(corr[i, j]) > 0.9 && push!(statements, "$(labels[i]) and $(labels[j]) are not separately determined (correlation $(round(corr[i, j], digits = 2))): " *
+                                                    "a change in one can be made up by the other.")
+    end
+    std, corr, statements
+end
+
+"""
+    fit(path; write_scenes = false, quiet = false) -> report
+
+Run the fit in `path`. Optionally explore the bounds first with a Latin hypercube, then search from
+the best point found (or from the given starts) with Nelder-Mead, once and then again from where
+it stopped. Then run the sensitivity of every residual to every parameter at a tighter solver
+tolerance and report what the data determine. Writes into `<fit file>_results/`: `evals.csv` (every
+evaluation), `report.txt`, a calibration record `<date>-<name>.toml`, and with `write_scenes` a
+copy of each dataset's scene with the fitted values in place and a note of where each came from.
+"""
+function fit(path; write_scenes = false, quiet = false)
+    ft = read_fit(path)
+    mkpath(ft.dir)
+    np = length(ft.params)
+    say(args...) = quiet || println(args...)
+    log_io = open(joinpath(ft.dir, "evals.csv"), "w")
+    println(log_io, "eval,score,", join((p.label for p in ft.params), ","), ",", join(("score." * n for n in ft.names), ","), ",failed")
+    evals = Ref(0)
+    best = Ref((Inf, Float64[]))
+    function objective(x)
+        residuals, _, failed = evaluate(ft, x)
+        s = fit_score(ft, residuals)
+        evals[] += 1
+        s < best[][1] && (best[] = (s, copy(x)))
+        println(log_io, evals[], ",", round(s, sigdigits = 7), ",", join((round(_value(p, x[j]), sigdigits = 7) for (j, p) in enumerate(ft.params)), ","), ",",
+                join((round(v, sigdigits = 5) for v in _dataset_scores(ft, residuals)), ","), ",", join(filter(!isempty, failed), " | "))
+        flush(log_io)
+        s
+    end
+    x0 = [_unit(p, p.start) for p in ft.params]
+    f0 = objective(x0)
+    say("fit \"", ft.name, "\": ", np, " parameters, ", length(ft.datasets), " datasets, ", Threads.nthreads(), " thread(s). Score at the start: ", round(f0, digits = 3))
+    if ft.explore > 0                                          # a Latin hypercube over the bounds, to start from the best basin found
+        g = _Lcg(UInt64(ft.seed))
+        perms = [(p = collect(1:ft.explore); for i in ft.explore:-1:2; j = 1 + floor(Int, _next!(g) * i); p[i], p[j] = p[j], p[i]; end; p) for _ in 1:np]
+        for i in 1:ft.explore
+            objective([(perms[k][i] - 1 + _next!(g)) / ft.explore for k in 1:np])
+        end
+        say("after ", ft.explore, " exploratory runs: best ", round(best[][1], digits = 3))
+    end
+    x, fx = best[][2], best[][1]
+    for (round_, step) in enumerate((0.1, 0.03))               # a second, tighter pass from where the first stopped
+        budget = ft.max_evals ÷ 2
+        x, fx, used = nelder_mead(objective, x; step, max_evals = budget)
+        say("search ", round_, ": score ", round(fx, digits = 4), " after ", used, " evaluations")
+    end
+    close(log_io)
+    x, fx = best[][2], best[][1]
+    # Sensitivities at the optimum, with the solver tightened so that differences are signal, not solver noise.
+    r0, rms, failed = evaluate(ft, x; reltol = ft.jac_reltol)
+    J = zeros(length(r0), np)
+    for k in 1:np
+        h = x[k] + ft.jac_step <= 1 ? ft.jac_step : -ft.jac_step
+        xk = copy(x); xk[k] += h
+        rk, _, _ = evaluate(ft, xk; reltol = ft.jac_reltol)
+        J[:, k] .= (rk .- r0) ./ h
+    end
+    labels = [p.label for p in ft.params]
+    std, corr, statements = identifiability(J, labels)
+    pairs = sum(length(st.channels) * length(st.phases) for st in ft.datasets)
+    misfit = sqrt(sum(abs2, r0) / max(pairs - np, 1))          # treating each channel-and-phase as one observation
+    values = [_value(p, x[k]) for (k, p) in enumerate(ft.params)]
+    # an approximate standard error in the parameter's own units (a factor, for a log parameter)
+    spread = [p.log ? exp(std[k] * misfit * log(p.hi / p.lo)) : std[k] * misfit * (p.hi - p.lo) for (k, p) in enumerate(ft.params)]
+    io = IOBuffer()
+    println(io, "Fit \"", ft.name, "\"    score ", round(fx, digits = 4), " (", round(f0, digits = 3), " at the start), ", evals[], " evaluations")
+    println(io, "\nParameters (± is approximate: one channel-and-phase counted as one observation)")
+    for (k, p) in enumerate(ft.params)
+        at_bound = x[k] < 0.01 ? "  AT ITS LOWER BOUND" : x[k] > 0.99 ? "  AT ITS UPPER BOUND" : ""
+        println(io, "  ", rpad(p.label, 34), rpad(round(values[k], sigdigits = 5), 12), p.log ? "×/÷ $(round(spread[k], sigdigits = 3))" : "± $(round(spread[k], sigdigits = 3))",
+                "   (bounds ", p.lo, " to ", p.hi, "; started at ", round(p.start, sigdigits = 5), ")", at_bound)
+    end
+    println(io, "\nHow close, per dataset, channel and phase (in the log's own units)")
+    for (k, name) in enumerate(ft.names)
+        println(io, "  ", name, isempty(failed[k]) ? "" : "   FAILED: " * failed[k])
+        for (key, v) in rms[k]
+            println(io, "    ", rpad(replace(key, "rms." => ""), 34), round(v, sigdigits = 4))
+        end
+    end
+    println(io, "\nWhat these data do and do not determine")
+    isempty(statements) ? println(io, "  Every parameter is separately determined (no correlation over 0.9, no undetermined combination).") :
+                          foreach(s -> println(io, "  - ", s), statements)
+    println(io, "\nSensitivities were taken with steps of ", ft.jac_step, " of each parameter's range at solver tolerance ", ft.jac_reltol, ".")
+    report = String(take!(io))
+    write(joinpath(ft.dir, "report.txt"), report)
+    record = joinpath(ft.dir, "$(_today())-$(ft.name).toml")
+    open(record, "w") do out
+        println(out, "# Calibration record written by `fit`. Values, what they were fitted to, and how well.")
+        println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nscore = ", round(fx, sigdigits = 6))
+        println(out, "datasets = ", repr(ft.names))
+        for (k, p) in enumerate(ft.params)
+            println(out, "\n[[parameter]]\nname = ", repr(p.name), "\ndatasets = ", repr(ft.names[p.datasets]), "\nvalue = ", round(values[k], sigdigits = 7),
+                    "\nfrom = ", p.lo, "\nto = ", p.hi, "\nlog = ", p.log, "\nspread = ", round(spread[k], sigdigits = 4))
+        end
+        for (k, name) in enumerate(ft.names)
+            st = ft.datasets[k]
+            println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until)
+            println(out, "channels = [", join(["{ log = $(repr(c[1])), model = $(repr(c[2])), sigma = $(c[3]), weight = $(c[4]) }" for c in st.channels], ", "), "]")
+            println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
+            println(out, "rms = { ", join(["$(repr(replace(key, "rms." => ""))) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in rms[k]], ", "), " }")
+        end
+        println(out, "\nidentifiability = ", repr(statements))
+    end
+    if write_scenes
+        for (k, name) in enumerate(ft.names)
+            st = ft.datasets[k]
+            scene = deepcopy(st.scene)
+            apply_overrides!(scene, ["$(p.name)=$(round(values[j], sigdigits = 6))" for (j, p) in enumerate(ft.params) if k in p.datasets])
+            file = joinpath(ft.dir, name * ".toml")
+            save_scene(file, scene)
+            notes = ["#   $(p.name) = $(round(values[j], sigdigits = 6))" for (j, p) in enumerate(ft.params) if k in p.datasets]
+            write(file, "# Fitted values written by `fit` \"$(ft.name)\" on $(_today()) [cal $(_today()): $(join(ft.names, ", "))]:\n" * join(notes, "\n") * "\n" * read(file, String))
+        end
+    end
+    say("\n", report, "\nwritten: ", joinpath(ft.dir, "report.txt"), ", ", record)
+    (; score = fx, start_score = f0, values = Dict(labels .=> values), spread = Dict(labels .=> spread), statements, rms = Dict(ft.names .=> rms), evals = evals[], dir = ft.dir)
+end
+
+# Each dataset's own score from the combined residual vector.
+function _dataset_scores(ft::Fit, residuals)
+    out, offset = Float64[], 0
+    total = length(residuals)
+    lens = _lengths(ft, total)
+    for (k, st) in enumerate(ft.datasets)
+        m = length(st.channels) * length(st.phases)
+        push!(out, sqrt(sum(abs2, view(residuals, offset+1:offset+lens[k])) / (m * ft.weights[k])))
+        offset += lens[k]
+    end
+    out
+end
+# How many residuals each dataset contributes: one per scored log sample (or one per pair, when it failed).
+function _lengths(ft::Fit, total)
+    full = [sum(count(i -> a <= st.t_log[i] <= b && st.t_log[i] <= st.until && isfinite(st.cols[c[1]][i]), eachindex(st.t_log)) for c in st.channels for (_, (a, b)) in st.phases) for st in ft.datasets]
+    sum(full) == total && return full
+    short = [length(st.channels) * length(st.phases) for st in ft.datasets]
+    # some dataset failed: find which combination adds up
+    for mask in 0:(2^length(full)-1)
+        lens = [mask >> (k - 1) & 1 == 1 ? short[k] : full[k] for k in eachindex(full)]
+        sum(lens) == total && return lens
+    end
+    error("residual vector of unexpected length")
+end
+
+_today() = (t = Libc.strftime("%Y-%m-%d", time()); t)
+_commit(dir) = try strip(read(setenv(`git rev-parse --short HEAD`; dir), String)) catch; "unknown" end
+
+"""
+    fit_skeleton(scene_path) -> String
+
+A fit file to start from: one parameter for every line of the scene that carries a `[fit]` tag,
+with bounds at half and one and a half times its present value.
+"""
+function fit_skeleton(scene_path)
+    io = IOBuffer()
+    println(io, "# Draft written by `fit --init`. Add the log to fit to, check the bounds, remove what should stay fixed.")
+    println(io, "name = ", repr(splitext(basename(scene_path))[1]), "\nexplore = 40\n\n[[dataset]]\nname = \"log1\"\nscene = ", repr(basename(scene_path)))
+    println(io, "# replay = \"log.csv\"\n# t0 = 0.0\n# [dataset.score]\n# channels = [{ log = \"PT202_psig\", model = \"TANK.P\" }]\n# phases = { all = [0, 600] }")
+    part = ""
+    for line in eachline(scene_path)
+        m = match(r"^\s*name\s*=\s*\"([^\"]+)\"", line)
+        m === nothing || (part = m[1])
+        startswith(strip(line), "[settings]") && (part = "settings")
+        occursin("[fit", line) || continue
+        kv = match(r"^\s*([A-Za-z0-9_]+)\s*=\s*([-+0-9.eE]+)", line)
+        (kv === nothing || isempty(part)) && continue
+        v = parse(Float64, kv[2])
+        lo, hi = minmax(0.5v, 1.5v)
+        println(io, "\n[[parameter]]\nname = ", repr("$part.$(kv[1])"), "\nfrom = ", round(lo, sigdigits = 4), "\nto = ", round(hi, sigdigits = 4), "        # now ", v)
+    end
+    String(take!(io))
+end

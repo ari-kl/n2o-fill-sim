@@ -63,12 +63,14 @@ Read a study file: the scene, the log to replay and score against (optional), wh
 how, the cases, and the scores and metrics to record. Unknown keys, parameters and signals named
 wrongly are errors here, before anything runs.
 """
-function read_study(path)
-    d = TOML.parsefile(path)
+read_study(path) = _study(TOML.parsefile(path), dirname(abspath(path)), path, splitext(abspath(path))[1] * "_results", _STUDY_KEYS)
+
+# A study from its parsed file. `path` is only for messages; a fit builds one of these per dataset.
+function _study(d, base, path, dir, allowed)
     for k in keys(d)
-        k in _STUDY_KEYS || error("$path: unknown key \"$k\". Keys: $(join(_STUDY_KEYS, ", "))")
+        k in allowed || error("$path: unknown key \"$k\". Keys: $(join(allowed, ", "))")
     end
-    base = dirname(abspath(path))
+    haskey(d, "scene") || error("$path: no `scene`")
     rel(f) = isabspath(f) ? f : joinpath(base, f)
     scene = load_scene(rel(d["scene"]))
     apply_overrides!(scene, ["$k=$v" for (k, v) in get(d, "set", Dict())])
@@ -155,7 +157,7 @@ function read_study(path)
         get(m, "fn", "") in _METRIC_FNS || error("$path: metric $name needs fn, one of $(join(_METRIC_FNS, ", "))")
         haskey(m, "signal") || error("$path: metric $name needs a signal")
     end
-    Study(splitext(abspath(path))[1] * "_results", scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
+    Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
           Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 120.0)), runs, names_v, channels, phases, metrics)
 end
 
@@ -277,22 +279,31 @@ function _metric(sim::Sim, m, p_atm)
     end
 end
 
+"""
+    simulate(study, overrides, actions = []; reltol) -> (sim, failed)
+
+The study's scene with some parameters changed, replaying its log, run to the end. `failed` says
+why if it could not be built (then `sim` is nothing), failed, or ran out of wall time.
+"""
+function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
+    try
+        scene = deepcopy(st.scene)
+        apply_overrides!(scene, ["$k=$v" for (k, v) in overrides])
+        scene.schedule = sort(vcat(scene.schedule, st.schedule, actions); by = a -> a.t)
+        sim = Sim(scene; sample_dt = st.sample_dt, reltol)
+        run_until!(sim, st.until; wall_limit = st.wall_limit)
+        return sim, !isempty(sim.failed) ? sim.failed : simtime(sim) < st.until - 1e-6 ? "stopped at the wall-time limit" : ""
+    catch err
+        return nothing, first(replace(sprint(showerror, err), '\n' => ' ', ',' => ';'), 200)
+    end
+end
+
 "Run one member of a study and reduce it to a row of results (column name => value)."
 function run_one(st::Study, run::StudyRun; keep = nothing)
     row = Pair{String,Any}["id" => run.id, "case" => run.case]
     append!(row, [k => get(Dict(run.overrides), k, NaN) for k in st.varied])
     started = Base.time()
-    failed, sim = "", nothing
-    try
-        scene = deepcopy(st.scene)
-        apply_overrides!(scene, ["$k=$v" for (k, v) in run.overrides])
-        scene.schedule = sort(vcat(scene.schedule, st.schedule, run.actions); by = a -> a.t)
-        sim = Sim(scene; sample_dt = st.sample_dt, reltol = st.reltol)
-        run_until!(sim, st.until; wall_limit = st.wall_limit)
-        failed = !isempty(sim.failed) ? sim.failed : simtime(sim) < st.until - 1e-6 ? "stopped at the wall-time limit" : ""
-    catch err
-        failed = first(replace(sprint(showerror, err), '\n' => ' ', ',' => ';'), 200)
-    end
+    sim, failed = simulate(st, run.overrides, run.actions)
     if sim === nothing
         append!(row, [k => NaN for k in vcat("score", [first(r) for r in _rms_names(st)], first.(st.metrics))])
         append!(row, ["t_end" => NaN, "failed" => failed, "unconverged" => 0, "mass_error" => NaN, "energy_error" => NaN, "vented_kg" => NaN])

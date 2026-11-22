@@ -60,7 +60,9 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
 
 To run a scene many times with parameters varied and each run scored against a log, describe it
 in a study file: `julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml` (see
-`docs/STUDIES.md`).
+`docs/STUDIES.md`). To fit parameters to one or several logs at once, and be told which of them
+the logs cannot tell apart: `julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml` (see
+`docs/FITTING.md`).
 
 `--set` changes a part's parameter or a setting by name and refuses a name that does not exist.
 `--schedule` adds actions from a file with columns `t_s,part,action,value` (the format of the
@@ -260,6 +262,7 @@ src/scene.jl          part catalogue, scene file, edit operations
 src/network.jl        scene -> equations, junction solve, time stepping, recording
 src/logs.jl           reading test logs, column meaning, manifests, overlay and replay
 src/study.jl          studies: parameter sets, scoring, metrics
+src/fit.jl            fitting to several logs, identifiability report, calibration records
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
 scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4.toml (further logs),
                       regulated_fill.toml (regulated hot-day fill)
@@ -267,6 +270,7 @@ test/                 tests, benchmark, stress cases, and extracts of the fill l
 docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
 docs/LOGS.md          how test logs are read; the manifest format
 docs/STUDIES.md       running a scene many times with parameters varied, scored against a log
+docs/FITTING.md       fitting parameters to several logs at once; what the logs do and do not determine
 studies/              example study files
 ```
 

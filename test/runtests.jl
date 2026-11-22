@@ -396,6 +396,80 @@ end
     @test strip_wall(splitext(two)[1] * "_results/results.csv") == strip_wall(splitext(grid)[1] * "_results/results.csv")
 end
 
+@testset "fitting: recovers known values from a made-up log, and says what cannot be told apart" begin
+    # the pieces
+    x, fx, n = F.nelder_mead(v -> (v[1] - 0.3)^2 + 10 * (v[2] - 0.8)^2 + (v[3] - 1.2)^2, [0.5, 0.5, 0.5]; max_evals = 600)
+    @test abs(x[1] - 0.3) < 0.01 && abs(x[2] - 0.8) < 0.01 && x[3] == 1.0             # the third wants to leave the cube and is held at its edge
+    J = [1.0 2.0 0.0; 2.0 4.0 0.0; 0.5 1.0 0.0; 0.0 0.0 0.0]                         # column 2 is twice column 1; column 3 does nothing
+    _, _, said = F.identifiability(J .+ [0 0 0; 0 0 0; 0 0 0; 1e-9 0 0], ["a", "b", "c"])
+    @test any(occursin("c has no measurable effect", t) for t in said) && any(occursin("a", t) && occursin("b", t) for t in said)
+    _, corr, said = F.identifiability([1.0 0.0; 0.0 1.0; 1.0 -1.0], ["a", "b"])
+    @test isempty(said) && abs(corr[1, 2]) < 0.9
+    # a log made by the model itself with known values, plus half a psi of noise
+    dir = mktempdir()
+    truth = rig(bottle_T = 27.0)
+    F.apply_overrides!(truth, ["FILL.d_mm=4"])
+    truth.schedule = [F.Action(1.0, "FILL", "open", 0.0), F.Action(1.0, "VENT", "open", 0.0), F.Action(15.0, "VENT", "close", 0.0)]
+    sim = F.Sim(truth)
+    F.run_until!(sim, 30.0)
+    g = F._Lcg(UInt64(7))
+    open(joinpath(dir, "log.csv"), "w") do io
+        println(io, "t_s,PT_psig,FILL,VENT")
+        for t in 0:0.5:30
+            println(io, t, ",", round((F.signal_at(sim, "TANK.P", t) - 101325) / F.PSI + (F._next!(g) - 0.5), digits = 3), ",", t >= 1 ? 1 : 0, ",", 1 <= t < 15 ? 1 : 0)
+        end
+    end
+    F.save_scene(joinpath(dir, "rig.toml"), rig())                # the scene to be fitted has neither value right
+    head = """
+        name = "made-up"
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "TANK.P", sigma = 0.5 }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        [[parameter]]
+        name = "FILL.d_mm"
+        from = 2
+        to = 8
+        start = 6
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 22
+        """
+    write(joinpath(dir, "fit.toml"), head)
+    r = F.fit(joinpath(dir, "fit.toml"); write_scenes = true, quiet = true)
+    @test abs(r.values["FILL.d_mm"] - 4) < 0.2 && abs(r.values["BOTTLE.T_C"] - 27) < 0.5
+    @test r.score < 1.5 < r.start_score                           # down to about the noise put in
+    @test !any(occursin("do not determine", t) for t in r.statements)   # correlated (both set the fill rate) but both recovered
+    record = F.TOML.parsefile(only(filter(f -> endswith(f, "made-up.toml"), readdir(r.dir; join = true))))
+    @test record["datasets"] == ["run1"] && length(record["parameter"]) == 2 && record["dataset"][1]["channels"][1]["sigma"] == 0.5
+    fitted = F.load_scene(joinpath(r.dir, "run1.toml"))
+    @test abs(fitted.parts[F.find_part(fitted, "FILL")].p["d_mm"] - r.values["FILL.d_mm"]) < 1e-3
+    @test occursin("[cal ", readline(joinpath(r.dir, "run1.toml"))) && isfile(joinpath(r.dir, "report.txt")) && countlines(joinpath(r.dir, "evals.csv")) == r.evals + 1
+    # a valve's bore and its discharge coefficient only ever act together: the fit must say so, not pick a pair
+    write(joinpath(dir, "fit2.toml"), head * "[[parameter]]\nname = \"FILL.Cd\"\nfrom = 0.2\nto = 0.95\n" * "max_evals = 30\n")
+    @test_throws ErrorException F.read_fit(joinpath(dir, "fit2.toml"))            # max_evals landed inside the last table: an unknown key
+    write(joinpath(dir, "fit2.toml"), "max_evals = 30\n" * head * "[[parameter]]\nname = \"FILL.Cd\"\nfrom = 0.2\nto = 0.95\n")
+    r2 = F.fit(joinpath(dir, "fit2.toml"); quiet = true)
+    @test any(occursin("FILL.d_mm", t) && occursin("FILL.Cd", t) for t in r2.statements)
+    # the same parameter fitted separately per dataset, and mistakes caught before anything runs
+    two = replace(head, "[[parameter]]\nname = \"BOTTLE.T_C\"" => "[[dataset]]\nname = \"run2\"\nscene = \"rig.toml\"\nreplay = \"log.csv\"\n[dataset.score]\nchannels = [{ log = \"PT_psig\", model = \"TANK.P\" }]\n[[parameter]]\ndatasets = [\"run1\"]\nname = \"BOTTLE.T_C\"")
+    write(joinpath(dir, "fit3.toml"), two * "[[parameter]]\nname = \"BOTTLE.T_C\"\nfrom = 15\nto = 32\ndatasets = [\"run2\"]\n")
+    ft = F.read_fit(joinpath(dir, "fit3.toml"))
+    @test [p.label for p in ft.params] == ["FILL.d_mm", "BOTTLE.T_C@run1", "BOTTLE.T_C@run2"] && ft.params[2].datasets == [1] && ft.params[1].datasets == [1, 2]
+    write(joinpath(dir, "bad.toml"), replace(head, "FILL.d_mm" => "FILL.bore"))
+    @test_throws ErrorException F.read_fit(joinpath(dir, "bad.toml"))
+    write(joinpath(dir, "bad.toml"), head * "[[parameter]]\nname = \"BOTTLE.T_C\"\nfrom = 1\nto = 2\n")
+    @test_throws ErrorException F.read_fit(joinpath(dir, "bad.toml"))
+    # a draft fit file from the [fit] tags of a scene
+    draft = F.fit_skeleton(joinpath(@__DIR__, "..", "scenes", "hf4.toml"))
+    @test occursin("name = \"BOTTLE.fill_kg\"", draft) && occursin("name = \"settings.h_in_mult\"", draft)
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

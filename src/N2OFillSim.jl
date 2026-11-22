@@ -11,6 +11,7 @@ include("network.jl")
 include("logs.jl")
 include("gui.jl")
 include("study.jl")
+include("fit.jl")
 
 const USAGE = """
 usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
@@ -32,6 +33,9 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
        julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces]
   runs a scene many times with parameters varied and scores each run (see docs/STUDIES.md);
   it uses as many threads as Julia was started with (-t)
+       julia -t 8 --project bin/n2o-fill-sim.jl fit file.toml [--write-scenes]
+  fits parameters to one or several logs at once and reports what the logs do and do not
+  determine (see docs/FITTING.md); `fit --init scene.toml` drafts a fit file from the scene's [fit] tags
        julia --project bin/n2o-fill-sim.jl manifest suggest log.csv scene.toml
   prints a draft manifest for a log, to be checked and corrected by hand
        julia --project bin/n2o-fill-sim.jl manifest extract log.toml out.csv
@@ -39,7 +43,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
 """
 
 const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
-const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces")
+const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
 function options(args)
@@ -86,6 +90,11 @@ function main(args = ARGS)
         end
         (length(files) == 4 && files[2] == "suggest") || error("usage: manifest suggest log.csv scene.toml   or   manifest extract log.toml out.csv")
         return print(suggest_manifest(files[3], load_scene(files[4])))
+    end
+    if !isempty(files) && files[1] == "fit"
+        length(files) == 2 || error("usage: fit file.toml [--write-scenes]   or   fit --init scene.toml")
+        flag("--init") && return print(fit_skeleton(files[2]))
+        return fit(files[2]; write_scenes = flag("--write-scenes"))
     end
     if !isempty(files) && files[1] == "study"
         length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]")
