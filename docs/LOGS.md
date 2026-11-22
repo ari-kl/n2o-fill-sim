@@ -33,6 +33,8 @@ maps_to = "TANK.P"              # the recorded signal to compare it with (used w
 name = "PT202_psig"             # optional: what to call it (default: the column name)
 gain = 1.0                      # reading = gain * value + offset, which must come out as
 offset = 0.0                    #   psi gauge, kg or °C
+sigma = 5.0                     # optional: how far this reading can be trusted, in those units
+                                #   (used when scoring; default 5 psi, 1 K, 0.25 kg by role)
 
 [[channel]]
 column = "solenoid_AV201"

@@ -41,7 +41,8 @@ name = "vent_stuck"
 actions = [{ t = 250.0, part = "AV204", action = "stuck_open" }]
 
 [score]                                       # needs a log
-channels = [{ log = "PT202_psig", model = "TANK.P", weight = 1.0 }]
+channels = [{ log = "PT202_psig", model = "TANK.P" },
+            { log = "TH_tank_C", model = "TANK.T", sigma = 1.0, weight = 1.0 }]   # sigma, weight: optional
 phases = { stall = [140, 236], vent1 = [236, 310] }      # seconds after t0, or
                                                           # { from = "AV201 open", to = "AV201 close" }
 
@@ -55,8 +56,26 @@ Parameter names are the same `PART.param` and `settings.key` that `--set` takes,
 before anything runs, as are metric functions and log columns.
 
 **Scoring.** The model is interpolated onto the log's sample times; times with no log reading are
-skipped. Each channel and phase gives an RMS difference in the log's units (psi, °C, kg), in a
-column named `rms.<log column>.<phase>`. `score` is the RMS of all weighted differences together.
+skipped. Each channel and phase gives an RMS difference in the log's own units (psi, °C, kg), in a
+column named `rms.<log column>.<phase>`. Those are the numbers to read.
+
+`score` is the one number to sort by, and it has no units. Each RMS is divided by how far that
+reading can be trusted, its `sigma`, and the score is the root mean square of those ratios over
+every channel and phase:
+
+    score = sqrt( mean over channels and phases of (weight · rms / sigma)² )
+
+So a score of 1 means the model is, on average, as far from the log as the readings themselves
+can be trusted, and 3 means three times that. Two things follow. A pressure and a temperature can
+be scored together, because 5 psi and 1 K each count as one. And every phase counts once, however
+long it is, so a ten-second vent weighs as much as a twenty-minute hold.
+
+`sigma` comes from the channel in `[score]` if given, else from the manifest's channel, else from
+the kind of reading: **5 psi for a pressure, 1 K for a temperature, 0.25 kg for a mass**. Set it
+from what you know of the sensor (two transducers that disagree by 5 psi cannot be trusted to
+better than that). `weight` (default 1) is a further factor for when one channel or dataset should
+simply matter more.
+
 With a manifest and no `[score] channels`, every reading the manifest maps to a model signal is
 scored, over the manifest's phases.
 

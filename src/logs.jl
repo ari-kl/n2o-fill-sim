@@ -64,8 +64,17 @@ mutable struct LogColumn
     one_means::Symbol             # valves: :open, :closed, or :unknown (must be chosen before replay)
     use::Bool                     # overlay it (readings) / replay it (valve, heater)
     target::String                # the recorded signal a reading is to be compared with, e.g. "TANK.P" ("" if none)
+    sigma::Float64                # how far the reading can be trusted, in its own units (psi, °C, kg); NaN: the default for its role
 end
-LogColumn(name, role, part, one_means, use) = LogColumn(name, role, part, one_means, use, "")
+LogColumn(name, role, part, one_means, use) = LogColumn(name, role, part, one_means, use, "", NaN)
+LogColumn(name, role, part, one_means, use, target) = LogColumn(name, role, part, one_means, use, target, NaN)
+
+"""
+How far a reading of each kind is trusted when nothing better is said: 5 psi for a pressure, 1 K
+for a temperature, 0.25 kg for a mass. A difference between model and log is counted in these
+units, which is what lets a pressure and a temperature be weighed against each other.
+"""
+default_sigma(role::Symbol) = role === :pressure ? 5.0 : role === :temperature ? 1.0 : role === :mass ? 0.25 : 1.0
 
 _bare(name) = uppercase(replace(replace(name, r"\[.*?\]" => "", r"^(valve|solenoid|relay|kasa)_" => ""), r"[^A-Za-z0-9]" => ""))
 
@@ -172,7 +181,7 @@ end
 
 const _MANIFEST_KEYS = ("file", "time", "t0", "window", "sample_dt", "source_column", "reference_source", "clock_offsets",
                         "debounce_s", "channel", "phases")
-const _CHANNEL_KEYS = ("column", "role", "maps_to", "name", "gain", "offset", "one_means", "group", "source")
+const _CHANNEL_KEYS = ("column", "role", "maps_to", "name", "gain", "offset", "one_means", "group", "source", "sigma")
 const _ROLES = ("pressure", "mass", "temperature", "valve", "heater")
 
 "Read and check a manifest file. Unknown keys are errors: a misspelt key must not be silently ignored."
@@ -422,7 +431,7 @@ function load_log(manifest_path)
         state = role in (:valve, :heater)
         push!(names, name)
         push!(columns, LogColumn(name, role, state ? c["maps_to"] : "", role === :valve ? Symbol(c["one_means"]) : role === :heater ? :open : :unknown,
-                                 true, state ? "" : get(c, "maps_to", "")))
+                                 true, state ? "" : get(c, "maps_to", ""), Float64(get(c, "sigma", NaN))))
     end
     t0 = Float64(get(m, "t0", grid[1]))
     schedule = log_schedule(cols, columns; t0)

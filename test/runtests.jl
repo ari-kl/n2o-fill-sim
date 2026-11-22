@@ -374,8 +374,20 @@ end
     F.run_until!(sim, 265.0)
     direct = sqrt(sum(((F.signal_at(sim, "TANK.P", t - 15290) - 101325) / F.PSI - D["PT202_psig"][i])^2 for (i, t) in enumerate(D["t_s"]) if 106.4 <= t - 15290 <= 200.8) /
                   count(t -> 106.4 <= t - 15290 <= 200.8, D["t_s"]))
-    @test parse(Float64, rows[1][findfirst(==("rms.PT202_psig.sealed"), head)]) ≈ direct rtol = 1e-6
+    val(name) = parse(Float64, rows[1][findfirst(==(name), head)])
+    @test val("rms.PT202_psig.sealed") ≈ direct rtol = 1e-6
     @test 2 < direct < 3
+    # the score has no units: each RMS over that reading's sigma (5 psi by default for a pressure),
+    # every channel and phase counted once, the second channel here at half weight
+    ratios = [val("rms.PT202_psig.sealed") / 5, val("rms.PT202_psig.fill") / 5, 0.5 * val("rms.PT201_psig.sealed") / 5, 0.5 * val("rms.PT201_psig.fill") / 5]
+    @test val("score") ≈ sqrt(sum(abs2, ratios) / 4) rtol = 1e-5
+    # and it is what the residual vector adds up to, so a fitter minimises the same thing
+    rms1, res1 = F.score_run(st1, sim)
+    @test sqrt(sum(abs2, res1) / 4) ≈ F.study_score(st1, rms1) rtol = 1e-9
+    # a sigma given for a channel changes its share of the score and nothing else
+    st2 = F.read_study(study(replace(read(one, String), "weight = 0.5" => "weight = 0.5, sigma = 20")))
+    @test [c[3] for c in st2.channels] == [5.0, 20.0] && [c[3] for c in st1.channels] == [5.0, 5.0]
+    @test F.default_sigma(:temperature) == 1.0 && F.default_sigma(:mass) == 0.25
     # on two threads the results are the same to the last digit
     script = "using N2OFillSim; N2OFillSim.study(ARGS[1]; quiet = true)"
     two = study(top * rest * vary_grid * "# threaded\n")
