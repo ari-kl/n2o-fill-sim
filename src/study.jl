@@ -219,13 +219,27 @@ function _metric(sim::Sim, m, p_atm)
     fn == "final" && return y[end]
     fn == "max" && return maximum(y)
     fn == "min" && return minimum(y)
+    # The history is recorded where the solver's steps fall, which can be seconds apart in a quiet
+    # stretch. So these treat it as the straight lines between samples, not as the samples alone.
     if fn == "mean_over"
-        a, b = Float64(m["from"]), Float64(m["to"])
-        k = [i for i in eachindex(t) if a <= t[i] <= b]
-        return isempty(k) ? NaN : sum(y[k]) / length(k)
+        a, b = Float64(m["from"]), min(Float64(m["to"]), t[end])
+        b > a || return NaN
+        knots = vcat(a, [x for x in t if a < x < b], b)
+        vals = [signal_at(sim, m["signal"], x) for x in knots]
+        return sum((knots[i] - knots[i-1]) * (vals[i] + vals[i-1]) / 2 for i in 2:length(knots)) / (b - a)
     elseif fn == "time_in_band"
         lo, hi = _si(m, "lo", p_atm), _si(m, "hi", p_atm)
-        return sum((t[i] - t[i-1] for i in 2:length(t) if lo <= y[i] <= hi); init = 0.0)
+        total = 0.0
+        for i in 2:length(t)
+            y0, y1 = y[i-1], y[i]
+            if y0 == y1
+                lo <= y0 <= hi && (total += t[i] - t[i-1])
+            else                                # the part of this line that lies between lo and hi
+                f1, f2 = minmax((lo - y0) / (y1 - y0), (hi - y0) / (y1 - y0))
+                total += (t[i] - t[i-1]) * max(min(f2, 1.0) - max(f1, 0.0), 0.0)
+            end
+        end
+        return total
     else                                       # first_crossing
         v = _si(m, "value", p_atm)
         i = findfirst(i -> (y[i-1] - v) * (y[i] - v) <= 0 && y[i-1] != y[i], 2:length(y))

@@ -323,6 +323,12 @@ end
     @test num("loaded_kg", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") > num("loaded_kg", "BOTTLE.T_C=25.0;FILL.d_mm=2.0|fill")      # a bigger valve fills faster
     @test num("peak_psig", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") > num("peak_psig", "BOTTLE.T_C=15.0;FILL.d_mm=6.0|fill") > 100  # a warmer bottle pushes harder
     @test 1 < num("t_100_psig", "BOTTLE.T_C=25.0;FILL.d_mm=6.0|fill") < 20
+    # metrics read the history as lines between samples, so sparse samples do not leave holes
+    s = rig(); sim = F.Sim(s)
+    empty!(sim.t_hist); append!(sim.t_hist, [0.0, 10.0, 20.0]); sim.hist["X"] = [0.0, 100.0, 100.0]
+    @test F.metric(sim, Dict("fn" => "mean_over", "signal" => "X", "from" => 4, "to" => 6), 0.0) ≈ 50        # no sample lies in 4-6 s
+    @test F.metric(sim, Dict("fn" => "time_in_band", "signal" => "X", "lo" => 50, "hi" => 200), 0.0) ≈ 15    # the second half of the ramp, then the plateau
+    @test F.metric(sim, Dict("fn" => "first_crossing", "signal" => "X", "value" => 25), 0.0) ≈ 2.5
     # resume: only what is missing is run again
     lines = readlines(out)
     write(out, join(lines[1:3], "\n") * "\n")
