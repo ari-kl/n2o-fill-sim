@@ -193,6 +193,108 @@ end
     @test [(a.t, a.action) for a in F.log_schedule(c2, cols2; t0 = 0.0)] == [(0.0, "open"), (3.0, "close")]
 end
 
+@testset "log manifests: several boards on one clock, polarity, bounce, groups, gaps, phases" begin
+    # A made-up log from three boards. True time runs 0-120 s. Board A (the reference) stamps its
+    # rows 1000 s ahead of true time; B's clock is 100.18 s behind A's and C's 1869.08 s behind.
+    # Rows are written in the order they arrive.
+    dir = mktempdir()
+    rows = Tuple{Float64,String}[]
+    for k in 0:1200                                              # A, 10 Hz: a pressure
+        tt = 0.1k
+        push!(rows, (tt, "$(round(1000 + tt, digits = 3)),A,$(round(100 + 2tt, digits = 3)),,,"))
+    end
+    for k in 0:599                                               # B, 5 Hz: a valve column where 1 means closed
+        tt = 0.2k + 0.03
+        v = 20 <= tt < 60 ? 0 : 1                                # open from 20 s to 60 s ...
+        abs(tt - 60.23) < 0.01 && (v = 0)                        # ... with one bounce as it closes
+        push!(rows, (tt, "$(round(1000 + tt - 100.18, digits = 3)),B,,$v,,"))
+    end
+    for k in 0:239                                               # C, 2 Hz: two thermistors, silent from 80 s to 90 s
+        tt = 0.5k + 0.05
+        80 <= tt < 90 && continue
+        push!(rows, (tt, "$(round(1000 + tt - 1869.08, digits = 3)),C,,,$(round(20 - 0.1tt, digits = 3)),$(round(20.4 - 0.1tt, digits = 3))"))
+    end
+    sort!(rows; by = first)
+    write(joinpath(dir, "log.csv"), "device_timestamp,source,PT [PSI],solenoid_V1,TH1 [C],TH2 [C]\n" * join(last.(rows), "\n") * "\n")
+    manifest = joinpath(dir, "log.toml")
+    body = """
+        file = "log.csv"
+        time = "device_timestamp"
+        source_column = "source"
+        reference_source = "A"
+        clock_offsets = "auto"
+        sample_dt = 1.0
+        debounce_s = 0.5
+        t0 = 1010.0
+        [[channel]]
+        column = "PT [PSI]"
+        role = "pressure"
+        maps_to = "TANK.P"
+        name = "PT_psig"
+        [[channel]]
+        column = "solenoid_V1"
+        role = "valve"
+        maps_to = "FILL"
+        one_means = "closed"
+        [[channel]]
+        column = "TH1 [C]"
+        role = "temperature"
+        group = "TH"
+        maps_to = "TANK.T"
+        [[channel]]
+        column = "TH2 [C]"
+        role = "temperature"
+        group = "TH"
+        [phases]
+        fill = { from = "FILL open", to = "FILL close" }
+        hold = [60, 100]
+        """
+    write(manifest, body)
+    log = F.load_log(manifest)
+    @test abs(log.offsets["B"] - 100.18) < 0.1 && abs(log.offsets["C"] - 1869.08) < 0.1 && log.offsets["A"] == 0
+    @test isempty(log.warnings)
+    @test log.names == ["t_s", "PT_psig", "solenoid_V1", "TH"] && log.cols["t_s"][1:3] == [1000.0, 1001.0, 1002.0]
+    at(name, t) = log.cols[name][findfirst(==(t), log.cols["t_s"])]
+    @test abs(at("PT_psig", 1050.0) - 200) < 0.3                  # median of the readings around true time 50 s
+    @test abs(at("TH", 1050.0) - (20.2 - 5)) < 0.15               # the two thermistors averaged, on the reference clock
+    @test isnan(at("TH", 1085.0)) && !isnan(at("TH", 1079.0)) && !isnan(at("TH", 1091.0))   # a gap stays a gap
+    sched = F.log_schedule(log.cols, log.columns; t0 = log.t0)
+    @test [(a.part, a.action) for a in sched] == [("FILL", "close"), ("FILL", "open"), ("FILL", "close")]   # no extra pair from the bounce
+    @test abs(sched[2].t - 10) <= 1 && abs(sched[3].t - 50) <= 1.5
+    @test log.phases["hold"] == (60.0, 100.0) && log.phases["fill"] == (sched[2].t, sched[3].t)
+    @test log.columns[2].target == "TANK.P" && log.columns[3].one_means === :closed && log.columns[4].role === :temperature
+    over = F.log_overlay(log.cols, log.columns, 101325.0; saturation = true)
+    @test Set(first.(over)) == Set(["PT_psig", "Tsat of PT_psig", "TH", "Psat of TH"])
+    k = findfirst(==(1050.0), log.cols["t_s"])
+    @test over[findfirst(o -> o[1] == "Tsat of PT_psig", over)][3][k] ≈ F.Tsat(200 * F.PSI + 101325) rtol = 1e-3
+    @test isnan(over[findfirst(o -> o[1] == "Psat of TH", over)][3][findfirst(==(1085.0), log.cols["t_s"])])
+    # written out, it is a plain CSV that replays by name with no manifest: valves as 1 = open
+    plain = joinpath(dir, "plain.csv")
+    F.write_log(plain, log)
+    pn, pc = F.read_csv(plain)
+    sc = F.Scene(); F.add_part!(sc, "Valve", 0, 0; name = "solenoid_V1")
+    @test pn == log.names && isnan(pc["TH"][findfirst(==(1085.0), pc["t_s"])]) && pc["solenoid_V1"][findfirst(==(1050.0), pc["t_s"])] == 1
+    # given offsets are used as given; mistakes in a manifest are errors, not silently ignored
+    write(manifest, replace(body, "clock_offsets = \"auto\"" => "clock_offsets = { B = 100.0, C = 1869.0 }"))
+    @test F.load_log(manifest).offsets == Dict("A" => 0.0, "B" => 100.0, "C" => 1869.0)
+    write(manifest, replace(body, "debounce_s" => "debounce"))
+    @test_throws ErrorException F.load_log(manifest)
+    write(manifest, replace(body, "one_means = \"closed\"" => ""))
+    @test_throws ErrorException F.load_log(manifest)
+    write(manifest, replace(body, "column = \"TH2 [C]\"" => "column = \"TH9 [C]\""))
+    @test_throws ErrorException F.load_log(manifest)
+    # a drifting clock is reported
+    drift = [(tt, startswith(split(r, ',')[2], "B") ? replace(r, r"^[^,]+" => string(round(1000 + tt - 100.18 - 0.02tt, digits = 3))) : r) for (tt, r) in rows]
+    write(joinpath(dir, "log.csv"), "device_timestamp,source,PT [PSI],solenoid_V1,TH1 [C],TH2 [C]\n" * join(last.(drift), "\n") * "\n")
+    write(manifest, body)
+    @test any(occursin("drifts", w) for w in F.load_log(manifest).warnings)
+    # the draft generator does not guess what a 1 means on a solenoid_ column
+    s = F.Scene(); F.add_part!(s, "Valve", 0, 0; name = "V1")
+    draft = F.suggest_manifest(joinpath(dir, "log.csv"), s)
+    @test occursin("one_means = \"?\"", draft) && occursin("source_column = \"source\"", draft) && occursin("role = \"temperature\"", draft)
+    @test F.debounce([0.0, 1, 1.2, 1.4, 3, 4], [0.0, 1, 0, 1, 1, 0], 0.5) == [0.0, 0, 0, 1, 1, 0]
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

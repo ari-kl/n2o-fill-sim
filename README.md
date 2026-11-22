@@ -128,14 +128,19 @@ max).
 ### Test logs
 
 "Load test log..." reads a telemetry CSV (the first column is time; long logs are thinned to 20
-rows a second) and shows what it takes each column to be. Pressure and mass columns can be
-overlaid on the plots. Valve and heater columns are matched to parts by name (`valve_AV-201` and
+rows a second) and shows what it takes each column to be. Pressure, mass and temperature columns
+can be overlaid on the plots, together with what saturation implies (the saturation temperature
+of a logged pressure, the saturation pressure of a logged temperature). Valve and heater columns are matched to parts by name (`valve_AV-201` and
 `solenoid_AV201` both match `AV201`) and can be replayed as the schedule.
 
 **Check what a 1 means before replaying.** Older logs (`valve_` columns, HF3 and HF4) use
 1 = open. Some later logs write the same valves as `solenoid_` columns with 1 for a reported
 state of CLOSED. `solenoid_` and `relay_` columns are therefore never replayed until you
 choose.
+
+A log that needs more than guessing (several boards on different clocks, valve columns with
+inverted meaning, bouncing states, offsets) is described once in a **manifest** and loaded with
+`--manifest log.toml` or through the same dialog. `docs/LOGS.md` has the format.
 
 ### What a run records
 
@@ -255,6 +260,7 @@ scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4
                       regulated_fill.toml (regulated hot-day fill)
 test/                 tests, benchmark, stress cases, and extracts of the fill logs
 docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
+docs/LOGS.md          how test logs are read; the manifest format
 ```
 
 ## Licence

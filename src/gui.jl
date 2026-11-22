@@ -90,6 +90,7 @@ Base.@kwdef mutable struct App
     steps::Dict{String,Steps} = Dict{String,Steps}()                       # valve and heater traces as lists of changes
     window_time::Dict{String,Tuple{Int,Float64}} = Dict{String,Tuple{Int,Float64}}()   # per tank: samples counted, seconds in the window
     msg::String = ""
+    log_sat::Bool = false                     # also overlay the saturation temperature / pressure the log's readings imply
     overlay_t::Vector{Float64} = Float64[]    # a test log shown next to the run: its time base,
     overlay::Vector{Tuple{String,Symbol,Vector{Float64}}} = Tuple{String,Symbol,Vector{Float64}}[]   # and (label, kind, SI values) per reading
     name_buf::Vector{UInt8} = zeros(UInt8, 128)

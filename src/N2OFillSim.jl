@@ -16,6 +16,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   (no options)            open the editor on the scene (or an empty one)
   --run                   start in run mode
   --replay log.csv        drive the run from a test log (valve and heater columns) and overlay its readings
+  --manifest log.toml     the same, for a log described by a manifest (see docs/LOGS.md)
   --t0 SECONDS            log time that corresponds to simulation time zero (default: first row)
   --set NAME=VALUE        change a parameter for this run: PART.param=value or settings.key=value (repeatable)
   --schedule file.csv     add scripted actions from a file with columns t_s,part,action,value
@@ -26,9 +27,14 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
                           fall on the solver's steps, so they are further apart when little is changing
   --csv out.csv           headless: write the recorded signals, and the action log as out_events.csv
   --columns A,B,...       with --csv: write only these signals (for example TANK.P,TANK.m)
+
+       julia --project bin/n2o-fill-sim.jl manifest suggest log.csv scene.toml
+  prints a draft manifest for a log, to be checked and corrected by hand
+       julia --project bin/n2o-fill-sim.jl manifest extract log.toml out.csv
+  writes the log as its manifest describes it: one clock, an even grid, valve columns as 1 = open
 """
 
-const _VALUED = ("--replay", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
+const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
 const _FLAGS = ("--help", "--run", "--headless")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
@@ -67,16 +73,32 @@ function main(args = ARGS)
     opt(name, default = nothing) = haskey(opts, name) ? opts[name][end] : default
     flag(name) = haskey(opts, name)
     flag("--help") && return print(USAGE)
+    if !isempty(files) && files[1] == "manifest"
+        if length(files) == 4 && files[2] == "extract"
+            log = load_log(files[3])
+            foreach(w -> println("warning: ", w), log.warnings)
+            write_log(files[4], log)
+            return println("wrote ", files[4], ": ", length(log.cols[log.names[1]]), " rows, columns ", join(log.names, ", "))
+        end
+        (length(files) == 4 && files[2] == "suggest") || error("usage: manifest suggest log.csv scene.toml   or   manifest extract log.toml out.csv")
+        return print(suggest_manifest(files[3], load_scene(files[4])))
+    end
     path = isempty(files) ? "" : files[1]
     isempty(path) || isfile(path) || flag("--headless") && error("no such scene file: $path")
     scene = isempty(path) || !isfile(path) ? Scene() : load_scene(path)
     apply_overrides!(scene, get(opts, "--set", String[]))
     overlay, log_end = nothing, nothing
-    if opt("--replay") !== nothing
-        names, cols = read_csv(opt("--replay"); min_dt = 0.05)
-        columns = guess_log_columns(names, scene)
+    if opt("--replay") !== nothing || opt("--manifest") !== nothing
+        if opt("--manifest") !== nothing
+            log = load_log(opt("--manifest"))
+            foreach(w -> println("warning: ", w), log.warnings)
+            names, cols, columns, first_t = log.names, log.cols, log.columns, log.t0
+        else
+            names, cols = read_csv(opt("--replay"); min_dt = 0.05)
+            columns, first_t = guess_log_columns(names, scene), cols[names[1]][1]
+        end
         t = cols[names[1]]
-        t0 = parse(Float64, opt("--t0", string(t[1])))
+        t0 = parse(Float64, opt("--t0", string(first_t)))
         scene.schedule = log_schedule(cols, columns; t0)
         unsure = [c.name for c in columns if c.role === :valve && c.one_means === :unknown]
         isempty(unsure) || println("not replayed, because whether 1 means open or closed is not known: ", join(unsure, ", "), "  (load the log in the window to choose)")

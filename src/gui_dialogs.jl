@@ -34,7 +34,7 @@ function browser_popup(app::App)
     ig.OpenPopup(title)
     ig.SetNextWindowSize((px(620), px(460)), ig.ImGuiCond_Appearing)
     ig.BeginPopupModal(title) || return
-    ext = app.browse === :log ? ".csv" : ".toml"
+    exts = app.browse === :log ? (".csv", ".toml") : (".toml",)       # a log is a CSV, or a manifest that describes one
     wrapped(app.browse_dir)
     button("Up") && (app.browse_dir = dirname(rstrip(app.browse_dir, ['/', '\\'])) |> d -> isempty(d) ? app.browse_dir : d)
     dirs, files = String[], String[]
@@ -42,7 +42,7 @@ function browser_popup(app::App)
         for name in readdir(app.browse_dir)
             startswith(name, ".") && continue
             full = joinpath(app.browse_dir, name)
-            isdir(full) ? push!(dirs, name) : endswith(lowercase(name), ext) && push!(files, name)
+            isdir(full) ? push!(dirs, name) : any(e -> endswith(lowercase(name), e), exts) && push!(files, name)
         end
     catch err
         coloured(WARN4, "cannot read this folder")
@@ -85,11 +85,18 @@ end
 "Read a log and open the mapping dialog on it."
 function load_log!(app::App, path)
     try
-        names, cols = read_csv(path; min_dt = 0.05)
-        isempty(names) && error("the file has no header row")
-        app.log_columns = guess_log_columns(names, app.scene)
-        app.log_cols, app.log_path, app.log_open = cols, path, true
-        app.log_t0[] = suggest_t0(cols, app.log_columns)
+        if endswith(lowercase(path), ".toml")              # a manifest: nothing is guessed
+            log = load_log(path)
+            app.log_columns, app.log_cols, app.log_path, app.log_open = log.columns, log.cols, path, true
+            app.log_t0[] = log.t0
+            isempty(log.warnings) || (app.msg = join(log.warnings, "; "))
+        else
+            names, cols = read_csv(path; min_dt = 0.05)
+            isempty(names) && error("the file has no header row")
+            app.log_columns = guess_log_columns(names, app.scene)
+            app.log_cols, app.log_path, app.log_open = cols, path, true
+            app.log_t0[] = suggest_t0(cols, app.log_columns)
+        end
     catch err
         app.msg = "Could not read the log: " * first(sprint(showerror, err), 200)
     end
@@ -114,7 +121,7 @@ function apply_log!(app::App; replay)
     cols, columns = app.log_cols, app.log_columns
     t = cols[columns[1].name]
     t0 = app.log_t0[]
-    set_overlay!(app, t .- t0, log_overlay(cols, columns, p_atm(app)))
+    set_overlay!(app, t .- t0, log_overlay(cols, columns, p_atm(app); saturation = app.log_sat))
     said = "$(length(app.overlay)) readings from $(basename(app.log_path)) are overlaid on the plots."
     if replay
         snapshot!(app)
@@ -139,7 +146,7 @@ function log_popup(app::App)
     ig.SameLine(); button("10 s before the first valve moves") && (app.log_t0[] = suggest_t0(cols, columns))
     unsure = false
     flags = ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_BordersInnerV | ig.ImGuiTableFlags_ScrollY
-    if ig.BeginTable("columns", 4, flags, (0f0, -px(96)))
+    if ig.BeginTable("columns", 4, flags, (0f0, -px(124)))
         ig.TableSetupColumn("use"); ig.TableSetupColumn("column"); ig.TableSetupColumn("taken as"); ig.TableSetupColumn("a 1 in this column means")
         ig.TableHeadersRow()
         for (k, c) in enumerate(columns)
@@ -152,6 +159,7 @@ function log_popup(app::App)
             ig.TableNextColumn(); text(c.name)
             ig.TableNextColumn()
             text(c.role === :pressure ? "pressure, psi gauge: overlay" : c.role === :mass ? "mass, kg: overlay" :
+                 c.role === :temperature ? "temperature, °C: overlay" :
                  isempty(c.part) ? "no matching part" : (c.role === :valve ? "valve " : "heater on ") * c.part)
             ig.TableNextColumn()
             if c.role === :valve && !isempty(c.part)
@@ -171,6 +179,9 @@ function log_popup(app::App)
         ig.EndTable()
     end
     unsure && coloured_wrapped(AMBER4, "Columns marked \"choose\" will not be replayed until you say what a 1 means. Logs with valve_ columns use 1 = open; later recordings with solenoid_ columns write 1 for a reported state of CLOSED.")
+    sat = Ref(app.log_sat)
+    ig.Checkbox("also draw what saturation implies", sat) && (app.log_sat = sat[])
+    tip("For each logged pressure, the saturation temperature it implies; for each logged temperature, the saturation pressure. In a tank holding liquid the two should agree.")
     button("Overlay the readings") && apply_log!(app; replay = false)
     ig.SameLine()
     button("Overlay, and replay the valves") && apply_log!(app; replay = true)
