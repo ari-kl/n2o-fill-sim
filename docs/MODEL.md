@@ -243,6 +243,29 @@ regulators are the remaining weak spot, with junction solves that fail to settle
 to about 0.6 s.
 `test/bench.jl` prints these numbers.
 
+### Further checks: HF3 cold flow and LC26 day 4 (2026-11-22)
+
+Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (data in `test/data`).
+
+- **HF3 cold flow (nitrous, unvented fill, 4.3 kg).** HF4 fit unchanged: tank pressure through the
+  100 s sealed period within 2.5 psi RMS, bottle recovery within 3.2 psi, load 4.6 kg against 4.3 kg on
+  the stand load cell. Post-fill warming is 0.08 psi/s in the model against 0.13 logged (ambient is a
+  guess). Open: the model empties the tank through the injector, while the load cell shows ~2.3 kg
+  left at 0 psig.
+- **HF4 vents prefer a larger vent.** Vent `Cd` 0.85 with `interphase_E` 300 takes vent 1 from 16 to
+  8 psi RMS (minimum 696 against 696 logged) and vent 2 from 8 to 3, but the heater period from 3 to
+  7 psi. Final load 9.7 kg. The scenes keep the published values until the wall model can carry
+  both.
+- **LC26 day 4 has tank temperatures.** The two heater thermistors sit within about 1 K of the
+  saturation temperature of PT202 through the 1000 s sealed hold, and 1-2 K above it during the
+  vented fill. With `h_in_mult` 0.3 the model's wall runs ~6 K warmer than its liquid after the fill,
+  so the single wall node couples too weakly for the thin tube wall while HF4 still wants 0.3: a sign
+  the wall wants two nodes (thin wetted tube, heavy bulkheads and fittings), not a different number.
+- **Not identifiable from LC26:** the tower load cell is unusable, so the vent size, fill flow and
+  bottle contents trade off; the scene uses vent `Cd` 1.0 and a 28 kg bottle, and follows the tank
+  through the hold within 5 psi RMS but the vented fill only within about 33 psi. The hold
+  needs 2-4x the model's outside heat input, but ambient, sun and `h_ext_mult` are degenerate.
+
 ## 8. Reading the two logs
 
 Two things about the HF4 and HF3 logs matter when comparing the model with them.

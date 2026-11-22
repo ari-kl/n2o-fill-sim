@@ -1,0 +1,283 @@
+# LC26 day 4 (2026-08-20): a vented fill and a 1000 s sealed hold, with thermistors on the tank.
+# Plumbing as scenes/hf4.toml; only the numbers marked here were changed. Replay:
+#   julia --project bin/n2o-fill-sim.jl scenes/lc26_day4.toml --replay test/data/lc26_day4_fill_1hz.csv --t0 21950
+# The data file is a 1 Hz extract on one clock, valve columns as 1 = open, thermistor gaps left blank.
+# There is no usable load cell for this test, so the mass loaded is the model's, not a measurement:
+# the vent size, the fill flow and the bottle contents trade off against each other in this data.
+
+[settings]
+T_amb_C          = 30.0       # [fit, degenerate with sun and h_ext_mult] effective ambient for the 1000 s sealed hold
+solar_W_m2       = 800.0      # [fit, degenerate] see T_amb_C
+wind_m_s         = 1.0        # [guess]
+P_atm_kPa        = 97.5       # Timmins area, ~300 m
+meop_psig        = 1000.0
+interphase_E     = 300.0      # [cal 2026-11-22] HF4 vent 1 and the LC26 vented-fill superheat both lean below 700
+cond_tau_s       = 0.5
+h_in_mult        = 0.3        # [fit]
+h_ext_mult       = 2.0        # [fit, degenerate] needed to warm the sealed tank as fast as logged
+
+[[part]]
+kind = "Bottle"
+name = "BOTTLE"
+x = 2
+y = 11
+rot = 0
+volume_L = 40.0               # [guess] as fitted. The supplier's K size is 44 L, 229 mm, 29.3 kg: use at the next refit
+                              # (with 44 L and the same 28 kg the hold fits 3.5 psi RMS worse)
+diameter_mm = 230.0
+fill_kg = 28.0          # [fit] P201 during the fill and its recovery after; no usable load cell on the tower
+T_C = 26.6          # PT201 read 834 psig before the fill
+draw_height_frac = 0.0        # tipped for liquid draw
+wall_kg = 30.0
+wall_cp_J_kgK = 470.0
+absorptivity = 0.5
+emissivity = 0.8
+shade = 0.0
+heater_W = 0.0
+
+[[part]]
+kind = "Orifice"
+name = "BOTTLE_VALVE"
+x = 2
+y = 7
+rot = 3
+d_mm = 2.5                    # [fit] everything between bottle and panel: bottle valve, CGA 326 nipple, 1/4" hose, MV201
+Cd = 0.7
+
+[[part]]
+kind = "Pipe"
+name = "HOSE1"
+x = 5
+y = 4
+rot = 0
+L_m = 3.0                     # [guess]
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Junction"
+name = "PANEL"
+x = 9
+y = 4
+rot = 0
+
+[[part]]
+kind = "Gauge"
+name = "PT201"
+x = 9
+y = 2
+rot = 0
+
+[[part]]
+kind = "Junction"
+name = "DUMP_TEE"
+x = 14
+y = 4
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV202"
+x = 14
+y = 7
+rot = 1
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.3
+
+[[part]]
+kind = "Atmosphere"
+name = "DUMP"
+x = 14
+y = 10
+rot = 1
+
+[[part]]
+kind = "Valve"
+name = "AV201"
+x = 12
+y = 4
+rot = 0
+d_mm = 15.0                   # 3/4" ball valve [FDR]
+Cd = 0.8
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.5
+
+[[part]]
+kind = "Pipe"
+name = "HOSE2"
+x = 15
+y = 4
+rot = 0
+L_m = 4.0                     # [guess]
+id_mm = 10.0
+rough_mm = 0.015
+K = 2.0
+
+[[part]]
+kind = "Orifice"
+name = "QD"
+x = 18
+y = 4
+rot = 0
+d_mm = 9.5                    # 3/8" effective [FDR]
+Cd = 0.7
+
+[[part]]
+kind = "Valve"
+name = "AV203"
+x = 21
+y = 4
+rot = 0
+d_mm = 9.4                    # 0.372" poppet stem [FDR]
+Cd = 0.5
+Cv = 0.0
+normally_open = 0.0
+travel_s = 0.2
+
+[[part]]
+kind = "Tank"
+name = "TANK"
+x = 25
+y = 0
+rot = 0
+volume_L = 19.16
+diameter_mm = 143.0           # from the 24.9 in² bulkhead area [FDR]
+fill_kg = 0.0
+T_C = 23.7          # tank thermistors before the fill
+air = 1.0
+wall_kg = 10.0                # [guess] 6061 tube + bulkheads
+wall_cp_J_kgK = 900.0
+absorptivity = 0.4
+emissivity = 0.8
+shade = 0.0
+heater_W = 300.0              # [fit]
+vent_height_frac = 0.9        # [guess] short dip tube
+
+[[part]]
+kind = "Gauge"
+name = "PT202"
+x = 23
+y = -5
+rot = 0
+
+[[part]]
+kind = "ReliefValve"
+name = "PRV202"
+x = 28
+y = -5
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+set_psig = 1000.0
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_PRV"
+x = 32
+y = -5
+rot = 0
+
+[[part]]
+kind = "Valve"
+name = "AV204"
+x = 29
+y = -2
+rot = 0
+d_mm = 6.0
+Cd = 0.7
+Cv = 0.0
+normally_open = 1.0           # spring-open vent [FDR]
+travel_s = 0.2
+
+[[part]]
+kind = "Orifice"
+name = "VENT_ORIFICE"
+x = 33
+y = -2
+rot = 0
+d_mm = 2.0                    # 2 mm outlet [FDR]
+Cd = 1.0           # [fit] confounded with the unknown fill flow; HF4 alone gives 0.85
+
+[[part]]
+kind = "Atmosphere"
+name = "ATM_VENT"
+x = 40
+y = -2
+rot = 0
+
+[[wire]]
+from = "BOTTLE.out"
+to = "BOTTLE_VALVE.a"
+
+[[wire]]
+from = "BOTTLE_VALVE.b"
+to = "HOSE1.a"
+
+[[wire]]
+from = "HOSE1.b"
+to = "PANEL.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "PT201.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "AV202.a"
+
+[[wire]]
+from = "AV202.b"
+to = "DUMP.a"
+
+[[wire]]
+from = "PANEL.a"
+to = "AV201.a"
+
+[[wire]]
+from = "AV201.b"
+to = "DUMP_TEE.a"
+
+[[wire]]
+from = "DUMP_TEE.a"
+to = "HOSE2.a"
+
+[[wire]]
+from = "HOSE2.b"
+to = "QD.a"
+
+[[wire]]
+from = "QD.b"
+to = "AV203.a"
+
+[[wire]]
+from = "AV203.b"
+to = "TANK.bottom"
+
+[[wire]]
+from = "TANK.top"
+to = "PT202.a"
+
+[[wire]]
+from = "TANK.top"
+to = "PRV202.a"
+
+[[wire]]
+from = "PRV202.b"
+to = "ATM_PRV.a"
+
+[[wire]]
+from = "TANK.vent"
+to = "AV204.a"
+
+[[wire]]
+from = "AV204.b"
+to = "VENT_ORIFICE.a"
+
+[[wire]]
+from = "VENT_ORIFICE.b"
+to = "ATM_VENT.a"

@@ -384,6 +384,50 @@ end
     @test isempty(sim.failed) && sim.net.unconverged == 0
 end
 
+# RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
+function log_rms(sim, key, D, col, t0, a, b, p_atm)
+    d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]
+         for (i, t) in enumerate(D["t_s"]) if a <= t - t0 <= b && isfinite(D[col][i])]
+    sqrt(sum(abs2, d) / length(d))
+end
+
+@testset "HF3 cold flow replay (unvented fill, sealed period, blowdown through an injector)" begin
+    # HF4's fitted values with only what was measured changed (see the scene). Numbers on
+    # 2026-11-22: sealed-period tank pressure 2.5 psi RMS, fill line 3.2 psi, 4.59 kg loaded
+    # against 4.3 kg on the load cell.
+    names, D = F.read_csv(joinpath(@__DIR__, "data", "hf3cf_fill_10hz.csv"))
+    s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf3cf.toml"))
+    t0, p_atm = 15290.0, s.settings["P_atm_kPa"] * 1e3
+    s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0)
+    sim = F.Sim(s)
+    F.run_until!(sim, 265.0)
+    @test isempty(sim.failed) && sim.net.unconverged == 0
+    @test log_rms(sim, "TANK.P", D, "PT202_psig", t0, 106.4, 200.8, p_atm) < 4       # sealed after the last fill pulse
+    @test log_rms(sim, "PT201.P", D, "PT201_psig", t0, 106.4, 200.8, p_atm) < 5      # the bottle recovering
+    @test 4.4 < sim.hist["TANK.m"][searchsortedfirst(sim.t_hist, 200.0)] < 4.8
+    @test closes(sim)
+end
+
+@testset "LC26 day 4 replay (vented fill and a 1000 s sealed hold, with thermistors on the tank)" begin
+    # Numbers on 2026-11-22: tank pressure 33 psi RMS through the vented fill and 4.9 psi through
+    # the hold; the model's liquid 0.7 K below the thermistors on average.
+    names, D = F.read_csv(joinpath(@__DIR__, "data", "lc26_day4_fill_1hz.csv"))
+    s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "lc26_day4.toml"))
+    t0, p_atm = 21950.0, s.settings["P_atm_kPa"] * 1e3
+    s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0)
+    sim = F.Sim(s)
+    F.run_until!(sim, 1215.0)
+    @test isempty(sim.failed) && sim.net.unconverged == 0
+    @test log_rms(sim, "TANK.P", D, "PT202_psig", t0, 30, 150, p_atm) < 42            # vented fill
+    @test log_rms(sim, "TANK.P", D, "PT202_psig", t0, 170, 1210, p_atm) < 7           # sealed hold
+    hold = [i for (i, t) in enumerate(D["t_s"]) if 170 <= t - t0 <= 1210 && isfinite(D["TH_tank_C"][i])]
+    # the measurement itself: thermistors against the saturation temperature of the logged pressure
+    @test maximum(abs(D["TH_tank_C"][i] - (F.Tsat(D["PT202_psig"][i] * F.PSI + p_atm) - 273.15)) for i in hold) < 2
+    liquid(i) = sim.hist["TANK.T"][clamp(searchsortedfirst(sim.t_hist, D["t_s"][i] - t0), 1, length(sim.t_hist))] - 273.15
+    @test abs(sum(liquid(i) - D["TH_tank_C"][i] for i in hold) / length(hold)) < 2
+    @test closes(sim)
+end
+
 @testset "HF4 replay (calibration regression)" begin
     _, D = F.read_csv(joinpath(@__DIR__, "data", "hf4_fill_10hz.csv"))
     s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf4.toml"))

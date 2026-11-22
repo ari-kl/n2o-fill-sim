@@ -21,7 +21,9 @@ model predictions: see "How far to trust it" below.
 `docs/MODEL.md` has the equations, their sources, what is left out, the calibration, and
 background numbers for planning a fill. "HF3" and "HF4" throughout are two static hot-fire tests of
 a student hybrid motor (June and July 2026); 10 Hz extracts of their fill logs are in `test/data`,
-and `scenes/hf4.toml` is that test stand's fill plumbing.
+and `scenes/hf4.toml` is that test stand's fill plumbing. Two more logs from the same hardware are
+replayable: an HF3 cold flow with nitrous (`scenes/hf3cf.toml`) and a fill and sealed hold from a
+launch campaign, "LC26 day 4", which has thermistors on the tank (`scenes/lc26_day4.toml`).
 
 ## Installing and running
 
@@ -191,7 +193,13 @@ the property panel shows the same text.
   measured.
 - Run unchanged against the HF3 log (a different day and procedure), it gets the stall pressure
   within 6 psi and the final load within the load cell's uncertainty, but reaches the stall about
-  20 s too early. That is the only independent check so far.
+  20 s too early.
+- Two further logs, again with nothing in the model re-fitted: an HF3 cold flow (tank pressure
+  within 2.5 psi RMS through a 100 s sealed period; 4.6 kg loaded against 4.3 kg on the load cell)
+  and LC26 day 4 (a 1000 s sealed hold followed within 5 psi RMS once the outside heat input was
+  fitted; the vented fill only within about 33 psi). The LC26 thermistors show the tank wall within
+  about 1 K of the liquid, where the model's single wall temperature sits several kelvin above it:
+  see `docs/MODEL.md`, "Further checks".
 - Known disagreements: the middle of the fast fill is too quick in both tests; at HF4's first stall
   the model holds 8.3 kg where the load cell reads 6.7 kg (the load cell may have been hanging up,
   see `docs/MODEL.md` section 8, but that is not established).
@@ -200,9 +208,9 @@ the property panel shows the same text.
   scene file. `docs/MODEL.md` section 9 lists what to measure.
 - The first ~20 s of a fill and the contents of the lines are not modelled (see `docs/MODEL.md`,
   "What is left out").
-- It has not been checked against a cold fill, a regulated fill, a long hold, or any measured
-  temperature (neither log has one). Treat those results as showing which way things go and
-  roughly how fast.
+- It has not been checked against a regulated fill or a fill to a lower pressure, and against a
+  measured temperature and a long hold only once (LC26 day 4). Treat those results as showing
+  which way things go and roughly how fast.
 
 ## Tests
 
@@ -228,8 +236,9 @@ src/scene.jl          part catalogue, scene file, edit operations
 src/network.jl        scene -> equations, junction solve, time stepping, recording
 src/logs.jl           reading test logs, column meaning, overlay and replay
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
-scenes/               hf4.toml (fitted to the HF4 log), regulated_fill.toml (regulated hot-day fill)
-test/                 tests, benchmark, and 10 Hz slices of the HF4 and HF3 fill logs
+scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4.toml (further logs),
+                      regulated_fill.toml (regulated hot-day fill)
+test/                 tests, benchmark, stress cases, and extracts of the fill logs
 docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
 ```
 
