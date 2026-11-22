@@ -354,9 +354,10 @@ end
     @test_throws ErrorException F.read_study(study(top * rest * "oops = 1\n"))                                  # a key that landed in [metrics]
     # scored against a log: a one-run study gives what a single replay gives
     root = joinpath(@__DIR__, "..")
+    fwd(p) = replace(p, '\\' => '/')                              # a Windows path's backslashes are escapes inside a TOML string
     one = study("""
-        scene = "$(joinpath(root, "scenes", "hf3cf.toml"))"
-        replay = "$(joinpath(root, "test", "data", "hf3cf_fill_10hz.csv"))"
+        scene = "$(fwd(joinpath(root, "scenes", "hf3cf.toml")))"
+        replay = "$(fwd(joinpath(root, "test", "data", "hf3cf_fill_10hz.csv")))"
         t0 = 15290
         until = 265
         [score]
