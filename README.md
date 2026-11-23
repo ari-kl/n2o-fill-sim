@@ -121,6 +121,8 @@ and the panel shows the speed achieved.
 | Valve drawn filled, with a bar across | shut |
 | Valve drawn as an outline | open |
 | Outline with part of the fill | part-way through its stroke |
+| Blue, part of the fill, no arrow | resting part-open where it was set |
+| "LEAKS" beside a shut valve | it has a `leak_frac` and passes that share of its area while shut |
 | Arrow on the actuator | where the valve was told to go, until it gets there (outline pointing away: opening; filled pointing in: closing) |
 | Check valve, relief valve, regulator | filled while nothing passes, outline while something does |
 
@@ -141,8 +143,9 @@ figures described above. The Signals tab plots any recorded signal.
 
 - `NAME_run.csv`: every signal, in SI units. Per vessel: pressure, liquid/ullage/wall temperature,
   mass, level, liquid share by volume and by mass, vapour pressure of the liquid, heater on/off and the power it delivers.
-  Per flow part: mass flow. Per valve: `position` (0 shut to 1 open), `open_cmd` (1 = commanded
-  open) and `stuck`. Regulator and relief set-points. Ambient temperature, sun and wind. Per
+  Per flow part: mass flow. Per valve: `position` (0 shut to 1 open), `cmd_frac` (the opening it is
+  told to take), `open_cmd` (1 = commanded open at all) and `stuck` (0 healthy, 1 open, 2 closed,
+  3 part-way). Regulator and relief set-points. Ambient temperature, sun and wind. Per
   gauge: the true pressure and temperature (`P`, `T`) and, if it has a sensor model, its reading
   (`P_read`, `T_read`). Per load cell: `m_read`.
 - `NAME_run_events.csv`: every valve, heater and set-point action with its time, whether scripted
