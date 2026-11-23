@@ -1217,11 +1217,11 @@ end
 end
 
 @testset "a junction that no flow responds to does not send the whole junction solve to its fallback" begin
-    # Found by a fit on 2026-11-22. For a few milliseconds after the fill valve opens into an
-    # air-filled tank, the vent line holds a stream the flow law returns nothing for, so that
-    # junction's row of the Jacobian is empty. That used to make the system singular: every solve
-    # fell back to the slow method, 400,000 part flows went by in the first half millisecond, and
-    # the run took minutes. These values are that run's (a random draw, not a fit).
+    # For a few milliseconds after the fill valve opens into an air-filled tank, the vent line
+    # holds a stream the flow law returns nothing for, so that junction's row of the Jacobian is
+    # empty. Left in, the empty row makes the system singular: every solve falls back to the slow
+    # method, 400,000 part flows go by in the first half millisecond, and the run takes minutes.
+    # The parameter values below are a random draw at which this happens, not a fit.
     names, D = F.read_csv(joinpath(@__DIR__, "data", "lc26_day4_fill_1hz.csv"))
     s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "lc26_day4.toml"))
     F.apply_overrides!(s, ["TANK.wall_split=1", "settings.h_in_mult=1", "settings.interphase_E=418.296516991197", "TANK.h_in_mult=4.522441229963602",
@@ -1242,14 +1242,14 @@ end
     tank = sim.net.nodes[findfirst(n -> n.name == "TANK", sim.net.nodes)]
     F.advance!(sim, 1.0)
     # What an air-filled tank sends down the vent line is close to N2O vapour at its own
-    # temperature (it used to be tank pressure over the trace N2O density: about 12 MJ/kg).
+    # temperature (not tank pressure over the trace N2O density, which would be about 12 MJ/kg).
     @test abs(tank.port_h[1] - F.vapour_PT(sim.net.env.P_atm, sim.u[tank.i+3]).h) < 2e4
     F.run_until!(sim, 20.0)                                       # the fill valve opens at 19 s
     after = [P for (t, P) in zip(sim.t_hist, sim.hist["TANK.P"]) if t > 19]
-    # The first cold vapour has to cool the air too, so the tank no longer drops below atmospheric.
+    # The first cold vapour has to cool the air too, so the tank does not drop below atmospheric.
     @test minimum(after) > sim.net.env.P_atm - 500 && closes(sim) && isempty(sim.failed)
     # The fill valve takes 0.5 s to open. A tenth of a second in, it is a fifth open, however the
-    # run is stepped (it used to move 20 ms of travel on every call).
+    # run is stepped (and not 20 ms of travel further on for every call).
     opening(piece) = begin
         sim = F.Sim(scene()); F.run_until!(sim, 19.0)
         while F.simtime(sim) < 19.1 - 1e-9; F.advance!(sim, min(piece, 19.1 - F.simtime(sim))); end
@@ -1259,9 +1259,10 @@ end
 end
 
 @testset "a supercritical bottle opened into an empty tank does not stall the junction solve" begin
-    # Reported from the window: a bottle left in the sun (62 °C, about 2100 psig) opened through an
-    # orifice, hose, valve and hose. Every evaluation "failed" at an imbalance of 1e-6 and paid for
-    # the whole fallback: 94 failures and 14 s of wall time for these 5 s. Now 2 failures.
+    # A bottle left in the sun (62 °C, about 2100 psig) opened through an orifice, hose, valve and
+    # hose. The imbalance here settles near 1e-6. If every such evaluation counts as failed and
+    # pays for the whole fallback, these 5 s take 94 failures and 14 s of wall time. The solve
+    # accepts it instead, and 2 failures remain.
     s = F.Scene()
     F.add_part!(s, "Bottle", 0, 0; name = "B").p["T_C"] = 62.0
     for (i, (kind, name)) in enumerate((("Orifice", "OR"), ("Pipe", "L1"), ("Valve", "V"), ("Pipe", "L2"), ("Tank", "T")))
@@ -1319,9 +1320,9 @@ function log_rms(sim, key, D, col, t0, a, b, p_atm)
 end
 
 @testset "HF3 cold flow replay (unvented fill, sealed period, blowdown through an injector)" begin
-    # HF4's fitted values with only what was measured changed (see the scene). Numbers on
-    # 2026-11-22: sealed-period tank pressure 2.5 psi RMS, fill line 3.2 psi, 4.59 kg loaded
-    # against 4.3 kg on the load cell.
+    # HF4's fitted values with only what was measured changed (see the scene). The model gives
+    # sealed-period tank pressure 2.5 psi RMS, fill line 3.2 psi, 4.59 kg loaded against 4.3 kg on
+    # the load cell.
     names, D = F.read_csv(joinpath(@__DIR__, "data", "hf3cf_fill_10hz.csv"))
     s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf3cf.toml"))
     t0, p_atm = 15290.0, s.settings["P_atm_kPa"] * 1e3
@@ -1336,8 +1337,8 @@ end
 end
 
 @testset "LC26 day 4 replay (vented fill and a 1000 s sealed hold, with thermistors on the tank)" begin
-    # Numbers on 2026-11-22: tank pressure 33 psi RMS through the vented fill and 4.9 psi through
-    # the hold; the model's liquid 0.7 K below the thermistors on average.
+    # The model gives tank pressure 33 psi RMS through the vented fill and 4.9 psi through the
+    # hold; its liquid is 0.7 K below the thermistors on average.
     names, D = F.read_csv(joinpath(@__DIR__, "data", "lc26_day4_fill_1hz.csv"))
     s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "lc26_day4.toml"))
     t0, p_atm = 21950.0, s.settings["P_atm_kPa"] * 1e3
