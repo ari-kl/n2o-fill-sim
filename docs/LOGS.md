@@ -19,7 +19,7 @@ to 20 rows a second.
 | a 0/1 column named for a valve in the scene | that valve's state (`valve_AV-201` and `solenoid_AV201` both match a part called `AV201`) |
 | contains `heater` | the state of the heated Tank's heater, or the Bottle's if the name also contains `supply` |
 
-Matching ignores case.
+Units are matched without regard to case, and valve names without regard to case or punctuation.
 
 `valve_` columns are taken as 1 = open. `solenoid_` and `relay_` columns are never replayed until
 you say what a 1 means. This is enough for a single-board log with tidy names.
@@ -71,15 +71,33 @@ hold = { from = "AV204 close", to = "AV201 open#2" }
 soak = [170, 1210]              # or plain seconds after t0
 ```
 
-### Rules
+### Clocks
 
-| Topic | Rule |
-|---|---|
-| Clocks | With `clock_offsets = "auto"`, each board's offset is estimated from the order the rows arrived in: for every row of that board, the last time seen on a reference-board row minus the row's own time, and then the median of those. It is good to about one reference sampling period. If the offset over the first third of the file differs from the last third by more than 0.5 s, a warning says that board's clock drifts. |
-| The grid | Each grid point takes the median of the readings within half a `sample_dt` either side (for valves and heaters, the last state in that interval). An interval with no reading is left empty. A gap is never filled in, so a silent sensor cannot pass for a steady one. |
-| Bounce | With `debounce_s`, a change of a 0/1 column is kept only if the new value then holds for that long; a kept change is therefore reported up to that much late. |
-| Phase events | `"AV201 open"` is the first time the replayed schedule opens AV201, and `"AV201 open#2"` the second. A part's state at the start of the log is not an event. A `to` without `#n` is the first such event after `from`. |
-| Mistakes | An unknown key, a missing column, a valve without `one_means` or a phase event that never happens stops the load with a message; nothing is skipped quietly. |
+With `clock_offsets = "auto"`, each board's offset is estimated from the order the rows arrived
+in: for every row of that board, the last time seen on a reference-board row minus the row's own
+time, and then the median of those. It is good to about one reference sampling period. If the
+offset over the first third of the file differs from the last third by more than 0.5 s, a warning
+says that board's clock drifts.
+
+### The grid
+
+Each grid point takes the median of the readings within half a `sample_dt` either side (for
+valves and heaters, the last state in that interval). **An interval with no reading is left
+empty.** A gap is never filled in, so a silent sensor cannot pass for a steady one.
+
+With `debounce_s`, a change of a 0/1 column is kept only if the new value then holds for that
+long; a kept change is therefore reported up to that much late.
+
+### Phase events
+
+`"AV201 open"` is the first time the replayed schedule opens AV201, and `"AV201 open#2"` the
+second. A part's state at the start of the log is not an event. A `to` without `#n` is the first
+such event after `from`.
+
+### Errors and known conversions
+
+An unknown key, a missing column, a valve without `one_means` or a phase event that never happens
+stops the load with a message; nothing is skipped quietly.
 
 `gain` and `offset` in a manifest are known conversions, applied once when the log is read. A
 reading whose zero is not known (an untared load cell) is dealt with when a run is scored, by
