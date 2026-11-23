@@ -575,7 +575,8 @@ function _solve_active!(net::Net)
                 moved = max(moved, abs(nodes[j].P - before))
             end
             worst, scale = _residual!(net)                 # also brings the junction enthalpies up to date
-            (worst < 1e-9 * scale + 1e-10 || moved < 1e-3 || pass >= 3 && worst < loose) && return
+            (worst < 1e-9 * scale + 1e-10 || pass >= 3 && worst < loose) && return
+            moved < 1e-3 && break                          # stalled short of balance: Newton's turn, not a result
         end
     end
     net.unconverged += 1
