@@ -47,6 +47,7 @@ mutable struct Edge
     m_Pc::Float64
     m_G::Float64
     m_Pu::Float64
+    calls::Int                    # times this part's flow has been worked out: the measure of work done (see run_until!)
 end
 
 mutable struct Net
@@ -149,7 +150,7 @@ function compile(s::Scene)
         ka, kb = net_of[(p.name, "a")], net_of[(p.name, "b")]
         e = Edge(p.name, EDGE_KIND[p.kind], node_of_net[ka], port_of_net[ka], node_of_net[kb], port_of_net[kb],
                  0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, false, false, 0, 0.0,
-                 NaN, NaN, Fluid(NaN, NaN, NaN, NaN, NaN, NaN, NaN, false), NaN, NaN, Inf)
+                 NaN, NaN, Fluid(NaN, NaN, NaN, NaN, NaN, NaN, NaN, false), NaN, NaN, Inf, 0)
         if p.kind == "Pipe"
             e.L, e.D, e.K = g("L_m"), g("id_mm") * 1e-3, g("K")
             e.relrough = g("rough_mm") * 1e-3 / e.D
@@ -230,6 +231,7 @@ enthalpy each end would send if it were upstream.
 """
 function edge_flow(e::Edge, Pa, Pb, ha, hb)
     TALLY.on && (TALLY.edge_flow += 1)
+    e.calls += 1
     forward = Pa >= Pb
     forward || e.kind in (:valve, :orifice, :pipe) || return 0.0     # the rest are one-way
     A = flow_area(e, Pa, Pb)
@@ -490,6 +492,13 @@ function _solve_active!(net::Net)
             ra != 0 && (J[ra, ra] -= da)
             rb != 0 && (J[rb, rb] += db)
             ra != 0 && rb != 0 && (J[ra, rb] -= db; J[rb, ra] += da)
+        end
+        # A junction that no flow responds to (every part on it at rest, or carrying a stream so
+        # far outside the property range that the flow law returns nothing) has an empty row. Left
+        # alone that makes the whole system singular and sends every junction to the slow fallback
+        # below, on every call. Hold that one junction where it is and solve the rest.
+        for q in 1:na
+            J[q, q] == 0 && (J[q, q] = 1.0)
         end
         r .= .-r
         net.lu = lu!(J; check = false)
@@ -793,10 +802,11 @@ end
 
 Move now forward by up to `dt` seconds: run scheduled actions when they fall due, stroke valves,
 step the equations as far as needed, switch vessel modes, and record samples. It returns early if
-it uses `max_steps` solver steps (so a caller drawing frames never hangs), and if the solver fails
+it uses `max_steps` solver steps (so a caller drawing frames never hangs) or the simulation's
+`work` reaches `max_work`, and if the solver fails
 `sim.failed` says why and the simulation stops advancing.
 """
-function advance!(sim::Sim, dt; max_steps = 2000)
+function advance!(sim::Sim, dt; max_steps = 2000, max_work = typemax(Int))
     isempty(sim.failed) || return 0.0
     integ = sim.integ
     t_start = sim.t
@@ -845,7 +855,7 @@ function advance!(sim::Sim, dt; max_steps = 2000)
                 break
             end
             integ.t <= t_stop + 1e-12 && _arrive!(sim, integ.t)
-            if steps >= max_steps
+            if steps >= max_steps || work(sim) >= max_work
                 _arrive!(sim, min(integ.t, t_stop))
                 return sim.t - t_start
             end
@@ -855,10 +865,15 @@ function advance!(sim::Sim, dt; max_steps = 2000)
     sim.t - t_start
 end
 
+"Work done by a simulation so far, counted in part-flow evaluations. The HF4 replay takes 0.3 million."
+work(sim::Sim) = sum(e -> e.calls, sim.net.edges; init = 0)
+
 """
 Run until simulation time `t`, or until the solver fails, `wall_limit` seconds have passed, or
-the solver has taken `step_limit` steps. The step limit is the one to use for giving up on a run
-that has stalled: unlike the clock it gives the same answer on any machine, however busy.
+the simulation's `work` reaches `work_limit`. The work limit is the one to use for giving up on a
+run that has stalled: unlike the clock it gives the same answer on any machine, however busy, and
+unlike a count of solver steps it follows the cost (a stalled run's steps can each cost thirty
+times a normal one's).
 
 The history is recorded where the solver's steps fall (no closer together than `sample_dt`), so it
 is dense through a transient and sparse through a quiet hold. Reading the run at other times means
@@ -866,12 +881,10 @@ interpolating the history. Stopping at fixed times instead is not free: every st
 junctions at that instant, which on the HF4 replay tripled the run time and moved the end state by
 0.16 psi through the pressures that shut-off sections hold.
 """
-function run_until!(sim::Sim, t; wall_limit = Inf, step_limit = typemax(Int))
+function run_until!(sim::Sim, t; wall_limit = Inf, work_limit = typemax(Int))
     start = Base.time()
-    steps() = sim.integ.stats.naccept + sim.integ.stats.nreject
-    first = steps()
-    while simtime(sim) < t - 1e-9 && isempty(sim.failed) && Base.time() - start < wall_limit && steps() - first < step_limit
-        advance!(sim, t - simtime(sim); max_steps = min(2000, step_limit - (steps() - first)))
+    while simtime(sim) < t - 1e-9 && isempty(sim.failed) && Base.time() - start < wall_limit && work(sim) < work_limit
+        advance!(sim, t - simtime(sim); max_work = work_limit)
     end
     sim
 end

@@ -92,9 +92,9 @@ if the exploratory runs show several separate good regions, the fit is telling y
 more than one answer.
 
 **Runs that fail.** A parameter set for which a dataset cannot be simulated to the end (the
-solver fails, or it takes more than `step_limit` solver steps) is not scored as a bad fit: the
-search simply does not step there, and it is listed in `evals.csv` with the reason. The step
-limit counts solver steps, not seconds, so the result does not depend on how busy the machine is.
+solver fails, or it takes more than `work_limit` part-flow evaluations) is not scored as a bad
+fit: the search simply does not step there, and it is listed in `evals.csv` with the reason. The
+limit counts work done, not seconds, so the result does not depend on how busy the machine is.
 If the best points sit next to failed ones, the model's ability to run is deciding the answer,
 not the data: look at why they fail.
 

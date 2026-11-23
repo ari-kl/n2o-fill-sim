@@ -37,7 +37,7 @@ struct Fit
 end
 
 const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "method", "jacobian_reltol", "jacobian_step")
-const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "step_limit", "score", "set")
+const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "score", "set")
 const _PARAM_KEYS = ("name", "from", "to", "start", "log", "datasets")
 
 # Position of a value within its bounds, 0..1 (on a ratio scale for `log` parameters), and back.

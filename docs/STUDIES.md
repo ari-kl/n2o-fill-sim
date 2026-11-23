@@ -24,8 +24,8 @@ t0 = 9020                                     # log time that is simulation time
 until = 990                                   # seconds to run (default: the end of the log)
 sample_dt = 0.5                               # shortest interval between recorded samples
 reltol = 1e-5                                 # solver tolerance; 1e-4 is fine for a coarse first pass
-step_limit = 20000                            # give up on a run after this many solver steps (a normal
-                                              #   run takes a few hundred); the same on any machine
+work_limit = 5000000                          # give up on a run after this many part-flow evaluations
+                                              #   (the HF4 replay takes 0.3 million); the same on any machine
 wall_limit = 600                              # and, as a last resort, after this many seconds
 mode = "grid"                                 # "grid": every combination
                                               # "oat": the scene as it is, then one parameter at a time

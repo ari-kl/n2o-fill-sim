@@ -365,10 +365,10 @@ end
     head, rows = table(out)
     failed = [r[findfirst(==("failed"), head)] for r in rows]
     @test length(rows) == 2 && count(isempty, failed) == 1 && any(occursin("must be positive", f) for f in failed)
-    # a run that would take too many solver steps is given up on, by count and not by the clock
-    out = F.study(study(top * "step_limit = 25\n" * rest); quiet = true)
+    # a run that would take too much work is given up on, by count and not by the clock
+    out = F.study(study(top * "work_limit = 100\n" * rest); quiet = true)
     head, rows = table(out)
-    @test occursin("step limit", rows[1][findfirst(==("failed"), head)]) && parse(Float64, rows[1][findfirst(==("t_end"), head)]) < 20
+    @test occursin("work limit", rows[1][findfirst(==("failed"), head)]) && parse(Float64, rows[1][findfirst(==("t_end"), head)]) < 20
     @test_throws ErrorException F.read_study(study(top * rest * "[vary]\n\"TANK.volume\" = [1, 2]\n"))      # no such parameter
     @test_throws ErrorException F.read_study(study(top * "sample = 1\n" * rest))                                # no such key
     @test_throws ErrorException F.read_study(study(top * replace(rest, "\"final\"" => "\"last\"")))             # no such metric
@@ -737,6 +737,25 @@ end
     e = F.eos(625.0, 61.7 + 273.15)                             # a bottle left in the sun: 146 bar, 62 °C
     G = [F.massflux(P, e.h, P - 30e5) for P in range(80e5, 62e5, length = 181)]   # 0.1 bar apart along its isenthalp
     @test all(isfinite, G) && maximum(abs.(diff(G)) ./ G[2:end]) < 0.02          # it was a 17 % step at 72 bar
+end
+
+@testset "a junction that no flow responds to does not send the whole junction solve to its fallback" begin
+    # Found by a fit on 2026-11-22. For a few milliseconds after the fill valve opens into an
+    # air-filled tank, the vent line holds a stream the flow law returns nothing for, so that
+    # junction's row of the Jacobian is empty. That used to make the system singular: every solve
+    # fell back to the slow method, 400,000 part flows went by in the first half millisecond, and
+    # the run took minutes. These values are that run's (a random draw, not a fit).
+    names, D = F.read_csv(joinpath(@__DIR__, "data", "lc26_day4_fill_1hz.csv"))
+    s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "lc26_day4.toml"))
+    F.apply_overrides!(s, ["TANK.wall_split=1", "settings.h_in_mult=1", "settings.interphase_E=418.296516991197", "TANK.h_in_mult=4.522441229963602",
+        "BOTTLE.h_in_W_m2K=179.9936819758818", "TANK.wall_tube_frac=0.4050508940519084", "TANK.wall_link_W_K=8.151970808176081",
+        "TANK.wall_ends_W_K=27.853527908924153", "TANK.h_boil_mult=0.011543730231007783", "TANK.h_fill_mult=0.08255971377648245",
+        "TANK.wall_kg=4.402227895484633", "TANK.heater_W=183.77631878833617", "VENT_ORIFICE.Cd=1.0523450146910518", "settings.h_ext_mult=3.495609596770747",
+        "BOTTLE_VALVE.d_mm=4.7083741013324065", "BOTTLE.fill_kg=27.504344745061996", "settings.T_amb_C=15.35230200130054"])
+    s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0 = 21950.0)
+    sim = F.Sim(s; sample_dt = 0.5)
+    F.run_until!(sim, 19.1; work_limit = 400_000)                 # the fill valve opens at 19 s
+    @test isempty(sim.failed) && F.simtime(sim) > 19.09 && F.work(sim) < 200_000
 end
 
 @testset "a supercritical bottle opened into an empty tank does not stall the junction solve" begin
