@@ -38,6 +38,8 @@ set = { "TANK.wall_split" = 1 } # optional: fixed changes to this dataset's scen
 [dataset.score]
 channels = [{ log = "PT202_psig", model = "TANK.P" }]
 phases = { stall = [140, 236], vent1 = [236, 310] }
+[dataset.targets]               # optional: features scored beside the residuals (docs/STUDIES.md)
+vent1_min = { fn = "min", log = "PT202_psig", model = "TANK.P", phase = "vent1", tol = 5 }
 
 [[dataset]]
 name = "coldflow"
@@ -65,7 +67,8 @@ datasets = ["hf4"]
 
 What is minimised is the same normalised score a study reports: every scored number (a channel's
 RMS difference over a phase, or its mean difference over a time bin with `bin_s`), each divided
-by how far that reading can be trusted (`sigma`), over all datasets together (`weight` scales a
+by how far that reading can be trusted (`sigma`), and every target over its tolerance, over all
+datasets together (`weight` scales a
 whole dataset). See docs/STUDIES.md.
 
 **Count the scored numbers against the parameters.** A fit with about as many parameters as
@@ -116,7 +119,8 @@ not the data: look at why they fail.
 
 - **Parameters**: the fitted values with an approximate spread, and a flag on any that ended on a
   bound (which means the bound, not the data, chose the value).
-- **How close**: the RMS per dataset, channel and phase, in the log's own units.
+- **How close**: the RMS per dataset, channel and phase, in the log's own units; the offset taken
+  out of any channel whose zero is free; and each target's value in the model and in the log.
 - **What these data do and do not determine**: from the sensitivity of every residual to every
   parameter, taken at a tighter solver tolerance with steps of 1 % of each parameter's range so
   that the differences are signal and not solver noise.

@@ -706,6 +706,88 @@ end
     @test occursin("offset.LC_kg", read(joinpath(r.dir, "report.txt"), String))
 end
 
+@testset "scoring: targets (a feature of the log against the same feature of the model), slope, windows" begin
+    # the pieces: a slope by least squares on unevenly spaced samples, and a window on any metric
+    @test F._metric([0.0, 1, 1.5, 4, 10], 3 .+ 2 .* [0.0, 1, 1.5, 4, 10], Dict("fn" => "slope"), 0.0) ≈ 2
+    sim = F.Sim(rig())
+    empty!(sim.t_hist); append!(sim.t_hist, [0.0, 10.0, 20.0]); sim.hist["X"] = [0.0, 100.0, 100.0]
+    m(fn; kw...) = F.metric(sim, Dict{String,Any}("fn" => fn, "signal" => "X", (String(k) => v for (k, v) in kw)...), 0.0)
+    @test m("max") == 100 && m("max"; from = 2, to = 5) ≈ 50 && m("min"; from = 5) ≈ 50 && m("final"; to = 5) ≈ 50       # the window's ends are interpolated
+    @test m("slope"; from = 0, to = 10) ≈ 10 && m("slope"; from = 10, to = 20) ≈ 0 && 0 < m("slope") < 10
+    @test isnan(m("max"; from = 30, to = 40))                                                    # a window the run never reached
+    dir = mktempdir()
+    made_up_log(joinpath(dir, "log.csv"); more = ["RAMP_psig" => (sim, t) -> 100 + 2t])
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    study(targets; set = "") = (p = joinpath(dir, "s$(hash((targets, set))).toml"); write(p, """
+        scene = "rig.toml"
+        replay = "log.csv"
+        [set]
+        $set
+        [score]
+        channels = [{ log = "PT_psig", model = "TANK.P" }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        [targets]
+        $targets
+        """); p)
+    body = """
+        vent_min = { fn = "min", log = "PT_psig", model = "TANK.P", phase = "venting", tol = 5 }
+        rise = { fn = "slope", log = "PT_psig", model = "TANK.P", from = "VENT close", to = 30, tol = 0.5 }
+        ramp = { fn = "slope", log = "RAMP_psig", model = "TANK.P", from = 15, to = 30, tol = 0.5 }
+        """
+    st = F.read_study(study(body))
+    @test [g.name for g in st.targets] == ["ramp", "rise", "vent_min"] && st.targets[1].value ≈ 2 && st.targets[2].m["from"] == 15
+    @test F.n_scored(st) == 2 + 3 && F.n_residuals(st) == 29 + 31 + 3
+    run, = F.simulate(st, [])
+    s = F.score_run(st, run)
+    T, Z = Dict(s.targets), Dict(s.z)
+    psig(t) = (F.signal_at(run, "TANK.P", t) - 101325) / F.PSI
+    @test T["target.vent_min.model"] ≈ minimum(psig, 1:0.5:15) && T["target.vent_min.log"] ≈ minimum(st.cols["PT_psig"][3:31])
+    @test Z["res.target.vent_min"] ≈ (T["target.vent_min.model"] - T["target.vent_min.log"]) / 5
+    @test s.residuals[end-2:end] == [Z["res.target.ramp"], Z["res.target.rise"], Z["res.target.vent_min"]]
+    @test F.study_score(s) ≈ sqrt(sum(abs2, s.residuals) / 5)
+    # a slope is in the log's units per second on both sides (psi/s here, not Pa/s)
+    @test T["target.rise.model"] ≈ F._metric(collect(15:0.5:30), psig.(15:0.5:30), Dict("fn" => "slope"), 0.0) && 0.1 < T["target.rise.model"] < 50
+    # with the scene at the log's own values, every feature agrees (to a small part of its tolerance:
+    # the log was sampled from a run recorded at other instants)
+    exact = F.read_study(study(body; set = "\"FILL.d_mm\" = 4\n\"BOTTLE.T_C\" = 27"))
+    se = F.score_run(exact, F.simulate(exact, [])[1])
+    @test abs(Dict(se.z)["res.target.rise"]) < 0.05 && abs(Dict(se.z)["res.target.vent_min"]) < 0.05
+    # a feature the model does not have at all counts as 100 tolerances out: the log passes 700 psig, a run with a 15 °C bottle never does
+    cross = "t700 = { fn = \"first_crossing\", log = \"PT_psig\", model = \"TANK.P\", value = 700, tol = 1 }\n"
+    st7 = F.read_study(study(cross; set = "\"BOTTLE.T_C\" = 15"))
+    @test 1 < st7.targets[1].value < 30 && Dict(F.score_run(st7, F.simulate(st7, [])[1]).z)["res.target.t700"] == 100
+    # the results file has both values and the scored number
+    head = split(readline(F.study(study(body); quiet = true)), ',')
+    @test all(in(head), ["res.target.rise", "target.rise.model", "target.rise.log"])
+    for bad in (replace(cross, "value = 700" => "value = 5000"),                                # the log never gets there
+                replace(cross, "tol = 1" => "tol = 1, unit = \"psig\""), replace(cross, ", tol = 1" => ""), replace(cross, "first_crossing" => "first"),
+                replace(cross, "PT_psig" => "PT9_psig"), replace(cross, "tol = 1" => "tol = 1, phase = \"hold\""), replace(cross, "tol = 1" => "tolerance = 1"))
+        @test_throws ErrorException F.read_study(study(bad))
+    end
+    # in a fit, targets are scored with the residuals and written to the record
+    write(joinpath(dir, "fit.toml"), """
+        max_evals = 20
+        jacobian_reltol = 1e-5
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        set = { "FILL.d_mm" = 4 }
+        [dataset.targets]
+        rise = { fn = "slope", log = "PT_psig", model = "TANK.P", from = 15, to = 30, tol = 0.05 }
+        end_psig = { fn = "final", log = "PT_psig", model = "TANK.P", tol = 1 }
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 22
+        """)
+    r = F.fit(joinpath(dir, "fit.toml"); quiet = true)
+    @test abs(r.values["BOTTLE.T_C"] - 27) < 0.2
+    record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))["dataset"][1]
+    @test Set(t["name"] for t in record["targets"]) == Set(["rise", "end_psig"]) && abs(record["target"]["rise.model"] - record["target"]["rise.log"]) < 0.05
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

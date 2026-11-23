@@ -37,7 +37,7 @@ struct Fit
 end
 
 const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "method", "jacobian_reltol", "jacobian_step")
-const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "score", "set")
+const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "score", "targets", "set")
 const _PARAM_KEYS = ("name", "from", "to", "start", "log", "datasets")
 
 # Position of a value within its bounds, 0..1 (on a ratio scale for `log` parameters), and back.
@@ -108,7 +108,7 @@ Run every dataset with the parameters at position `x` (each 0..1 within its boun
 is all datasets' residual vectors end to end, each scaled by the square root of its dataset's
 weight; its sum of squares is what the fit minimises. `readings` is, for each dataset, the
 per-channel, per-phase RMS in physical units, then the offset found for each channel whose zero is
-free. A dataset that fails counts as far from its log, so the search
+free, then each target's value in the model and in the log. A dataset that fails counts as far from its log, so the search
 moves away from it.
 """
 function evaluate(fit::Fit, x; reltol = nothing)
@@ -124,10 +124,10 @@ function evaluate(fit::Fit, x; reltol = nothing)
             failed[k] = why
             # as bad as 100 sigma in every scored number, in a vector as long as a finished run's
             parts[k] = fill(100.0 * sqrt(fit.weights[k] * n_scored(st) / n_residuals(st)), n_residuals(st))
-            rms[k] = vcat(_rms_names(st), _offset_names(st))
+            rms[k] = vcat(_rms_names(st), _offset_names(st), _target_names(st))
         else
             s = score_run(st, sim)
-            rms[k] = vcat(s.rms, s.offsets)
+            rms[k] = vcat(s.rms, s.offsets, s.targets)
             parts[k] = s.residuals .* sqrt(fit.weights[k])
         end
     end
@@ -413,7 +413,7 @@ function fit(path; write_scenes = false, quiet = false)
         println(io, "  ", rpad(p.label, 34), rpad(round(values[k], sigdigits = 5), 12), p.log ? "×/÷ $(round(spread[k], sigdigits = 3))" : "± $(round(spread[k], sigdigits = 3))",
                 "   (bounds ", p.lo, " to ", p.hi, "; started at ", round(p.start, sigdigits = 5), ")", at_bound)
     end
-    println(io, "\nHow close, per dataset, channel and phase (RMS in the log's own units; offset: what a channel with a free zero was shifted by)")
+    println(io, "\nHow close, per dataset, channel and phase (RMS in the log's own units; offset: what a channel with a free zero was shifted by; target: a feature in the model and in the log)")
     for (k, name) in enumerate(ft.names)
         println(io, "  ", name, isempty(failed[k]) ? "" : "   FAILED: " * failed[k])
         for (key, v) in rms[k]
@@ -442,7 +442,8 @@ function fit(path; write_scenes = false, quiet = false)
                                              (c.correct === nothing ? "" : ", correct = { by = $(repr(c.correct[1])), per_unit = $(c.correct[2]) }") * " }" for c in st.channels], ", "), "]")
             println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
             println(out, "scored = [", join(["{ name = $(repr(g.name)), sigma = $(round(g.sigma, sigdigits = 6)) }" for g in st.scored], ", "), "]")
-            for kind in ("rms", "offset")
+            isempty(st.targets) || println(out, "targets = [", join(["{ name = $(repr(g.name)), " * join(["$k = $(v isa AbstractString ? repr(v) : v)" for (k, v) in sort!(collect(g.m); by = first)], ", ") * " }" for g in st.targets], ", "), "]")
+            for kind in ("rms", "offset", "target")
                 println(out, kind, " = { ", join(["$(repr(replace(key, kind * "." => ""))) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in rms[k] if startswith(key, kind * ".")], ", "), " }")
             end
         end

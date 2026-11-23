@@ -54,6 +54,12 @@ bin_s = 30                                    # optional: one scored number per 
 # A phase written as a table can also state how far the model itself is known to be off there:
 # phases = { fill_start = { from = 140, to = 160, discrepancy = 40 }, stall = [160, 236] }
 
+[targets]                                     # optional: features of the log scored against the same
+                                              #   features of the model, each with a tolerance
+vent1_min = { fn = "min", log = "PT202_psig", model = "TANK.P", from = 236, to = 310, tol = 5 }
+recovery = { fn = "slope", log = "PT202_psig", model = "TANK.P", from = "AV204 close", to = 400, tol = 0.05 }
+hold_end = { fn = "final", log = "PT202_psig", model = "TANK.P", phase = "stall", tol = 5 }
+
 [metrics]                                     # optional numbers taken from each run
 loaded_kg = { fn = "final", signal = "TANK.m" }
 peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
@@ -79,7 +85,7 @@ can be trusted, and 3 means three times that. Two things follow. A pressure and 
 be scored together, because 5 psi and 1 K each count as one. And every phase counts once, however
 long it is, so a ten-second vent weighs as much as a twenty-minute hold.
 
-Every scored number is also a column, `res.<log column>.<phase>`, so a row can be checked number
+Every scored number is also a column, `res.<log column>.<phase>` (and `res.target.<name>`), so a row can be checked number
 by number (for example, to throw out every run in which any one of them is over 3).
 
 **Time bins.** One number for a twenty-minute hold says how far off the model was on average, and
@@ -146,11 +152,34 @@ simply matter more.
 With a manifest and no `[score] channels`, every reading the manifest maps to a model signal is
 scored, over the manifest's phases.
 
-**Metrics.** `final`, `max`, `min`, `mean_over` (with `from`, `to` in seconds), `time_in_band`
-(with `lo`, `hi`) and `first_crossing` (with `value`). Signals are the names in an exported run
-(`TANK.P`, `TANK.m`, `AV203.mdot`, `vented.m`, ...) and are in SI units. An argument can be given
-as a gauge pressure or in Celsius by its name (`lo_psig`, `value_C`), and `unit = "psig"` or `"C"`
-converts a result.
+**Targets.** A point-by-point difference asks the model to be right everywhere at once. Often
+what matters, and what a parameter actually controls, is a feature: how low the pressure went in
+a vent, how fast it recovered afterwards, what it was at the end of a hold. A target names one
+such feature with a metric function (below), takes it from the log column and from the model
+signal over the same window, and adds one scored number:
+
+    (feature of the model − feature of the log) / tol
+
+`tol` is how close counts as agreement, in the feature's own units: psi for a minimum, psi per
+second for a slope, seconds for a crossing time. The window is `from` and `to` (seconds or
+events, as for a phase) or `phase = "<name>"`; without one it is the whole run. Both sides are in
+the **log column's units** (psi gauge, °C, kg), so `lo`, `hi` and `value` are given plainly in
+those and there is no `unit`. The model's signal is read at the log's own sample times, so both
+sides are worked out from the same instants; times with no log reading are skipped on both. The
+columns are `target.<name>.model`, `target.<name>.log` and the scored number `res.target.<name>`.
+A feature the log does not have (a level it never reaches) is an error when the file is read. One
+the model does not have in a given run counts as 100 tolerances out.
+
+A slope or a change does not depend on a reading's zero, so a target is also a way to use a load
+cell that cannot be trusted in absolute terms.
+
+**Metrics.** `final`, `max`, `min`, `mean_over`, `slope` (per second, by least squares),
+`time_in_band` (with `lo`, `hi`) and `first_crossing` (with `value`). With `from` and `to` in
+seconds, only that window of the run is looked at (so `final` with `to = 300` is the value at
+300 s); without them, the whole run. Signals are the names in an exported run (`TANK.P`, `TANK.m`,
+`AV203.mdot`, `vented.m`, ...) and are in SI units. An argument can be given as a gauge pressure
+or in Celsius by its name (`lo_psig`, `value_C`), and `unit = "psig"` or `"C"` converts a result
+that is a pressure or a temperature (not a slope: that stays in SI per second).
 
 **Every row** also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
