@@ -192,14 +192,13 @@ section 9.
   for trickles of a gram per second or less.
 - No hydrostatic head or elevation differences (about 1 psi per metre of liquid).
 - No nitrogen pressurisation or dissolved nitrogen. Pure N2O plus inert air in a vessel's ullage.
-- **The air is a passenger, not a second gas.** It adds its partial pressure and leaves with the
-  ullage gas, but it has no heat capacity and is not counted in flow rates. That is a fair
-  picture once the ullage is mostly N2O, which takes about a tenth of a second of filling. Before
-  that it is not: the first cold vapour into an air-filled tank sets the ullage temperature by
-  itself, so the tank can read several psi below atmospheric for that instant, and gas leaving
-  through the vent is sent down the line with an enthalpy (tank pressure over the N2O's own
-  density) that belongs to no real state of N2O. The flow law returns nothing for such a stream.
-  Do not read anything into the first tenth of a second of a fill into air.
+- **Air in a vessel is a second gas in the ullage only.** It has its own heat capacity and
+  partial pressure, and leaves with the ullage gas in proportion to how much of the gas it is.
+  Once in the lines the stream is counted as N2O (the lines carry one fluid, sized by the flow
+  law as if it were N2O vapour at the same pressure and temperature, which overstates the mass
+  flow of nearly pure air by about a fifth), and anything that flows back in from the atmosphere
+  arrives as N2O. A tank's worth of air is tens of grams, so this matters only until the first
+  N2O has displaced it.
 - One wall temperature per vessel; no conduction along the wall or into stands and plumbing.
 - A single liquid temperature: no warm surface layer. Vent rebound comes only from the lag between
   liquid and ullage.

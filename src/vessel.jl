@@ -18,6 +18,14 @@
 
 const G0 = 9.80665
 const R_AIR = 287.05
+const CV_AIR = 717.6          # J/kg/K
+const CP_AIR = CV_AIR + R_AIR
+# Air's energy is counted from a zero chosen so that air and N2O vapour have the same enthalpy at
+# 15 °C. Gas leaving a vessel goes down the lines as one stream with one enthalpy, which the flow
+# laws read as N2O: with this zero, air-rich gas reads as N2O vapour at about its own temperature.
+const AIR_U0 = vapour_PT(101325.0, 288.15).h - CP_AIR * 288.15
+air_u(T) = CV_AIR * T + AIR_U0
+air_h(T) = CP_AIR * T + AIR_U0
 const SIGMA = 5.670374e-8
 const LEVEL_BAND = 0.01       # m of level over which a port goes from drawing ullage to liquid
 # A sliver of liquid mass that keeps the liquid-zone equations finite as the liquid vanishes. It
@@ -116,7 +124,12 @@ function strat(n::Node, u)
     Pn = ev.P + ev.dPdρ * (ρv - ρe)          # N2O partial pressure
     P = Pn + mair * R_AIR * Tv / Vv
     level = Vl / (π * n.D^2 / 4)
-    (; ml, Tl, mv, Tv, mair, ρl, dρl, ul, cl, Vl, Vv, ρv, ρe, ev, Pn, P, level, hl = ul + P / ρl, hv = ev.u + P / ρv)
+    # The ullage gas as it leaves: N2O and air in the proportion they are present, each with its
+    # own enthalpy. With no air these are the N2O's own density and enthalpy, to the last bit.
+    yn = mv / (mv + mair)
+    ρg = (mv + mair) / Vv
+    hv = yn * (ev.u + Pn / ρv) + (1 - yn) * air_h(Tv)
+    (; ml, Tl, mv, Tv, mair, ρl, dρl, ul, cl, Vl, Vv, ρv, ρg, ρe, ev, Pn, P, level, hl = ul + P / ρl, hv)
 end
 
 "Fill in a vessel's (or the atmosphere's) pressure and what each port would deliver."
@@ -135,7 +148,7 @@ function evaluate!(n::Node, u, env::Env)
         for k in eachindex(n.ports)
             φ = clamp((s.level - n.ports[k] * n.H) / LEVEL_BAND, 0.0, 1.0)
             φ = φ^2 * (3 - 2φ)
-            fl = φ * s.ρl / (φ * s.ρl + (1 - φ) * s.ρv)
+            fl = φ * s.ρl / (φ * s.ρl + (1 - φ) * s.ρg)
             n.port_cover[k] = φ
             n.port_fl[k] = fl
             n.port_h[k] = fl * s.hl + (1 - fl) * s.hv
@@ -143,13 +156,17 @@ function evaluate!(n::Node, u, env::Env)
     else
         f = homog(n, u)
         n.P, n.T, n.hl, n.hv = f.P + air_pressure(n, u, f), f.T, f.h, f.h
-        fill!(n.port_h, f.h)
+        y = _n2o_share(u[n.i], u[n.i+5])
+        fill!(n.port_h, y * f.h + (1 - y) * air_h(f.T))
         fill!(n.port_fl, 1 - f.x)
     end
     st = sat_P(clamp(n.P, SAT_PMIN, SAT_PMAX))
     n.hl_sat, n.hv_sat = st.hl, st.hv
     nothing
 end
+
+# Mass fraction of N2O in a gas of `m` kg of N2O and `mair` kg of air.
+_n2o_share(m, mair) = (m = max(m, 1e-9); m / (m + max(mair, 0.0)))
 
 homog(n::Node, u) = (m = max(u[n.i], 1e-12); state_ρu(m / n.V, u[n.i+1] / m))
 
@@ -165,18 +182,23 @@ end
 function outflow!(n::Node, k, mdot, u)
     n.kind === :vessel || return
     if n.strat
-        fl = n.port_fl[k]
+        # The gas part of the stream is ullage gas: N2O and air in the proportion present.
+        # Once in the lines the stream is all counted as N2O (the lines carry one
+        # fluid), and what comes back in from the atmosphere is N2O too. Fine for a tank's worth
+        # of air (tens of grams); carry a second species through the network if nitrogen
+        # pressurisation is ever added.
+        fl, yn = n.port_fl[k], _n2o_share(u[n.i+2], u[n.i+5])
         n.dm_l -= fl * mdot
-        n.dm_v -= (1 - fl) * mdot
+        n.dm_v -= (1 - fl) * mdot * yn
         n.dE_v -= (1 - fl) * mdot * n.hv
-        # Air is a massless passenger. It adds partial pressure and leaves with the
-        # ullage gas, but is not counted in flow rates or energy. Fine for a tank's worth of air
-        # (tens of grams); model it as a real species if N2 pressurisation is ever added.
-        n.dair -= (1 - fl) * mdot * max(u[n.i+5], 0.0) / max(u[n.i+2], 1e-9)
+        n.dair -= (1 - fl) * mdot * (1 - yn)
     else
-        n.dm_l -= mdot
-        n.dE_v -= mdot * n.hl
-        n.dair -= mdot * max(u[n.i+5], 0.0) / max(u[n.i], 1e-9)
+        # In this mode (liquid-full or supercritical) the air has no heat capacity of
+        # its own; it leaves in proportion and takes its flow work from the N2O.
+        y = _n2o_share(u[n.i], u[n.i+5])
+        n.dm_l -= y * mdot
+        n.dE_v -= y * mdot * n.hl + (1 - y) * mdot * R_AIR * n.T
+        n.dair -= (1 - y) * mdot
     end
     nothing
 end
@@ -400,22 +422,23 @@ function derivative!(du, n::Node, u, env::Env)
     du[i] = dml
     du[i+1] = dTl
     du[i+2] = dmv
-    du[i+3] = (dUv - s.ev.u * dmv - s.mv * du_dρ * dρv) / (s.mv * s.ev.cv)
+    du[i+3] = (dUv - s.ev.u * dmv - s.mv * du_dρ * dρv - air_u(s.Tv) * n.dair) / (s.mv * s.ev.cv + s.mair * CV_AIR)
     du[i+4] = n.split ? dTw_tube : (qx - q_wl - q_wv) / n.Cw
     du[i+5] = n.dair
     n.split && (du[i+6] = dTw_ends)
     qx
 end
 
-"N2O mass and total energy (fluid + wall) held by a node."
+"Mass (N2O and air) and total energy (fluid + wall) held by a node."
 function inventory(n::Node, u)
     n.kind === :vessel || return 0.0, 0.0
     i = n.i
     if n.strat
         s = strat(n, u)
-        return s.ml + s.mv, s.ml * s.ul + s.mv * s.ev.u + n.Cw * wall_T(n, u)
+        return s.ml + s.mv + s.mair, s.ml * s.ul + s.mv * s.ev.u + s.mair * air_u(s.Tv) + n.Cw * wall_T(n, u)
     end
-    u[i], u[i+1] + n.Cw * wall_T(n, u)
+    mair = max(u[i+5], 0.0)
+    u[i] + mair, u[i+1] + (mair > 0 ? mair * air_u(homog(n, u).T) : 0.0) + n.Cw * wall_T(n, u)
 end
 
 """

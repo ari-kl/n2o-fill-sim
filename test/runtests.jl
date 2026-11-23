@@ -758,6 +758,29 @@ end
     @test isempty(sim.failed) && F.simtime(sim) > 19.09 && F.work(sim) < 200_000 && closes(sim) && sim.net.unconverged == 0
 end
 
+@testset "air in a tank is a gas with heat capacity; valve travel follows simulated time" begin
+    names, D = F.read_csv(joinpath(@__DIR__, "data", "lc26_day4_fill_1hz.csv"))
+    scene() = (s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "lc26_day4.toml")); s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0 = 21950.0); s)
+    sim = F.Sim(scene(); sample_dt = 0.01)
+    tank = sim.net.nodes[findfirst(n -> n.name == "TANK", sim.net.nodes)]
+    F.advance!(sim, 1.0)
+    # What an air-filled tank sends down the vent line is close to N2O vapour at its own
+    # temperature (it used to be tank pressure over the trace N2O density: about 12 MJ/kg).
+    @test abs(tank.port_h[1] - F.vapour_PT(sim.net.env.P_atm, sim.u[tank.i+3]).h) < 2e4
+    F.run_until!(sim, 20.0)                                       # the fill valve opens at 19 s
+    after = [P for (t, P) in zip(sim.t_hist, sim.hist["TANK.P"]) if t > 19]
+    # The first cold vapour has to cool the air too, so the tank no longer drops below atmospheric.
+    @test minimum(after) > sim.net.env.P_atm - 500 && closes(sim) && isempty(sim.failed)
+    # The fill valve takes 0.5 s to open. A tenth of a second in, it is a fifth open, however the
+    # run is stepped (it used to move 20 ms of travel on every call).
+    opening(piece) = begin
+        sim = F.Sim(scene()); F.run_until!(sim, 19.0)
+        while F.simtime(sim) < 19.1 - 1e-9; F.advance!(sim, min(piece, 19.1 - F.simtime(sim))); end
+        sim.net.edges[findfirst(e -> e.name == "AV201", sim.net.edges)].opening
+    end
+    @test 0.16 <= opening(0.1) <= 0.24 && 0.16 <= opening(0.001) <= 0.24
+end
+
 @testset "a supercritical bottle opened into an empty tank does not stall the junction solve" begin
     # Reported from the window: a bottle left in the sun (62 °C, about 2100 psig) opened through an
     # orifice, hose, valve and hose. Every evaluation "failed" at an imbalance of 1e-6 and paid for

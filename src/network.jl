@@ -683,6 +683,7 @@ mutable struct Sim
     sample_dt::Float64
     last_sample::Float64
     failed::String                            # non-empty once the solver has given up
+    stroke_until::Float64                     # valves have been moved for the time up to here
 end
 
 function Sim(scene::Scene; sample_dt = 0.1, reltol = 1e-5)
@@ -692,7 +693,7 @@ function Sim(scene::Scene; sample_dt = 0.1, reltol = 1e-5)
     integ = init(prob, Rodas5P(); reltol, abstol = 1e-8, save_everystep = false, save_start = false,
                  save_end = false, maxiters = typemax(Int), dtmax = 5.0)
     m0, E0 = totals(net, u0)
-    sim = Sim(net, integ, 0.0, copy(u0), sort(scene.schedule; by = a -> a.t), 1, Action[], m0, E0, Float64[], Dict{String,Vector{Float64}}(), sample_dt, -Inf, "")
+    sim = Sim(net, integ, 0.0, copy(u0), sort(scene.schedule; by = a -> a.t), 1, Action[], m0, E0, Float64[], Dict{String,Vector{Float64}}(), sample_dt, -Inf, "", -Inf)
     refresh!(sim)
     sample!(sim)
     sim
@@ -822,14 +823,18 @@ function advance!(sim::Sim, dt; max_steps = 2000, max_work = typemax(Int))
             sim.next_action += 1
         end
         moving = _valves_moving(sim)
-        if moving                                # valve areas change in 20 ms slices
+        if moving && sim.t >= sim.stroke_until - 1e-9
+            # Valve areas change in 20 ms slices of simulated time. A caller that advances in
+            # shorter pieces, or is handed back early, comes through here again inside a slice:
+            # the valves have already been moved for it and must not be moved again.
             _stroke!(sim, 0.02)
+            sim.stroke_until = sim.t + 0.02
             _restart!(sim)
         elseif due
             _rewind!(sim)
         end
         # The integrator must stop exactly where the equations next change; otherwise it is free.
-        event = moving ? sim.t + 0.02 : Inf
+        event = moving ? sim.stroke_until : Inf
         sim.next_action <= length(sim.schedule) && (event = min(event, sim.schedule[sim.next_action].t))
         t_stop = min(target, max(event, sim.t + 1e-6))
         isfinite(event) && event > integ.t && add_tstop!(integ, max(event, integ.t + 1e-9))
