@@ -1,7 +1,6 @@
 # Robustness and worst-case speed on scenes nobody tuned.   julia --project test/stress.jl [first last] [-v] [-d]
 #
-# 1. The scene reported from the window: a bottle left in the sun until it is supercritical, opened
-#    into an empty tank.
+# 1. A bottle left in the sun until it is supercritical, opened into an empty tank.
 # 2. Random plumbing built from default parts, with valves opened and toggled.
 # Both are driven the way the window drives the solver (one step at a time inside a 12 ms budget),
 # so "worst frame" is how long the window would have frozen.

@@ -133,8 +133,8 @@ Run every dataset with the parameters at position `x` (each 0..1 within its boun
 is all datasets' residual vectors end to end, each scaled by the square root of its dataset's
 weight; its sum of squares is what the fit minimises. `readings` is, for each dataset, the
 per-channel, per-phase RMS in physical units, then the offset found for each channel whose zero is
-free, then each target's value in the model and in the log. A dataset that fails counts as far from its log, so the search
-moves away from it.
+free, then each target's value in the model and in the log. A dataset that fails counts as far
+from its log, so the search moves away from it.
 """
 function evaluate(fit::Fit, x; reltol = nothing)
     n = length(fit.datasets)
@@ -556,8 +556,9 @@ end
     profile_parameter(fit, x, k; n = 9, flat = 0.05) -> (; file, values, scores, flat, verdict)
 
 The profile of fitted parameter `k`: hold it at `n` values across its bounds, and at its fitted
-value, and at each refit all the others (Levenberg-Marquardt from the best point `x`). The best score reached at each value
-is the profile. Where it rises steeply either side of the fitted value, the data pin the parameter.
+value, and at each refit all the others (Levenberg-Marquardt from the best point `x`). The best
+score reached at each value is the profile. Where it rises steeply either side of the fitted
+value, the data pin the parameter.
 Where it is flat, the other parameters can make up for any value of this one: the data do not
 determine it, whatever spread the fit reported (that spread assumes the model is a straight line
 near the best point; the profile assumes nothing).

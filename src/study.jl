@@ -320,9 +320,9 @@ to read.
 
 `z` has one entry per scored number (see `Scored`), with no units: a difference divided by how far
 that reading is trusted (`sigma`, widened by any model error stated for the phase), so that a
-pressure and a temperature can be weighed against each other. For a channel over a whole phase it is weight · rms / sigma. For a time bin it is
-weight · (mean of model − log over the bin) / sigma, with its sign. The one-number `score` is the
-root mean square of `z`.
+pressure and a temperature can be weighed against each other. For a channel over a whole phase it
+is weight · rms / sigma. For a time bin it is weight · (mean of model − log over the bin) / sigma,
+with its sign. The one-number `score` is the root mean square of `z`.
 
 A channel with `offset = "free"` has an unknown zero (a load cell that was not tared). The mean of
 model − log over all of that channel's scored samples in this run is taken out before anything is
