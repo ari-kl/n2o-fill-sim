@@ -159,7 +159,10 @@ check(438, "clicking a wire adds a corner that can be dragged", () -> wire_ab(("
 click(440, 24, 7; button = 1)
 check(444, "right-clicking the corner removes it", () -> isempty(wire_ab(("AV203", "b"), ("TANK", "bottom")).via))
 
-script(app, n) = (foreach(((k, f),) -> k == n && f(), steps); hold())
+# The pointer is sent before this frame's steps as well as after. With the window focused and the
+# real mouse parked outside it, the platform layer queues the real position every frame; a button
+# event queued straight after that would be taken at the real position, and the click would miss.
+script(app, n) = (hold(); foreach(((k, f),) -> k == n && f(), steps); hold())
 # --- units, plot follow, quitting with unsaved changes
 press(446, "tab View"); press(452, "unit bar")
 check(458, "the View tab switches units", () -> app.units.P === :bar && endswith(F.fmt(app, :pressure, 3e5), " bar"))
