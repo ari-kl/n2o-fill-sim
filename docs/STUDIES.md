@@ -44,7 +44,9 @@ actions = [{ t = 250.0, part = "AV204", action = "stuck_open" }]
 
 [score]                                       # needs a log
 channels = [{ log = "PT202_psig", model = "TANK.P" },
-            { log = "TH_tank_C", model = "TANK.T", sigma = 1.0, weight = 1.0 }]   # sigma, weight: optional
+            { log = "TH_tank_C", model = "TANK.T", sigma = 1.0, weight = 1.0 },   # sigma, weight: optional
+            { log = "LC_kg", model = "TANK.m", offset = "free",                   # a reading whose zero is unknown,
+              correct = { by = "PT202_psig", per_unit = 0.0057 } }]               #   and which creeps with another
 phases = { stall = [140, 236], vent1 = [236, 310] }      # seconds after t0, or
                                                           # { from = "AV201 open", to = "AV201 close" }
 bin_s = 30                                    # optional: one scored number per 30 s of each phase
@@ -90,6 +92,24 @@ It keeps its sign, so a fitter can see that the model is high early and low late
 `res.<log column>.<phase>.<bin number>`; the per-phase `rms` columns stay as they are. The score is
 still the root mean square of the scored numbers, so a phase now counts once per bin: a long phase
 weighs more than a short one. A bin with no log reading is left out.
+
+**A reading whose zero is unknown.** A load cell that was not tared, or was tared with plumbing
+hanging on it, reads the right changes around the wrong zero. `offset = "free"` on a channel says
+so. For each run, the mean of model − log over all of that channel's scored samples is taken out
+first, so only changes are scored: how much went in during the fill, how much left in a vent. The
+amount taken out is the column `offset.<log column>` (what to add to the log to lay it on the
+model). Read it: if it differs widely between runs that fit equally well, the changes alone are
+not telling those runs apart. (This is not the `offset` of a manifest channel, which is a known
+number added when the log is read. See docs/LOGS.md.)
+
+**A reading that creeps with another.** A load cell under a pressurised tank reads a little more
+as the tank stiffens its plumbing, with no mass going anywhere. If that has been measured (from
+a sealed period: change in reading per psi with no flow), `correct = { by = "PT202_psig",
+per_unit = 0.0057 }` takes it out before scoring:
+
+    reading used = reading − per_unit × (other column − other column at the first scored sample)
+
+The log itself is not altered, and where the other column has no reading this one is skipped too.
 
 **Stated model error.** Sometimes the model is known to be wrong in one stretch of a test: it
 lacks a mechanism that matters for the first seconds of a fill, say. Scored as it stands, that

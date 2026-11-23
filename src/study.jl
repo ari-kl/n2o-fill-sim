@@ -39,7 +39,8 @@ struct Study
     work_limit::Int                           # give up on a run after this many part-flow evaluations
     runs::Vector{StudyRun}
     varied::Vector{String}
-    channels::Vector{NamedTuple}              # (log column, model signal, sigma in the log's units, weight, y: the log's readings)
+    channels::Vector{NamedTuple}              # (log column, model signal, sigma in the log's units, weight, y: the log's readings
+                                              #   as scored, offset: is its zero unknown, correct: (other column, per unit) or nothing)
     phases::Vector{Pair{String,Tuple{Float64,Float64}}}
     scored::Vector{Scored}                    # every scored number, in the order of the residuals
     metrics::Vector{Pair{String,Dict{String,Any}}}
@@ -71,7 +72,7 @@ _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict
 const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "mode", "n", "seed",
                      "vary", "case", "score", "metrics", "set")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
-const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight")
+const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight", "offset", "correct")
 const _PHASE_KEYS = ("from", "to", "bin_s", "discrepancy")
 const _METRIC_FNS = ("final", "max", "min", "mean_over", "time_in_band", "first_crossing")
 
@@ -165,10 +166,19 @@ function _study(d, base, path, dir, allowed)
             k in _CHANNEL_SCORE_KEYS || error("$path: unknown key \"$k\" in a [score] channel. Keys: $(join(_CHANNEL_SCORE_KEYS, ", "))")
         end
         log = String(c["log"])
-        push!(channels, (; log, model = String(c["model"]), sigma = trust(log, get(c, "sigma", NaN)), weight = Float64(get(c, "weight", 1.0)), y = cols[log]))
+        get(c, "offset", "none") in ("none", "free") || error("$path: channel $log: offset must be \"free\" or \"none\"")
+        correct = nothing
+        if haskey(c, "correct")
+            k = c["correct"]
+            (k isa AbstractDict && sort!(collect(keys(k))) == ["by", "per_unit"]) || error("$path: channel $log: correct must be like { by = \"PT202_psig\", per_unit = 0.0057 }")
+            haskey(cols, k["by"]) || error("$path: channel $log is corrected by \"$(k["by"])\", which is not a column of the log")
+            correct = (String(k["by"]), Float64(k["per_unit"]))
+        end
+        push!(channels, (; log, model = String(c["model"]), sigma = trust(log, get(c, "sigma", NaN)), weight = Float64(get(c, "weight", 1.0)), y = cols[log],
+                         offset = get(c, "offset", "none") == "free", correct))
     end
     isempty(channels) && !haskey(score, "channels") &&
-        append!(channels, [(; log = c.name, model = c.target, sigma = trust(c.name, NaN), weight = 1.0, y = cols[c.name]) for c in columns if !isempty(c.target)])
+        append!(channels, [(; log = c.name, model = c.target, sigma = trust(c.name, NaN), weight = 1.0, y = cols[c.name], offset = false, correct = nothing) for c in columns if !isempty(c.target)])
     all(c -> c.sigma > 0, channels) || error("$path: a channel's sigma must be positive")
     bin_s = Dict{String,Float64}()             # phase => bin length, where a phase gives its own
     stated = Dict{String,Any}()                # phase => stated model error: one number, or a table of them by log column
@@ -194,6 +204,15 @@ function _study(d, base, path, dir, allowed)
     # The scored numbers: for each channel and phase, the log samples that have a reading, as one
     # group or cut into bins. An empty group or bin is left out here, so that every run of the
     # study (and every evaluation of a fit) is scored on exactly the same numbers.
+    # A reading that creeps with another (a load cell with tank pressure): take out the other's
+    # change since the first scored sample, times the stated amount per unit. Where the other
+    # has no reading, neither has this one.
+    channels = map(channels) do c
+        c.correct === nothing && return c
+        other = cols[c.correct[1]]
+        i0 = findfirst(i -> t_log[i] <= until && any(a <= t_log[i] <= b for (_, (a, b)) in phases) && isfinite(c.y[i]) && isfinite(other[i]), eachindex(t_log))
+        i0 === nothing ? c : merge(c, (; y = c.y .- c.correct[2] .* (other .- other[i0])))
+    end
     for (phase, e) in stated, k in (e isa AbstractDict ? keys(e) : ())
         any(c -> c.log == k, channels) || error("$path: phase $phase states a discrepancy for \"$k\", which is not a scored log column")
     end
@@ -242,7 +261,7 @@ end
 _as_logged(role, v, p_atm) = role === :pressure ? (v - p_atm) / PSI : role === :temperature ? v - 273.15 : v
 
 """
-    score_run(study, sim) -> (; rms, residuals, z)
+    score_run(study, sim) -> (; rms, residuals, z, offsets)
 
 Compare a run with the study's log. The model is interpolated onto the log's times, and times with
 no log reading are skipped.
@@ -256,6 +275,11 @@ pressure and a temperature can be weighed against each other. For a channel over
 weight · (mean of model − log over the bin) / sigma, with its sign. The one-number `score` is the
 root mean square of `z`.
 
+A channel with `offset = "free"` has an unknown zero (a load cell that was not tared). The mean of
+model − log over all of that channel's scored samples in this run is taken out before anything is
+scored, so only changes count, and is returned in `offsets` (what to add to the log to lay it on
+the model).
+
 `residuals` is what a fitter minimises. Its sum of squares is the sum of squares of `z`: a bin is
 one entry, and a whole phase is one entry per sample, each divided by the square root of the number
 of samples, so that a long quiet hold does not outvote a ten-second vent.
@@ -264,13 +288,19 @@ function score_run(st::Study, sim::Sim)
     p_atm = st.scene.settings["P_atm_kPa"] * 1e3
     t_end = simtime(sim)
     e2, n = zeros(length(st.channels), length(st.phases)), zeros(Int, length(st.channels), length(st.phases))
-    z, residuals = Pair{String,Float64}[], Float64[]
+    z, residuals, offsets = Pair{String,Float64}[], Float64[], Pair{String,Float64}[]
     for (ci, c) in enumerate(st.channels)
         haskey(sim.hist, c.model) || error("no recorded signal named $(c.model). Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
         role = st.columns[findfirst(col -> col.name == c.log, st.columns)].role
         d = fill(NaN, length(st.t_log))                       # model − log at each scored sample the run reached
         for g in st.scored, i in g.idx
             g.channel == ci && st.t_log[i] <= t_end && (d[i] = _as_logged(role, signal_at(sim, c.model, st.t_log[i]), p_atm) - c.y[i])
+        end
+        if c.offset
+            reached = filter(isfinite, d)
+            off = isempty(reached) ? NaN : sum(reached) / length(reached)
+            d .-= off
+            push!(offsets, "offset.$(c.log)" => off)
         end
         for g in st.scored
             g.channel == ci || continue
@@ -291,7 +321,7 @@ function score_run(st::Study, sim::Sim)
         end
     end
     rms = ["rms.$(c.log).$phase" => (n[ci, pi] == 0 ? NaN : sqrt(e2[ci, pi] / n[ci, pi])) for (ci, c) in enumerate(st.channels) for (pi, (phase, _)) in enumerate(st.phases)]
-    (; rms, residuals, z)
+    (; rms, residuals, z, offsets)
 end
 
 """
@@ -388,13 +418,14 @@ function run_one(st::Study, run::StudyRun; keep = nothing)
     started = Base.time()
     sim, failed = simulate(st, run.overrides, run.actions)
     if sim === nothing
-        append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], first.(st.metrics))])
+        append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], first.(_offset_names(st)), first.(st.metrics))])
         append!(row, ["t_end" => NaN, "failed" => failed, "unconverged" => 0, "mass_error" => NaN, "energy_error" => NaN, "vented_kg" => NaN])
     else
         s = score_run(st, sim)
         push!(row, "score" => study_score(s))
         append!(row, s.rms)
         append!(row, s.z)
+        append!(row, s.offsets)
         p_atm = st.scene.settings["P_atm_kPa"] * 1e3
         append!(row, [name => metric(sim, m, p_atm) for (name, m) in st.metrics])
         r = run_summary(sim)
@@ -405,6 +436,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing)
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
 end
+_offset_names(st::Study) = ["offset.$(c.log)" => NaN for c in st.channels if c.offset]
 _rms_names(st::Study) = ["rms.$(c.log).$p" => NaN for c in st.channels for (p, _) in st.phases]
 
 """
