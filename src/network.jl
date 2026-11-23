@@ -585,6 +585,7 @@ function _solve_active!(net::Net)
     for attempt in 1:3
         for iter in 1:40
             _spent(net) && return _give_up!(net)
+            struggling = attempt > 1 || iter > 12          # a solve that works is done in half as many
             converged = worst < 1e-9 * scale + 1e-10       # kg/s; 1e-10 is a third of a milligram an hour
             TALLY.on && (TALLY.newton += 1)
             fill!(J, 0.0)
@@ -605,8 +606,14 @@ function _solve_active!(net::Net)
                 # the pressures across it are equal. The difference is taken on the side of the
                 # corner the part is on: across it the slope comes out too small by whatever share
                 # of the step fell on the far side, and Newton overshoots by as much.
+                # Any part has the second of those corners, since what flows back through it is
+                # the fluid from its other end: a trickle from a leak meeting a full-bore orifice
+                # holds the two ends of the orifice within a pascal of each other, well inside the
+                # step. For plain parts that is attended to only once a solve is `struggling`,
+                # which no evaluation of the HF4 replay is, so that its work counts stay as they
+                # were; done from the first iteration it changes 5 of its 4,625 Jacobians.
                 δa = δb = δ
-                if m0 != 0 && e.kind in (:regulator, :check, :relief)
+                if m0 != 0 && (struggling || e.kind in (:regulator, :check, :relief))
                     here = _regime(e, Pa, Pb)
                     _regime(e, Pa + δ, Pb) == here || (δa = -δ)
                     _regime(e, Pa, Pb + δ) == here || (δb = -δ)
@@ -645,7 +652,13 @@ function _solve_active!(net::Net)
                 P0[q] = nodes[j].P
                 net.step[q] = r[q]
             end
-            for λ in (1.0, 0.5, 0.25)
+            # A struggling solve may halve its step further. The Jacobian knows nothing of how the
+            # mixture enthalpy at a junction follows the flows into it, and where a trickle of
+            # vapour meets a trickle of liquid that is most of the slope: the true one was eight
+            # times the Jacobian's where a check valve cracked beside a leak, and a quarter step
+            # still overshot both ways for ever.
+            shortest = struggling ? 0.03125 : 0.25
+            for λ in (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125)
                 for (q, j) in enumerate(net.active)
                     nodes[j].P = clamp(P0[q] + λ * net.step[q], Plo, Phi)
                 end
@@ -654,7 +667,7 @@ function _solve_active!(net::Net)
                 # to round-off, which matters because the ODE solver differentiates through this solve.
                 # A step cut short to land inside a part's band is taken as it is, even if the
                 # imbalance rises: it buys the slope that the next step needs (see `_band_cut`).
-                (converged || cut < 1 || w2 < worst || λ == 0.25) && (worst = w2; break)
+                (converged || cut < 1 || w2 < worst || λ == shortest) && (worst = w2; break)
             end
             converged && return true
         end
@@ -1188,7 +1201,7 @@ Apply an action to a part by name; returns false if the part does not take it.
 
 Valves: `open`, `close`, `toggle`, `deenergise`, `set` (to an opening `value`, 0 to 1, reached at
 the valve's travel rate), `stuck_open`, `stuck_closed`, `stuck_at` (an opening `value`), `unstick`.
-A hand valve (`manual`) has no actuator, so `open`, `close` and `de-energise`, which are commands
+A hand valve (`manual`) has no actuator, so `open`, `close` and `deenergise`, which are commands
 to one, do not move it: it takes `set` and `toggle`, which are a hand on it. That is what keeps a
 replayed log's valve columns, which become `open` and `close`, from driving it.
 Heaters: `on`, `off`. Regulators and relief valves: `set` (to `value` psig).
@@ -1202,6 +1215,7 @@ function act!(sim::Sim, part, action, value = 0.0; record = true)
         e = net.edges[ie]
         if e.kind === :valve
             e.manual && action in ("open", "close", "deenergise") && return false
+            action in ("set", "stuck_at") && !isfinite(value) && return false
             if action in ("open", "close", "toggle", "deenergise")
                 # Toggle goes to whichever end the valve is not being told to be nearer to.
                 want_open = action == "open" || action == "toggle" && valve_cmd(e) <= 0.5
@@ -1278,7 +1292,8 @@ function advance!(sim::Sim, dt; max_steps = 2000, max_work = typemax(Int))
         due = sim.next_action <= length(sim.schedule) && sim.schedule[sim.next_action].t <= sim.t + 1e-9
         while sim.next_action <= length(sim.schedule) && sim.schedule[sim.next_action].t <= sim.t + 1e-9
             a = sim.schedule[sim.next_action]
-            act!(sim, a.part, a.action, a.value)
+            act!(sim, a.part, a.action, a.value) ||
+                @warn "t = $(a.t) s: $(a.part) does not take the scheduled action \"$(a.action)\" and was left as it is" maxlog = 20
             sim.next_action += 1
         end
         moving = _valves_moving(sim)

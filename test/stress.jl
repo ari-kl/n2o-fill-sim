@@ -1,7 +1,10 @@
-# Robustness and worst-case speed on scenes nobody tuned.   julia --project test/stress.jl [first last] [-v] [-d]
+# Robustness and worst-case speed on scenes nobody tuned.   julia --project test/stress.jl [first last] [-v] [-d] [-p]
 #
 # 1. A bottle left in the sun until it is supercritical, opened into an empty tank.
-# 2. Random plumbing built from default parts, with valves opened and toggled.
+# 2. Random plumbing built from default parts, with valves opened and toggled. A quarter of the
+#    valves leak when shut (1e-6 to 1e-2 of their area) and three in ten are set part-open (0.001
+#    to 1) instead of opened: trickles are what the junction solve handles worst. -p leaves both
+#    out, which gives the plumbings as they were before valves could do either.
 # Both are driven the way the window drives the solver (one step at a time inside a 12 ms budget),
 # so "worst frame" is how long the window would have frozen.
 # Because a frame ends on the clock, two runs of the same code do not take the same steps, and the
@@ -12,6 +15,7 @@
 using N2OFillSim, Random
 const F = N2OFillSim
 const DETERMINISTIC = "-d" in ARGS
+const PLAIN = "-p" in ARGS
 
 "Run `n` window frames at `speed`; returns (wall ms, worst frame ms, frames over 50 ms, part flows in the costliest solver step)."
 function frames!(sim, n; speed = 20.0, each = i -> nothing, until = Inf)
@@ -84,10 +88,17 @@ function search(first_seed, last_seed; verbose = false)
         rng = MersenneTwister(seed)
         s = random_scene(rng)
         isempty(F.check(s)[1]) || continue
+        # Leaks and part openings draw from a stream of their own, so that a seed's plumbing and
+        # its toggles are the same with and without them.
+        rng2 = MersenneTwister(seed + 1_000_000)
+        trickle() = !PLAIN && rand(rng2) < 0.3
+        for p in s.parts
+            p.kind == "Valve" && !PLAIN && rand(rng2) < 0.25 && (p.p["leak_frac"] = 10.0^rand(rng2, -6:-2))
+        end
         sim = F.Sim(s)
         valves = [e.name for e in sim.net.edges if e.kind === :valve]
         wall, worst, slow, costliest = frames!(sim, 2000; each = i -> begin
-            i == 30 && foreach(v -> F.act!(sim, v, "open"), valves)
+            i == 30 && foreach(v -> trickle() ? F.act!(sim, v, "set", 10.0^(-3 * rand(rng2))) : F.act!(sim, v, "open"), valves)
             i % 600 == 60 && !isempty(valves) && F.act!(sim, rand(rng, valves), "toggle")
         end, until = 240.0)
         bad = slow > 2 || worst > 400 || !isempty(sim.failed) || sim.t < 240

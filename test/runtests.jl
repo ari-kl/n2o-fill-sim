@@ -1957,6 +1957,16 @@ end
     @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
     @test abs(closure_mass(sim)) < 1e-8
     @test costliest < 3000
+    # Trickles as the only path: flows too small to pin a junction's pressure down by much.
+    trickle(s, acts...) = begin
+        sim = F.Sim(s); foreach(a -> F.act!(sim, a...), acts); F.run_until!(sim, 300.0)
+        @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim) && abs(closure_mass(sim)) < 1e-8
+        @test F.work(sim) < 60_000
+        held(sim) - held(F.Sim(s))
+    end
+    s = chain(["Valve", "Orifice", "Valve"]); s.parts[3].p["leak_frac"] = s.parts[5].p["leak_frac"] = 1e-6
+    @test 1e-4 < trickle(s) < 1e-3                               # two leaks in series: 0.26 g in 300 s
+    @test 1e-4 < trickle(chain(["Pipe", "Valve", "Pipe"]), ("P2", "set", 1e-6)) < 1e-3
 end
 
 @testset "relief valve band; a hand valve is not driven by a replayed log" begin
@@ -1989,11 +1999,13 @@ end
     columns = F.guess_log_columns(["t_s", "FILL", "VENT"], s)
     s.schedule = F.log_schedule(cols, columns; t0 = 0.0)
     @test any(a -> a.part == "VENT" && a.action == "open", s.schedule)       # the column was matched to the valve
-    sim = F.Sim(s); F.run_until!(sim, 20.0)
+    sim = F.Sim(s)
+    @test_logs (:warn, r"VENT does not take the scheduled action \"open\"") match_mode = :any F.run_until!(sim, 20.0)   # and it says so
     @test all(==(0), sim.hist["VENT.position"]) && sim.hist["FILL.position"][end] == 1
     @test !any(a -> a.part == "VENT", sim.log) && sim.u[end-2] == 0
     # Nor does a power failure. A hand on it does.
     @test !F.act!(sim, "VENT", "open") && !F.act!(sim, "VENT", "deenergise")
+    @test !F.act!(sim, "VENT", "set", NaN) && !F.act!(sim, "VENT", "stuck_at", Inf)       # an opening is a number
     @test F.act!(sim, "VENT", "set", 0.4); F.fail_safe!(sim); F.run_until!(sim, 22.0)
     @test sim.net.edges[findfirst(e -> e.name == "VENT", sim.net.edges)].opening == 0.4
     @test F.act!(sim, "VENT", "toggle"); F.run_until!(sim, 24.0)
