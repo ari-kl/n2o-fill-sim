@@ -306,10 +306,16 @@ function draw_part(dl, app::App, part::Part)
         g = live ? something(pin_tint(app, part.name, "a"), c) : c
         line((0, 1), (0, 0.45), g); ig.AddCircle(dl, L(0, 0), 0.45f0 * grid(app), selected ? C_SEL : g, 0, 2f0 * UI[])
         ig.AddText(dl, (L(0, 0)[1] - px(4), L(0, 0)[2] - px(8)), c, "P")
+    elseif k == "LoadCell"                                     # a box, to tell it from a gauge; nothing flows in either stub
+        line((0, 1), (0, 0.45)); line((0.45, 0), (1, 0))
+        for (a, b) in (((-0.45, -0.45), (0.45, -0.45)), ((0.45, -0.45), (0.45, 0.45)), ((0.45, 0.45), (-0.45, 0.45)), ((-0.45, 0.45), (-0.45, -0.45)))
+            line(a, b)
+        end
+        ig.AddText(dl, (L(0, 0)[1] - px(4), L(0, 0)[2] - px(8)), c, "M")
     end
     # Label, with live readings when running.
     lx, ly = k in VESSEL_KINDS ? w2s(app, part.x + 1.05, part.y - (k == "Tank" ? 0.4 : 1.2)) :
-             k == "Gauge" ? w2s(app, part.x + 0.6, part.y - 0.65) :
+             k in ("Gauge", "LoadCell") ? w2s(app, part.x + 0.6, part.y - 0.65) :
              k == "Valve" && mod(part.rot, 4) == 1 ? w2s(app, part.x + 0.75, part.y + 0.3) :   # its actuator and arrow point this way: keep clear
              k == "Valve" && mod(part.rot, 4) == 2 ? w2s(app, part.x - 0.9, part.y + 1.4) :    # likewise, pointing down
              isodd(part.rot) ? w2s(app, part.x + 0.75, part.y - 0.3) : w2s(app, part.x - 0.9, part.y + 0.55)
@@ -334,6 +340,8 @@ function draw_part(dl, app::App, part::Part)
         # true value is in its hover text.
         read = get(sim.hist, part.name * ".P_read", nothing)
         g == 0 || put(1, fmt(app, :pressure, read === nothing ? REPORTS[g].P : read[end]))
+    elseif k == "LoadCell"
+        put(1, fmt(app, :mass, sim.hist[part.name*".m_read"][end]))
     elseif k in FLOW_KINDS
         e = edge_of(app, part.name)
         abs(e.mdot) > 3e-4 && k != "Pipe" && k != "Orifice" && put(1, "$(e.mdot > 0 ? ">" : "<") " * fmt(app, :flow, abs(e.mdot)), col(140, 220, 255))
@@ -380,6 +388,8 @@ function describe(app::App, part::Part)
             if k == "Gauge" && haskey(hist, part.name * ".P_read")
                 push!(lines, "reads " * fmt(app, :pressure, hist[part.name*".P_read"][end]) * ",  " * fmt(app, :temperature, hist[part.name*".T_read"][end]))
                 push!(lines, "true values:")
+            elseif k == "LoadCell"
+                push!(lines, "reads " * fmt(app, :mass, hist[part.name*".m_read"][end]), "true: " * fmt(app, :mass, r.m) * ", in a vessel at")
             end
             push!(lines, fmt(app, :pressure, r.P) * ",  " * fmt(app, :temperature, r.T) * ",  $(round(Int, 100 * r.x)) % vapour by mass")
             CUT_OFF[i] && push!(lines, "shut off on all sides: holding its last pressure")

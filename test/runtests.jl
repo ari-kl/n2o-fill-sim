@@ -1443,6 +1443,63 @@ gauged_run(; sample_dt = 0.1, kw...) = (sim = F.Sim(gauged_rig(; kw...); sample_
     @test fine.hist["PT.P"][end] - fine.hist["PT.P_read"][end] < fine.hist["PT.P"][i] - fine.hist["PT.P_read"][i]
 end
 
+@testset "load cell: tare offset, a step while the hose is charged, lag; it is no part of the network" begin
+    # The rig with a load cell under the tank, told about the hose by the fill valve, which opens
+    # at 1 s and closes at 6 s. The load cell goes last, so the nets keep their numbers.
+    function weighed(; cell = true, kw...)
+        s = rig(bottle_T = 27.0)
+        append!(s.schedule, [F.Action(1.0, "FILL", "open", 0.0), F.Action(6.0, "FILL", "close", 0.0)])
+        cell || return s
+        lc = F.add_part!(s, "LoadCell", 8, 6; name = "LC")
+        F.connect!(s, ("LC", "a"), ("TANK", "top")); F.connect!(s, ("LC", "valve"), ("FILL", "a"))
+        for (k, v) in kw
+            lc.p[String(k)] = v
+        end
+        s
+    end
+    function work(scene)
+        F.reset_tally!()
+        run = F.run_until!(F.Sim(scene), 12.0)
+        c = F.TALLY
+        run, (c.rhs, c.jac, c.newton, c.edge_flow, c.choke, c.eos)
+    end
+    plain, w_plain = work(weighed(cell = false))
+    sim, w = work(weighed(offset_kg = 0.3, line_step_kg = 0.8))
+    F.reset_tally!(false)
+    # the same solve to the last bit and the last property evaluation, with one more signal
+    @test w == w_plain && sim.t_hist == plain.t_hist && length(sim.net.nodes) == length(plain.net.nodes)
+    @test all(sim.hist[k] == plain.hist[k] for k in keys(plain.hist))
+    @test collect(setdiff(keys(sim.hist), keys(plain.hist))) == ["LC.m_read"]
+    # the step is there exactly while the valve is off its seat
+    open_ = sim.hist["FILL.position"] .> 0
+    @test any(open_) && !open_[1] && !open_[end]
+    @test sim.hist["LC.m_read"] ≈ sim.hist["TANK.m"] .+ 0.3 .+ 0.8 .* open_ rtol = 1e-12
+    # without a valve on its `valve` pin there is no step
+    s = weighed(offset_kg = 0.3, line_step_kg = 0.8)
+    filter!(w -> w.a != ("LC", "valve"), s.wires)
+    loose, = work(s); F.reset_tally!(false)
+    @test loose.hist["LC.m_read"] ≈ loose.hist["TANK.m"] .+ 0.3
+    # Lagged, the step arrives late and leaves late. The lag is linear, so the lagged step by
+    # itself is the difference between two lagged runs, one with the step and one without.
+    lagged, = work(weighed(offset_kg = 0.3, line_step_kg = 0.8, tau_s = 2.0))
+    no_step, = work(weighed(offset_kg = 0.3, tau_s = 2.0)); F.reset_tally!(false)
+    late = lagged.hist["LC.m_read"] .- no_step.hist["LC.m_read"]
+    up, down = findfirst(open_), findlast(open_) + 1               # the first sample with the valve open, and the first with it shut again
+    @test 0 < late[up] < 0.1 && 0.6 < late[down] < 0.8 && 0 < late[end] < 0.1 && maximum(late) < 0.8
+    @test no_step.hist["LC.m_read"][down] < sim.hist["TANK.m"][down]   # and the mass itself reads behind a filling tank
+    # it survives a save and a load, and the checks say what is wrong with its wiring
+    path = joinpath(mktempdir(), "lc.toml")
+    F.save_scene(path, weighed(offset_kg = 0.3, line_step_kg = 0.8))
+    again = F.Sim(F.load_scene(path)); F.run_until!(again, 12.0)
+    @test again.hist["LC.m_read"] == sim.hist["LC.m_read"]
+    s = weighed(); filter!(w -> w.a != ("LC", "a"), s.wires)
+    @test any(contains("LC.a is not wired to a Bottle or Tank"), F.check(s)[1])
+    s = weighed(); F.add_part!(s, "Valve", 4, 4; name = "OTHER"); F.connect!(s, ("OTHER", "a"), ("FILL", "a"))
+    @test any(contains("exactly one Valve"), F.check(s)[1])
+    s = weighed(); filter!(w -> w.a != ("LC", "valve"), s.wires); F.connect!(s, ("LC", "valve"), ("ATM", "a"))
+    @test any(contains("exactly one Valve"), F.check(s)[1])
+end
+
 @testset "overfilled tank warming in the sun goes liquid-full and lifts the relief valve" begin
     s = rig(tank_fill = 15.2, tank_T = 12.0, air = 0.0)       # ≈ 93 % liquid at 12 °C
     s.settings["T_amb_C"], s.settings["solar_W_m2"] = 38.0, 1000.0

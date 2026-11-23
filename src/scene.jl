@@ -126,8 +126,13 @@ const KINDS = Dict{String,Kind}(
          Param("T_offset_K", 0.0, "added to the temperature reading"),
          Param("T_tau_s", 0.0, "time constant of a first-order lag on the temperature reading (0 = none)")],
         "Shows pressure and temperature of whatever it is wired to (PT / TC). Its parameters describe the instrument, not the plumbing."),
+    "LoadCell" => Kind([Pin("a", 0, 1), Pin("valve", 1, 0)],
+        [Param("offset_kg", 0.0, "added to the mass reading (a tare that is off)"),
+         Param("line_step_kg", 0.0, "added while the valve on the `valve` pin is open at all: the weight a charged fill hose puts on the stand"),
+         Param("tau_s", 0.0, "time constant of a first-order lag on the reading (0 = none)")],
+        "Reads the N2O mass of the Bottle or Tank its `a` pin is wired to, as a load cell under it would (NAME.m_read). Wire `valve` to the valve whose opening charges the hose, or leave it unwired. It is an instrument: nothing flows through it."),
 )
-const PALETTE = ["Bottle", "Tank", "Pipe", "Valve", "Orifice", "Regulator", "CheckValve", "ReliefValve", "Atmosphere", "Junction", "Gauge"]
+const PALETTE = ["Bottle", "Tank", "Pipe", "Valve", "Orifice", "Regulator", "CheckValve", "ReliefValve", "Atmosphere", "Junction", "Gauge", "LoadCell"]
 
 const SETTINGS = [
     Param("T_amb_C", 25.0, "ambient air temperature"),
@@ -201,7 +206,7 @@ function add_part!(s::Scene, kind, x, y; name = nothing)
     if name === nothing
         prefix = Dict("Bottle" => "BOTTLE", "Tank" => "TANK", "Pipe" => "L", "Valve" => "V", "Orifice" => "OR",
                       "Regulator" => "REG", "CheckValve" => "CV", "ReliefValve" => "PRV", "Atmosphere" => "ATM",
-                      "Junction" => "J", "Gauge" => "PT")[kind]
+                      "Junction" => "J", "Gauge" => "PT", "LoadCell" => "LC")[kind]
         n = 1
         while find_part(s, "$prefix$n") !== nothing
             n += 1
@@ -334,6 +339,15 @@ function check(s::Scene; unattended = false)
         isfinite(v) || push!(errors, "$(p.name).$(q.key) is not a number")
         q.key in ("volume_L", "diameter_mm", "d_mm", "id_mm", "L_m", "wall_cp_J_kgK") && v <= 0 &&
             push!(errors, "$(p.name).$(q.key) must be positive")
+    end
+    for p in s.parts                           # a load cell reads one vessel, and at most one valve tells it the hose is charged
+        p.kind == "LoadCell" || continue
+        any(pin -> kind[pin[1]] in VESSEL_KINDS, members[net[(p.name, "a")]]) ||
+            push!(errors, "$(p.name).a is not wired to a Bottle or Tank, so it has no mass to read")
+        m = members[net[(p.name, "valve")]]
+        valves = unique(first.(filter(pin -> kind[pin[1]] == "Valve", m)))
+        length(m) > 1 && length(valves) != 1 &&
+            push!(errors, "$(p.name).valve must be wired to a point that exactly one Valve is on (it has $(isempty(valves) ? "none" : join(valves, ", ")))")
     end
     for a in s.schedule
         i = find_part(s, a.part)

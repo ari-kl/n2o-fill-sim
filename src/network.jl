@@ -222,6 +222,10 @@ function compile(s::Scene)
             push!(sensors, Sensor(p.name * ".P_read", p.name * ".P"; ref = env.P_atm, gain = g("gain"), offset = g("offset_psi") * PSI,
                                   tau = g("tau_s"), band = g("deadband_psi") * PSI, lo = g("min_psig") * PSI, hi = g("max_psig") * PSI))
             push!(sensors, Sensor(p.name * ".T_read", p.name * ".T"; offset = g("T_offset_K"), tau = g("T_tau_s")))
+        elseif p.kind == "LoadCell"            # check() has made sure `a` is on a vessel and `valve` on at most one valve
+            on_valve = findfirst(e -> e.kind === :valve && net_of[(p.name, "valve")] in (net_of[(e.name, "a")], net_of[(e.name, "b")]), edges)
+            push!(sensors, Sensor(p.name * ".m_read", nodes[pin_node[(p.name, "a")]].name * ".m"; offset = g("offset_kg"),
+                                  step = g("line_step_kg"), valve = something(on_valve, 0), tau = g("tau_s")))
         end
     end
     net = Net(nodes, edges, env, i - 1, junctions, adj, gauges, sensors, pin_node, collect(eachindex(nodes)),

@@ -231,7 +231,7 @@ function signal_kind(key)
     endswith(key, ".P") || endswith(key, ".P_read") || endswith(key, ".Psat") || endswith(key, ".set") ? :pressure :
     endswith(key, ".T") || endswith(key, ".T_read") || endswith(key, ".Tv") || endswith(key, ".Tw") || endswith(key, ".Tw_tube") || endswith(key, ".Tw_ends") ? :temperature :
     endswith(key, ".mdot") ? :flow :
-    endswith(key, ".m") ? :mass :
+    endswith(key, ".m") || endswith(key, ".m_read") ? :mass :
     endswith(key, "_pct") ? :share :
     endswith(key, ".position") || endswith(key, ".open_cmd") || endswith(key, ".heater_on") ? :state : :other
 end
