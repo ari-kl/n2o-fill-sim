@@ -5,6 +5,10 @@ there is one, and reduces each run to a row of numbers. It is how to ask "which 
 fits this log best", "how sensitive is the loaded mass to the bottle temperature", or, with no log
 at all, "how long does the tank stay above 800 psig for each of these fill plans".
 
+This file covers the study file format, how runs are scored, and screening for the parameters
+that matter. The scoring section also applies to fits ([FITTING.md](FITTING.md)), which minimise
+the same score.
+
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml
 ```
@@ -70,7 +74,9 @@ seconds_above_800_psig = { fn = "time_in_band", signal = "TANK.P", lo_psig = 800
 Parameter names are the same `PART.param` and `settings.key` that `--set` takes, and are checked
 before anything runs, as are metric functions and log columns.
 
-**Scoring.** The model is interpolated onto the log's sample times; times with no log reading are
+## Scoring
+
+The model is interpolated onto the log's sample times; times with no log reading are
 skipped. Each channel and phase gives an RMS difference in the log's own units (psi, °C, kg), in a
 column named `rms.<log column>.<phase>`. Those are the numbers to read.
 
@@ -86,10 +92,24 @@ can be trusted, and 3 means three times that. Two things follow. A pressure and 
 be scored together, because 5 psi and 1 K each count as one. And every phase counts once, however
 long it is, so a ten-second vent weighs as much as a twenty-minute hold.
 
-Every scored number is also a column, `res.<log column>.<phase>` (and `res.target.<name>`), so a row can be checked number
-by number (for example, to throw out every run in which any one of them is over 3).
+Every scored number is also a column, `res.<log column>.<phase>` (and `res.target.<name>`), so a
+row can be checked number by number (for example, to throw out every run in which any one of them
+is over 3).
 
-**Time bins.** One number for a twenty-minute hold says how far off the model was on average, and
+With a manifest and no `[score] channels`, every reading the manifest maps to a model signal is
+scored, over the manifest's phases.
+
+### Sigma and weight
+
+`sigma` comes from the channel in `[score]` if given, else from the manifest's channel, else from
+the kind of reading: 5 psi for a pressure, 1 K for a temperature, 0.25 kg for a mass. Set it
+from what you know of the sensor (two transducers that disagree by 5 psi cannot be trusted to
+better than that). `weight` (default 1) is a further factor for when one channel or dataset should
+simply matter more.
+
+### Time bins
+
+One number for a twenty-minute hold says how far off the model was on average, and
 nothing about whether it drifted the right way. With `bin_s`, each phase is cut into equal bins as
 near to that many seconds as fit it, and each bin is one scored number:
 
@@ -100,26 +120,37 @@ It keeps its sign, so a fitter can see that the model is high early and low late
 still the root mean square of the scored numbers, so a phase now counts once per bin: a long phase
 weighs more than a short one. A bin with no log reading is left out.
 
-**A reading whose zero is unknown.** A load cell that was not tared, or was tared with plumbing
+Make bins 30 s or longer for a slow process such as a hold or a fill. A fitter treats every
+scored number as a separate piece of information. Neighbouring samples of a slowly changing
+pressure are not: if the model is 10 psi high now it will be about 10 psi high two seconds from
+now, whatever the parameters. Short bins therefore count the same information many times, and
+the fit comes out more confident than the data justify. A bin should be about as long as it takes
+for the model's error to change of its own accord.
+
+### A reading whose zero is unknown
+
+A load cell that was not tared, or was tared with plumbing
 hanging on it, reads the right changes around the wrong zero. `offset = "free"` on a channel says
 so. For each run, the mean of model − log over all of that channel's scored samples is taken out
 first, so only changes are scored: how much went in during the fill, how much left in a vent. The
 amount taken out is the column `offset.<log column>` (what to add to the log to lay it on the
 model). Read it: if it differs widely between runs that fit equally well, the changes alone are
 not telling those runs apart. (This is not the `offset` of a manifest channel, which is a known
-number added when the log is read. See docs/LOGS.md.)
+number added when the log is read. See [LOGS.md](LOGS.md).)
 
 `offset = "per_phase"` is for a reading whose zero also jumps: a load cell that steps when a
 valve slams or a line stiffens. The mean is then taken out of each phase by itself (columns
 `offset.<log column>.<phase>`), so put the phase boundaries at the events where it steps. The
-price is stated plainly: **only changes inside a phase are scored**. What the reading did from
+price is that only changes inside a phase are scored. What the reading did from
 one phase to the next, which is where a step hides but also where real mass moved, tells the
 score nothing. A phase scored whole then says only how well the shape inside it matches; with
 `bin_s` each bin says how far it sits from the phase's mean, and a phase of one bin says nothing
 at all. If the offsets found for neighbouring phases differ by more than the reading could have
 stepped, the model moved a different mass between them than the test did.
 
-**Stated model error.** Sometimes the model is known to be wrong in one stretch of a test: it
+### Stated model error
+
+Sometimes the model is known to be wrong in one stretch of a test: it
 lacks a mechanism that matters for the first seconds of a fill, say. Scored as it stands, that
 stretch dominates the score, and a fitter will bend every parameter it has to make the error
 smaller, spoiling values that the rest of the log pins down well. Leaving the stretch out hides
@@ -138,23 +169,9 @@ The `rms` columns are not changed by it: they still show the miss in full. A sta
 written admission, with a size, of what the model does not do. It belongs in the file, where the
 next reader sees it.
 
-Make bins **30 s or longer** for a slow process such as a hold or a fill. A fitter treats every
-scored number as a separate piece of information. Neighbouring samples of a slowly changing
-pressure are not: if the model is 10 psi high now it will be about 10 psi high two seconds from
-now, whatever the parameters. Short bins therefore count the same information many times, and
-the fit comes out more confident than the data justify. A bin should be about as long as it takes
-for the model's error to change of its own accord.
+## Targets
 
-`sigma` comes from the channel in `[score]` if given, else from the manifest's channel, else from
-the kind of reading: **5 psi for a pressure, 1 K for a temperature, 0.25 kg for a mass**. Set it
-from what you know of the sensor (two transducers that disagree by 5 psi cannot be trusted to
-better than that). `weight` (default 1) is a further factor for when one channel or dataset should
-simply matter more.
-
-With a manifest and no `[score] channels`, every reading the manifest maps to a model signal is
-scored, over the manifest's phases.
-
-**Targets.** A point-by-point difference asks the model to be right everywhere at once. Often
+A point-by-point difference asks the model to be right everywhere at once. Often
 what matters, and what a parameter actually controls, is a feature: how low the pressure went in
 a vent, how fast it recovered afterwards, what it was at the end of a hold. A target names one
 such feature with a metric function (below), takes it from the log column and from the model
@@ -165,7 +182,7 @@ signal over the same window, and adds one scored number:
 `tol` is how close counts as agreement, in the feature's own units: psi for a minimum, psi per
 second for a slope, seconds for a crossing time. The window is `from` and `to` (seconds or
 events, as for a phase) or `phase = "<name>"`; without one it is the whole run. Both sides are in
-the **log column's units** (psi gauge, °C, kg), so `lo`, `hi` and `value` are given plainly in
+the log column's units (psi gauge, °C, kg), so `lo`, `hi` and `value` are given plainly in
 those and there is no `unit`. The model's signal is read at the log's own sample times, so both
 sides are worked out from the same instants; times with no log reading are skipped on both. The
 columns are `target.<name>.model`, `target.<name>.log` and the scored number `res.target.<name>`.
@@ -175,8 +192,11 @@ the model does not have in a given run counts as 100 tolerances out.
 A slope or a change does not depend on a reading's zero, so a target is also a way to use a load
 cell that cannot be trusted in absolute terms.
 
-**Metrics.** `final`, `max`, `min`, `mean_over`, `slope` (per second, by least squares),
-`time_in_band` (with `lo`, `hi`) and `first_crossing` (with `value`). With `from` and `to` in
+## Metrics
+
+A metric is a number taken from each run. The functions are `final`, `max`, `min`, `mean_over`,
+`slope` (per second, by least squares), `time_in_band` (with `lo`, `hi`) and `first_crossing`
+(with `value`). With `from` and `to` in
 seconds, only that window of the run is looked at (so `final` with `to = 300` is the value at
 300 s); without them, the whole run. Signals are the names in an exported run (`TANK.P`, `TANK.m`,
 `AV203.mdot`, `vented.m`, ...) and are in SI units. An argument can be given as a gauge pressure
@@ -184,7 +204,7 @@ or in Celsius by its name (`lo_psig`, `value_C`), and `unit = "psig"` or `"C"` c
 that is a pressure or a temperature (a slope stays in SI per second: `unit` with `slope` is an
 error).
 
-**Every row** also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
+Every row also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
 wall time. A run that cannot be built or does not finish is still a row.
 
@@ -204,7 +224,7 @@ n = 20                                        # trajectories (default 20); seed 
 Each parameter's range is cut into four levels (0, 1/3, 2/3 and all of the way across). A
 trajectory starts at a random point on that grid and then moves one parameter at a time, in a
 random order, by two thirds of its range. With k parameters that is k + 1 runs, and each step is
-one **elementary effect**: the change in an output, divided by the step. So `n = 20` costs
+one elementary effect: the change in an output, divided by the step. So `n = 20` costs
 20 × (k + 1) runs and gives every parameter 20 effects, each taken with the other parameters
 somewhere different. A seed gives the same runs on any machine. A morris study takes one `[[case]]`
 at most.
@@ -226,8 +246,8 @@ with a small effect on the score can still be the only one that moves a particul
 and that number is then what pins it. A parameter whose `mu_star` is small on every scored number
 cannot be found from this log, whatever a fit reports: fix it at a measured or published value.
 Screening says what matters, not what the values are, and not which parameters can be told apart
-from each other (two can both matter and still only act together: the fit report's last section
-is for that).
+from each other (two can both matter and still only act together: the last section of the fit
+report, described in [FITTING.md](FITTING.md), is for that).
 
 ## Reading the result
 
