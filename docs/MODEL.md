@@ -353,14 +353,45 @@ Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (
   out, worse (9.2 against 4.8 in the scoring of `docs/STUDIES.md`). So the published 2.5 mm and
   wall coefficient 0.3 agree with the stand logs partly by compensating each other, and the
   scenes keep them until the tank's heat balance during a fill is understood.
-- **What the logs do not determine.** With measured inputs fixed, sampling 4,000 parameter sets
-  per log leaves the boiling factor `interphase_E`, the wall coefficient, the outside heat
-  multiplier and the vent `Cd` free across nearly their whole plausible ranges on every log; the
-  bottle wall coefficient has no visible effect at all. They are published values, not
-  calibrated ones. What moves the result most is what was not recorded: how full the bottle was.
-- **LC26 day 4 is not reproduced by any setting tried**: the bottle-side pressure in the first
-  20 s of the fill, tank pressure and wall temperature through the fill, and tank pressure late in
-  the 1000 s hold each miss by more than their tolerance whatever the parameters.
+- **What the logs do and do not determine.** A joint fit of sixteen values to all four logs, with
+  the measured inputs fixed, a bare-aluminium tank surface (absorptivity 0.3, emissivity 0.1) and
+  the two-node wall switched on, brings every log to about one tolerance in the scoring of
+  `docs/STUDIES.md` (30 s bins, load-cell changes, a stated allowance for the first 20 s of a
+  fill). Repeating it with each log held out in turn shows which values are properties of the
+  hardware and which are not:
+
+  | Value | Range over the five fits | |
+  |---|---|---|
+  | Fill-line bore, stand tests | 2.10-2.24 mm | steady; agrees with the load cell |
+  | Fill-line bore, LC26 | 2.07-2.34 mm | steady |
+  | Outside heat multiplier | 2.7-5.3 | always well above 1 |
+  | Vent `Cd`, LC26 | 0.73-0.86 | fairly steady |
+  | Restriction after the bottle-side gauge | 4.7-9.5 mm | not determined |
+  | Tank wall coefficient | 0.74-10 | not determined |
+  | Wall boiling multiplier | 0.26-1.44 | not determined |
+  | Vent `Cd`, stand tests | 0.5-1.2 | not determined |
+
+  The fit improved two of the four held-out logs and worsened the other two, so its values are
+  not in the scenes. `interphase_E` moves no scored number by much between 100 and 2000. The
+  bottle wall coefficient has no visible effect at all. What moves a result most is what was not
+  recorded: how full the bottle was.
+- **A sealed tank warms faster than the model allows.** Through the 1000 s hold of LC26 day 4 the
+  saturation temperature of the tank pressure rises 0.8 K/min at 2 °C falling to 0.4 K/min at
+  10 °C. For the whole contents and wall to warm at that rate takes 250-500 W. A bare aluminium
+  tube of this size in that day's weather (about 20 °C, 600 W/m² of sun, 2-3 m/s of wind) takes
+  in roughly 120-240 W: about half, steadily through the hold. Either twice the heat reaches the
+  tank, or only about half of its heat capacity is warming, as it would if the liquid were
+  layered with the warm part on top. One hold cannot tell these apart; temperatures at two or
+  three heights on the tank would. The scenes' fitted "ambient" of 30 °C for that day stands in
+  for this.
+- **During a fill the tank is not short of heat; the wall gives its heat up late.** With wall
+  boiling near its correlation value the single tube temperature follows the logged skin
+  temperature to 2-3 K. Three changes of structure were tried against LC26 day 4 (boiling past
+  the peak flux, a wall wetted by the incoming jet, an onset threshold for boiling) and none
+  improved it; none is in the code.
+- **Scoring short valve pulses point by point is unreliable.** The HF3 cold flow opens its fill
+  valve in pulses of about a second, and the bottle-side pressure score over that period moves
+  between 42 and 55 psi RMS with the solver tolerance alone. Use bins or features there.
 
 ## 8. Reading the two logs
 
