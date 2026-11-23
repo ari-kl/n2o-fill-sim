@@ -1262,7 +1262,7 @@ end
     # A bottle left in the sun (62 °C, about 2100 psig) opened through an orifice, hose, valve and
     # hose. The imbalance here settles near 1e-6. If every such evaluation counts as failed and
     # pays for the whole fallback, these 5 s take 94 failures and 14 s of wall time. The solve
-    # accepts it instead, and 2 failures remain.
+    # accepts it instead; the test allows up to 10 failures.
     s = F.Scene()
     F.add_part!(s, "Bottle", 0, 0; name = "B").p["T_C"] = 62.0
     for (i, (kind, name)) in enumerate((("Orifice", "OR"), ("Pipe", "L1"), ("Valve", "V"), ("Pipe", "L2"), ("Tank", "T")))
