@@ -2013,6 +2013,56 @@ end
     @test isempty(sim.failed) && closes(sim)
 end
 
+@testset "a Tank teed onto the fill line: the line never stands still with its valves open" begin
+    # A small Tank on the fill line between hose and quick-disconnect, replayed against the HF3 and
+    # HF4 logs. These two volumes used to end with the bottle at 860 psia, the run tank at
+    # atmospheric, every part between them open and no flow at all, reported as converged. A stage
+    # of a rejected solver step at some 1e19 Pa had left enthalpies of 1e13 to 1e17 J/kg in two
+    # junctions; the flow law returns nothing for such a stream, so nothing left them, nothing
+    # flowed in to replace the value, and zero flow everywhere balances every junction.
+    line_scene(log, t0, litres) = begin
+        s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf4.toml"))
+        F.disconnect!(s, s.wires[findfirst(w -> Set((w.a, w.b)) == Set((("HOSE2", "b"), ("QD", "a"))), s.wires)])
+        p = F.add_part!(s, "Tank", 18, 8; name = "LINE").p
+        p["volume_L"], p["diameter_mm"], p["wall_kg"], p["T_C"] = litres, 10.0, 1.0, 19.0
+        F.connect!(s, ("HOSE2", "b"), ("LINE", "bottom")); F.connect!(s, ("LINE", "bottom"), ("QD", "a"))
+        names, D = F.read_csv(joinpath(@__DIR__, "data", log))
+        s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0)
+        s
+    end
+    for (log, t0, litres, loaded) in (("hf3_fill_10hz.csv", 4520.0, 0.3, 8.0), ("hf4_fill_10hz.csv", 9020.0, 0.1, 7.3))
+        sim = F.Sim(line_scene(log, t0, litres)); F.run_until!(sim, 140.0; work_limit = 1_000_000)
+        @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+        @test tank(sim).m > loaded                                # it was 0.0
+        @test !F._silent(sim.net)
+    end
+    # The same two defects, made by hand in a flowing line.
+    sim = F.Sim(line_scene("hf4_fill_10hz.csv", 9020.0, 1.0)); F.run_until!(sim, 70.0)
+    net, du = sim.net, similar(sim.u)
+    flowing = part_flow(sim, "AV203")
+    @test flowing > 0.1
+    foreach(j -> net.nodes[j].hl = 1e17, net.junctions)         # what a rejected stage could leave behind
+    F.rhs!(du, sim.u, net, 0.0)
+    @test part_flow(sim, "AV203") ≈ flowing rtol = 1e-6
+    @test net.unconverged == 0
+    @test all(j -> abs(net.nodes[j].hl) < 1e6, net.active)
+    # And if a line does come out of a solve open, under pressure and carrying nothing, that is a
+    # failed solve, not a balanced one.
+    saved = [e.mdot for e in net.edges]
+    foreach(e -> e.mdot = 0.0, net.edges)
+    @test F._silent(net)
+    foreach((e, m) -> e.mdot = m, net.edges, saved)
+    @test !F._silent(net)
+    # A state at 1e15 Pa is not solved at all.
+    u = copy(sim.u); u[net.nodes[2].i] *= 1e9; u[net.nodes[2].i+1] *= 1e9
+    before = F.work(sim)
+    F.rhs!(du, u, net, 0.0)
+    @test (all(isnan, du) && F.work(sim) == before) || net.nodes[2].P < F.P_ABSURD
+    F.rhs!(du, sim.u, net, 0.0)                                  # and the next ordinary state is solved as ever
+    @test all(isfinite, du)
+    @test part_flow(sim, "AV203") ≈ flowing rtol = 1e-6
+end
+
 # RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
 function log_rms(sim, key, D, col, t0, a, b, p_atm)
     d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]

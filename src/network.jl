@@ -434,7 +434,7 @@ function sweep!(net::Net)
     end
     for i in net.order
         n = nodes[i]
-        n.kind === :junction && net.row[i] != 0 && n.min_l > 0 && (n.hl = n.Hin_l / n.min_l)
+        n.kind === :junction && net.row[i] != 0 && (n.hl = n.min_l > 0 ? n.Hin_l / n.min_l : _unfed_h(net, i))
         for k in net.adj[i]
             net.live[k] || continue
             e = net.edges[k]
@@ -454,6 +454,25 @@ function sweep!(net::Net)
         end
     end
     nothing
+end
+
+# The enthalpy of a junction that nothing is flowing into. It holds no fluid, so it has none of
+# its own: what leaves it, while a solve is still moving it about, is taken to be what its
+# highest-pressure neighbour would send, which is where its fluid has to come from. Keeping the
+# last mixture instead lets one evaluation at a state far from anything physical (a stage of a
+# step the ODE solver then rejects) leave an enthalpy of 1e17 J/kg behind. The flow law returns
+# nothing for a stream like that, so nothing leaves the junction, nothing ever flows in to
+# replace the value, and every later solve finds the line "balanced" with no flow in it.
+function _unfed_h(net::Net, j)
+    nodes = net.nodes
+    best, h = -Inf, nodes[j].hl
+    for k in net.adj[j]
+        net.live[k] || continue
+        e = net.edges[k]
+        other, port = e.a == j ? (e.b, e.pb) : (e.a, e.pa)
+        nodes[other].P > best && ((best, h) = (nodes[other].P, sent_h(nodes[other], port)))
+    end
+    h
 end
 
 # Sweep, then collect the active junctions' imbalances. Returns the worst one and the largest flow.
@@ -522,10 +541,28 @@ function solve_junctions!(net::Net)
             was_open = net.live[k] || e.mdot == 0 && _hangs_dead(net, k)
             now_open && !was_open && (stable = false; net.opened[k] = true)
         end
-        stable && return
+        if stable
+            _silent(net) && (net.unconverged += 1)
+            return
+        end
     end
     net.unconverged += 1                                # cannot happen by the argument above; counted in case it does
     nothing
+end
+
+# Is there a part in the solve that is open, has a pressure difference across it that it would
+# pass flow on, and carries exactly none? No flow law gives that. Every junction's flows then add
+# up to zero, so the imbalance says "converged" of a line that has simply stopped; it must be
+# counted as a failure instead, whatever led to it.
+function _silent(net::Net)
+    for (k, e) in enumerate(net.edges)
+        (net.live[k] && e.mdot == 0) || continue
+        Pa, Pb = net.nodes[e.a].P, net.nodes[e.b].P
+        oneway = e.kind in (:regulator, :check, :relief)
+        drop = oneway ? Pa - Pb : abs(Pa - Pb)
+        drop > 10 * DP_REG && flow_area(e, Pa, Pb) > 0 && max(Pa, Pb) > SAT_PMIN + DP_REG && return true
+    end
+    false
 end
 
 # Measured on 450 random plumbings (`test/stress.jl`): half of all solves take 4 evaluations a
@@ -773,7 +810,7 @@ function _imbalance(net::Net, j)
             m = abs(edge_flow(e, nodes[e.a].P, nodes[e.b].P, sent_h(nodes[e.a], e.pa), sent_h(nodes[e.b], e.pb)))
             inward ? (flow_in += m; H += m * sent_h(o, e.a == other ? e.pa : e.pb)) : (flow_out += m)
         end
-        inward && flow_in > 0 && (n.hl = H / flow_in)
+        inward && (n.hl = flow_in > 0 ? H / flow_in : _unfed_h(net, j))
     end
     flow_in - flow_out
 end
@@ -819,6 +856,8 @@ function _balance_one!(net::Net, j, Plo, Phi)
     nothing
 end
 
+const P_ABSURD = 1e9          # Pa. Ten thousand bar: twenty times anything the property model covers.
+
 "The right-hand side of the ODE system. The last three states total vented mass, vented enthalpy and heat taken in."
 function rhs!(du, u, net::Net, t)
     TALLY.on && (TALLY.rhs += 1)
@@ -826,10 +865,11 @@ function rhs!(du, u, net::Net, t)
     for n in nodes
         evaluate!(n, u, env)
     end
-    # A stage of a step that has gone wrong can hand over a state that is not a number. There are
-    # no flows to find for it, and the answer that makes the ODE solver throw the step away is the
-    # same whatever is done here.
-    all(n -> isfinite(n.P), nodes) || (fill!(du, NaN); return nothing)
+    # A stage of a step that has gone wrong can hand over a state that is not a number, or a
+    # pressure of 1e15 Pa. There are no flows to find for it, and the answer that makes the ODE
+    # solver throw the step away is the same whatever is done here. Trying anyway is what used to
+    # leave such a state's enthalpies in the junctions for later solves to start from.
+    all(n -> n.kind !== :vessel || n.P < P_ABSURD, nodes) || (fill!(du, NaN); return nothing)
     solve_junctions!(net)
     _into_vessels!(du, u, net)
 end
