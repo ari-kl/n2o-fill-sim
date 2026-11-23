@@ -618,3 +618,69 @@ function _screening(st::Study, out, quiet)
     quiet || println("screening in ", file)
     file
 end
+
+# A results file, or a file of parameter sets, as its header and its rows of cells. (Not `read_csv`:
+# a run's id is not a number, and the order of the columns matters here.)
+function _table(path)
+    lines = filter(!isempty, readlines(path))
+    isempty(lines) && error("$path is empty")
+    String.(strip.(split(lines[1], ','))), [String.(strip.(split(l, ','))) for l in lines[2:end]]
+end
+
+"""
+    keep_runs(results; cutoff = 3, nth = 2) -> (; names, sets, cells, runs, kept, scored, ranges)
+
+The runs of a study that its log could not rule out. Every `res.*` column of a `results.csv` is a
+difference between model and log in units of how far that reading is trusted (its sigma and any
+stated model error together). A run is ruled out when its `nth` largest |res| is over `cutoff`: with
+the defaults, when two or more of its scored numbers are more than three of those units out. One is
+allowed, because with many scored numbers a single one will stray by chance; allow more (a larger
+`nth`) where a study has many. A run that failed or stopped early is ruled out whatever it scored.
+
+`sets` has the kept runs' parameter values (name => value; a parameter the run left alone is not
+in its set) and `cells` the same as they stand in the file. `ranges` has, for each varied parameter,
+its lowest and highest value among the kept runs and among all of them (`kept_lo`, `kept_hi`, `lo`,
+`hi`): a parameter whose kept range is as wide as the sampled one was not determined by this log.
+"""
+function keep_runs(path; cutoff = 3.0, nth = 2)
+    head, rows = _table(path)
+    a, b, failed = findfirst(==("case"), head), findfirst(==("score"), head), findfirst(==("failed"), head)
+    (a === nothing || b === nothing || failed === nothing) && error("$path is not a study's results.csv (it has no `case`, `score` and `failed` columns)")
+    res = findall(startswith("res."), head)
+    isempty(res) && error("$path has no res.* columns: its study was not scored against a log, so no run can be ruled out")
+    1 <= nth <= length(res) || error("nth = $nth, but $path has $(length(res)) scored numbers: nth must be between 1 and that")
+    num(cell) = something(tryparse(Float64, cell), NaN)
+    filter!(row -> length(row) == length(head), rows)          # a row cut short by a study that was stopped
+    kept = filter(rows) do row
+        z = sort!([abs(num(row[c])) for c in res]; rev = true)
+        isempty(row[failed]) && !any(isnan, z) && z[nth] <= cutoff
+    end
+    names = head[a+1:b-1]
+    span(rows, c) = (v = filter(isfinite, [num(row[c]) for row in rows]); isempty(v) ? (NaN, NaN) : extrema(v))
+    ranges = [(; name, kept_lo = span(kept, a + k)[1], kept_hi = span(kept, a + k)[2], lo = span(rows, a + k)[1], hi = span(rows, a + k)[2]) for (k, name) in enumerate(names)]
+    sets = [[name => num(row[a+k]) for (k, name) in enumerate(names) if !isempty(row[a+k])] for row in kept]
+    (; names, sets, cells = [row[a+1:b-1] for row in kept], runs = length(rows), kept = length(kept), scored = length(res), ranges)
+end
+
+"""
+    study_keep(results; cutoff = 3, nth = 2) -> kept file
+
+Write the parameter sets of the runs `keep_runs` keeps to `kept.csv` beside the results (one row per
+kept run, one column per varied parameter, as a study with `mode = "sets"` reads them) and print how
+many were kept and what range of each parameter is left.
+"""
+function study_keep(path; cutoff = 3.0, nth = 2, quiet = false)
+    k = keep_runs(path; cutoff, nth)
+    out = joinpath(dirname(abspath(path)), "kept.csv")
+    write(out, join(vcat(join(k.names, ","), join.(k.cells, ",")), "\n") * "\n")
+    if !quiet
+        println(k.runs, " runs, ", k.kept, " kept (ruled out: failed, or |res| over ", cutoff, " in ", nth, " or more of the ", k.scored, " scored numbers)")
+        println("  ", rpad("parameter", 34), rpad("kept", 26), "sampled")
+        r4(x) = round(x, sigdigits = 4)
+        for r in k.ranges
+            println("  ", rpad(r.name, 34), rpad(k.kept == 0 ? "-" : "$(r4(r.kept_lo)) to $(r4(r.kept_hi))", 26), r4(r.lo), " to ", r4(r.hi))
+        end
+        println("kept sets in ", out)
+    end
+    out
+end

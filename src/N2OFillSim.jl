@@ -33,6 +33,9 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
        julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces]
   runs a scene many times with parameters varied and scores each run (see docs/STUDIES.md);
   it uses as many threads as Julia was started with (-t)
+       julia --project bin/n2o-fill-sim.jl study keep results.csv [--cutoff 3] [--nth 2]
+  prints which of a study's runs its log could not rule out (those with fewer than --nth scored
+  numbers further than --cutoff from the log) and writes their parameter sets to kept.csv beside it
        julia -t 8 --project bin/n2o-fill-sim.jl fit file.toml [--write-scenes] [--holdout NAME]
                                                     [--profile PARAM [--profile-n 9]]
   fits parameters to one or several logs at once and reports what the logs do and do not
@@ -45,7 +48,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   writes the log as its manifest describes it: one clock, an even grid, valve columns as 1 = open
 """
 
-const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout", "--profile", "--profile-n")
+const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout", "--profile", "--profile-n", "--cutoff", "--nth")
 const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
@@ -100,7 +103,8 @@ function main(args = ARGS)
         return fit(files[2]; write_scenes = flag("--write-scenes"), holdout = opt("--holdout"), profile = opt("--profile"), profile_n = parse(Int, opt("--profile-n", "9")))
     end
     if !isempty(files) && files[1] == "study"
-        length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]")
+        length(files) == 3 && files[2] == "keep" && return study_keep(files[3]; cutoff = parse(Float64, opt("--cutoff", "3")), nth = parse(Int, opt("--nth", "2")))
+        length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]   or   study keep results.csv [--cutoff 3] [--nth 2]")
         return study(files[2]; resume = flag("--resume"), keep_traces = flag("--keep-traces"))
     end
     path = isempty(files) ? "" : files[1]
