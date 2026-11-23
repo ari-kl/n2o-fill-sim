@@ -1385,6 +1385,64 @@ end
     @test jac_gap(mid_band!(sim, 1)) < 1e-3                     # its relief valve is lifting, so this goes through the network too
 end
 
+# The rig with a gauge on the tank top, the fill valve opening at 1 s, run for 12 s.
+function gauged_rig(; kw...)
+    s = rig(bottle_T = 27.0)
+    g = F.add_part!(s, "Gauge", 8, -5; name = "PT")
+    F.connect!(s, ("PT", "a"), ("TANK", "top"))
+    for (k, v) in kw
+        g.p[String(k)] = v
+    end
+    push!(s.schedule, F.Action(1.0, "FILL", "open", 0.0))
+    s
+end
+gauged_run(; sample_dt = 0.1, kw...) = (sim = F.Sim(gauged_rig(; kw...); sample_dt); F.run_until!(sim, 12.0); sim)
+
+@testset "gauge sensor model: offset, gain, range, dead band, lag" begin
+    P_atm = 101325.0
+    plain = gauged_run()
+    @test !haskey(plain.hist, "PT.P_read") && !haskey(plain.hist, "PT.T_read")     # at its defaults a gauge records nothing extra
+    # offset, gain and range, and the temperature offset; the true signals are the same to the last bit
+    sim = gauged_run(offset_psi = 5.0, gain = 1.02, max_psig = 300.0, T_offset_K = -2.0)
+    @test all(sim.hist[k] == plain.hist[k] for k in keys(plain.hist))
+    P, read = sim.hist["PT.P"], sim.hist["PT.P_read"]
+    @test read ≈ min.(1.02 .* (P .- P_atm) .+ 5 * F.PSI, 300 * F.PSI) .+ P_atm rtol = 1e-12
+    @test maximum(P) > 600 * F.PSI && maximum(read) ≈ 300 * F.PSI + P_atm          # the tank went well past the top of the range
+    @test sim.hist["PT.T_read"] ≈ sim.hist["PT.T"] .- 2
+    @test minimum(gauged_run(min_psig = 50.0).hist["PT.P_read"]) ≈ 50 * F.PSI + P_atm
+    # the pieces one at a time, on numbers: `ref` comes off before gain and offset and goes back on after
+    reads(s, vs, h = 1.0) = [F.read!(s, plain.net, v, h) for v in vs]
+    @test reads(F.Sensor("a", "b"; ref = 100.0, gain = 2.0, offset = 1.0, lo = -5.0, hi = 30.0), [110.0, 90.0, 120.0]) == [121.0, 95.0, 130.0]
+    # a dead band holds the reading until the input has moved by more than the band
+    @test reads(F.Sensor("a", "b"; band = 2.0), [0.0, 1.0, 1.9, 2.1, 1.0, 0.0]) == [0.0, 0.0, 0.0, 2.1, 2.1, 0.0]
+    # Lag. A recording interval of zero length is a step in the input, so this is the step response:
+    # 1 − 1/e after one time constant, and the time constant can be read back off it.
+    step(h, n) = (s = F.Sensor("a", "b"; tau = 2.0); reads(s, [0.0], Inf); reads(s, [1.0], 0.0); reads(s, ones(n), h))
+    y = step(0.1, 20)
+    @test y[end] ≈ 1 - exp(-1) rtol = 1e-12
+    @test -2.0 / log(1 - y[end]) ≈ 2.0 rtol = 1e-12
+    @test -0.5 / log(1 - y[5]) ≈ 2.0 rtol = 1e-12
+    # The update is exact for an input that is a straight line between samples, so on a step and
+    # on a ramp the recording interval does not matter beyond round-off.
+    ramp(h, n) = (s = F.Sensor("a", "b"; tau = 2.0); reads(s, [0.0], Inf); reads(s, 3h .* (1:n), h))
+    @test step(0.5, 4)[end] ≈ y[end] rtol = 1e-12
+    @test ramp(0.1, 20)[end] ≈ ramp(0.5, 4)[end] rtol = 1e-12
+    @test ramp(0.1, 20)[end] ≈ 3 * (2 - 2 * (1 - exp(-1))) rtol = 1e-12        # x = 3t gives y = 3(t − τ(1 − exp(−t/τ)))
+    # In a run the true value is not a straight line between samples, and the lagged reading is
+    # the exact lag of the recorded history. Two recording intervals therefore give readings that
+    # differ, but by less than their histories of the true value do (here a fill's first seconds,
+    # with the air in the tank being compressed: about as rough as a history gets).
+    fine, coarse = gauged_run(tau_s = 2.0, T_tau_s = 3.0), gauged_run(tau_s = 2.0, T_tau_s = 3.0, sample_dt = 0.5)
+    @test length(fine.t_hist) > 1.5 * length(coarse.t_hist)
+    tt = range(0, min(fine.t_hist[end], coarse.t_hist[end]); length = 2000)
+    apart(k) = maximum(abs(F.signal_at(fine, k, t) - F.signal_at(coarse, k, t)) for t in tt)
+    @test apart("PT.P_read") < apart("PT.P") && apart("PT.T_read") < apart("PT.T")
+    # and the reading does lag: half-way up the fill it is well below the truth, and it catches up
+    i = findfirst(>(300 * F.PSI), fine.hist["PT.P"])
+    @test fine.hist["PT.P"][i] - fine.hist["PT.P_read"][i] > 50 * F.PSI
+    @test fine.hist["PT.P"][end] - fine.hist["PT.P_read"][end] < fine.hist["PT.P"][i] - fine.hist["PT.P_read"][i]
+end
+
 @testset "overfilled tank warming in the sun goes liquid-full and lifts the relief valve" begin
     s = rig(tank_fill = 15.2, tank_T = 12.0, air = 0.0)       # ≈ 93 % liquid at 12 °C
     s.settings["T_amb_C"], s.settings["solar_W_m2"] = 38.0, 1000.0

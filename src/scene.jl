@@ -61,6 +61,9 @@ const _RESTRICTION = [
     Param("Cd", 0.7, "discharge coefficient (calibration knob)"),
 ]
 
+# Range limits are numbers like every other parameter, so "no limit" is a pressure nothing reaches.
+const GAUGE_NO_LIMIT = 1.0e6
+
 "Every kind of part that can be placed, in palette order."
 const KINDS = Dict{String,Kind}(
     "Bottle" => Kind([Pin("out", 0, -2)],
@@ -109,7 +112,20 @@ const KINDS = Dict{String,Kind}(
         "Relief valve, flow a → b only. Wire b to Atmosphere."),
     "Atmosphere" => Kind([Pin("a", -1, 0)], Param[], "Ambient boundary. Everything vented ends up here."),
     "Junction" => Kind([Pin("a", 0, 0)], Param[], "A dot to join several wires (tee, cross)."),
-    "Gauge" => Kind([Pin("a", 0, 1)], Param[], "Shows pressure and temperature of whatever it is wired to (PT / TC)."),
+    # A Gauge records the true pressure and temperature as NAME.P and NAME.T whatever these say.
+    # Set any of them and it also records what the instrument would have reported, NAME.P_read
+    # and NAME.T_read (see docs/MODEL.md section 8). Applied in this order: gain and offset, lag,
+    # dead band, range.
+    "Gauge" => Kind([Pin("a", 0, 1)],
+        [Param("offset_psi", 0.0, "added to the pressure reading (a transducer whose zero is off)"),
+         Param("gain", 1.0, "multiplies the gauge pressure before the offset (a span error)"),
+         Param("tau_s", 0.0, "time constant of a first-order lag on the pressure reading (0 = none)"),
+         Param("deadband_psi", 0.0, "the pressure reading holds until the pressure has moved by more than this (0 = none)"),
+         Param("min_psig", -GAUGE_NO_LIMIT, "bottom of the transducer's range: the reading never goes below it (the default is no limit)"),
+         Param("max_psig", GAUGE_NO_LIMIT, "top of the transducer's range: the reading never goes above it (the default is no limit)"),
+         Param("T_offset_K", 0.0, "added to the temperature reading"),
+         Param("T_tau_s", 0.0, "time constant of a first-order lag on the temperature reading (0 = none)")],
+        "Shows pressure and temperature of whatever it is wired to (PT / TC). Its parameters describe the instrument, not the plumbing."),
 )
 const PALETTE = ["Bottle", "Tank", "Pipe", "Valve", "Orifice", "Regulator", "CheckValve", "ReliefValve", "Atmosphere", "Junction", "Gauge"]
 

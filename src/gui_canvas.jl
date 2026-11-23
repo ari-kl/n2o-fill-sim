@@ -330,7 +330,10 @@ function draw_part(dl, app::App, part::Part)
         node_of(app, part.name).heater_on && put(6, "HEATER ON", col(255, 160, 60))
     elseif k == "Gauge"
         g = get(net.gauges, part.name, 0)
-        g == 0 || put(1, fmt(app, :pressure, REPORTS[g].P))
+        # A gauge with a sensor model shows what it reads (as of the last recorded sample); the
+        # true value is in its hover text.
+        read = get(sim.hist, part.name * ".P_read", nothing)
+        g == 0 || put(1, fmt(app, :pressure, read === nothing ? REPORTS[g].P : read[end]))
     elseif k in FLOW_KINDS
         e = edge_of(app, part.name)
         abs(e.mdot) > 3e-4 && k != "Pipe" && k != "Orifice" && put(1, "$(e.mdot > 0 ? ">" : "<") " * fmt(app, :flow, abs(e.mdot)), col(140, 220, 255))
@@ -373,6 +376,11 @@ function describe(app::App, part::Part)
         i = k == "Atmosphere" ? node_index(app, "atmosphere") : get(net.pin_node, (part.name, "a"), 0)
         if i != 0
             r = REPORTS[i]
+            hist = app.sim.hist
+            if k == "Gauge" && haskey(hist, part.name * ".P_read")
+                push!(lines, "reads " * fmt(app, :pressure, hist[part.name*".P_read"][end]) * ",  " * fmt(app, :temperature, hist[part.name*".T_read"][end]))
+                push!(lines, "true values:")
+            end
             push!(lines, fmt(app, :pressure, r.P) * ",  " * fmt(app, :temperature, r.T) * ",  $(round(Int, 100 * r.x)) % vapour by mass")
             CUT_OFF[i] && push!(lines, "shut off on all sides: holding its last pressure")
         end

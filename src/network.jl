@@ -50,6 +50,30 @@ mutable struct Edge
     calls::Int                    # times this part's flow has been worked out: the measure of work done (see run_until!)
 end
 
+"""
+What an instrument reports, made from a recorded true signal each time a sample is recorded: a
+gauge's pressure or temperature, a load cell's mass. It is no part of the equations being solved.
+"""
+mutable struct Sensor
+    key::String                   # the recorded reading, e.g. "PT202.P_read"
+    source::String                # the recorded true signal it is made from, e.g. "PT202.P"
+    ref::Float64                  # taken off before the steps below and put back after (atmospheric pressure for a gauge), SI
+    gain::Float64
+    offset::Float64
+    step::Float64                 # added while part `valve` is open at all (a charged hose on a load cell)
+    valve::Int                    # index into edges, 0 = none
+    tau::Float64                  # s, first-order lag (0 = none)
+    band::Float64                 # dead band
+    lo::Float64
+    hi::Float64
+    # at the last recorded sample (NaN before the first)
+    x::Float64                    # what went into the lag
+    y::Float64                    # what came out of it
+    out::Float64                  # what the dead band is holding
+end
+Sensor(key, source; ref = 0.0, gain = 1.0, offset = 0.0, step = 0.0, valve = 0, tau = 0.0, band = 0.0, lo = -Inf, hi = Inf) =
+    Sensor(key, source, ref, gain, offset, step, valve, tau, band, lo, hi, NaN, NaN, NaN)
+
 mutable struct Net
     nodes::Vector{Node}
     edges::Vector{Edge}
@@ -58,6 +82,7 @@ mutable struct Net
     junctions::Vector{Int}        # node indices
     adj::Vector{Vector{Int}}      # edges touching each node
     gauges::Dict{String,Int}      # Gauge part name → node index
+    sensors::Vector{Sensor}       # instrument readings recorded beside the true signals (see sample!)
     pin_node::Dict{Tuple{String,String},Int}
     # work space for the junction solve
     order::Vector{Int}
@@ -189,7 +214,17 @@ function compile(s::Scene)
     row[junctions] .= 1:length(junctions)
     adj = [[k for k in eachindex(edges) if edges[k].a == j || edges[k].b == j] for j in eachindex(nodes)]
     gauges = Dict(p.name => get(pin_node, (p.name, "a"), 0) for p in s.parts if p.kind == "Gauge")
-    net = Net(nodes, edges, env, i - 1, junctions, adj, gauges, pin_node, collect(eachindex(nodes)),
+    # Instrument readings. A gauge left at its defaults reads the truth and records nothing extra.
+    sensors = Sensor[]
+    for p in s.parts
+        g(k) = p.p[k]
+        if p.kind == "Gauge" && gauges[p.name] != 0 && any(q -> g(q.key) != q.default, KINDS["Gauge"].params)
+            push!(sensors, Sensor(p.name * ".P_read", p.name * ".P"; ref = env.P_atm, gain = g("gain"), offset = g("offset_psi") * PSI,
+                                  tau = g("tau_s"), band = g("deadband_psi") * PSI, lo = g("min_psig") * PSI, hi = g("max_psig") * PSI))
+            push!(sensors, Sensor(p.name * ".T_read", p.name * ".T"; offset = g("T_offset_K"), tau = g("T_tau_s")))
+        end
+    end
+    net = Net(nodes, edges, env, i - 1, junctions, adj, gauges, sensors, pin_node, collect(eachindex(nodes)),
               zeros(length(junctions)), zeros(length(junctions)), zeros(length(junctions)),
               zeros(length(junctions), length(junctions)), row, nothing, 0,
               falses(length(edges)) |> collect, falses(length(edges)) |> collect, Int[], Int[], zeros(Int, length(nodes)), zeros(Int, length(nodes)), Int[], UInt(1))
@@ -1263,9 +1298,37 @@ function sample!(sim::Sim)
         r = node_report(net, net.nodes[k], u)
         put(g * ".P", r.P); put(g * ".T", r.T)
     end
+    for s in net.sensors                       # after the true signals: each reading is made from one of them
+        put(s.key, read!(s, net, sim.hist[s.source][end], t - sim.last_sample))
+    end
     put("vented.m", u[end-2])
     sim.last_sample = t
     nothing
+end
+
+"""
+    read!(sensor, net, v, h) -> reading
+
+What the instrument reports now, given the true value `v` and the `h` seconds since the last
+recorded sample. In order: gain and offset (and a load cell's hose step), lag, dead band, range.
+
+The lag is not a state of the equations. It is advanced here, once per recorded sample, by the
+exact solution of τ·y′ = x − y for an input `x` that runs in a straight line from the last sample
+to this one. That is how the history is read everywhere else (`signal_at`), so the reading is the
+exact lag of the recorded history: it has no step-size error of its own, and differs between two
+recording intervals only as far as their straight-line histories of the true value differ.
+"""
+function read!(s::Sensor, net::Net, v, h)
+    x = s.gain * (v - s.ref) + s.offset
+    s.valve != 0 && net.edges[s.valve].opening > 0 && (x += s.step)
+    y = x
+    if s.tau > 0 && !isnan(s.y)                # the first sample starts settled on the input
+        k = h > 0 ? -expm1(-h / s.tau) * s.tau / h : 1.0
+        y = x - (x - s.x) * k - (1 - k * h / s.tau) * (s.x - s.y)
+    end
+    s.x, s.y = x, y
+    (isnan(s.out) || abs(y - s.out) > s.band) && (s.out = y)
+    clamp(s.out, s.lo, s.hi) + s.ref
 end
 
 "Warm-soak check: pressure and liquid volume fraction if N2O mass m sat closed in volume V at T."
