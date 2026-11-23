@@ -1881,6 +1881,126 @@ end
     net.allowance = F.FLOWS_PER_PART
 end
 
+@testset "a valve set part-open passes that share of its full flow; stuck part-way; toggled" begin
+    # A tank of vapour straight to atmosphere through one valve, moved instantly: the same state
+    # either side of the comparison, and nothing but the valve's area between them.
+    s = F.Scene()
+    t = F.add_part!(s, "Tank", 0, 0; name = "TANK"); t.p["fill_kg"], t.p["air"] = 5.0, 0.0
+    F.add_part!(s, "Valve", 4, 0; name = "V").p["travel_s"] = 0.0
+    F.add_part!(s, "Atmosphere", 8, 0; name = "ATM")
+    F.connect!(s, ("TANK", "top"), ("V", "a")); F.connect!(s, ("V", "b"), ("ATM", "a"))
+    flow(action, value = 0.0) = (sim = F.Sim(s); F.act!(sim, "V", action, value); F.advance!(sim, 1e-4); part_flow(sim, "V"))
+    full = flow("open")
+    @test full > 0.1
+    @test flow("set", 0.25) ≈ 0.25 * full rtol = 1e-3
+    @test flow("set", 0.01) ≈ 0.01 * full rtol = 1e-3
+    @test flow("set", 0.0) == 0 && flow("set", 7.0) == full        # an opening is 0 to 1
+    # With a travel time it strokes there at the rate it strokes anywhere, and the record says
+    # where it is, where it was told to be and whether that is open at all.
+    s.parts[2].p["travel_s"] = 0.4
+    sim = F.Sim(s; sample_dt = 0.01)
+    V = sim.net.edges[1]
+    F.act!(sim, "V", "set", 0.5); F.run_until!(sim, 0.1)
+    @test V.opening ≈ 0.25 atol = 0.06
+    F.run_until!(sim, 1.0)
+    @test V.opening == 0.5 && sim.hist["V.position"][end] == 0.5 && sim.hist["V.cmd_frac"][end] == 0.5 && sim.hist["V.open_cmd"][end] == 1
+    @test sim.hist["V.cmd_frac"][1] == 0 && sim.hist["V.open_cmd"][1] == 0
+    # Stuck part-way: commands change what it is told, not where it is.
+    F.act!(sim, "V", "stuck_at", 0.2); F.act!(sim, "V", "open"); F.run_until!(sim, 2.0)
+    @test V.opening == 0.2 && sim.hist["V.stuck"][end] == 3 && sim.hist["V.cmd_frac"][end] == 1
+    F.act!(sim, "V", "unstick"); F.run_until!(sim, 3.0)
+    @test V.opening == 1
+    # A toggle goes to the end the valve is not being told to be nearer to.
+    F.act!(sim, "V", "set", 0.3); F.act!(sim, "V", "toggle")
+    @test F.valve_target(V) == 1
+    F.act!(sim, "V", "set", 0.7); F.act!(sim, "V", "toggle")
+    @test F.valve_target(V) == 0
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    # The action log carries the values, and a scene file keeps them.
+    @test [(a.action, a.value) for a in sim.log[1:2]] == [("set", 0.5), ("stuck_at", 0.2)]
+    s.schedule = sim.log
+    path = tempname() * ".toml"
+    F.save_scene(path, s)
+    @test [(a.action, a.value) for a in F.load_scene(path).schedule[1:2]] == [("set", 0.5), ("stuck_at", 0.2)]
+end
+
+@testset "a leaking valve: a tank behind it fills slowly, a closed-off line comes up to pressure at once" begin
+    # leak_frac is the share of the full area that still passes when shut.
+    leaky(frac) = (s = rig(); s.parts[F.find_part(s, "FILL")].p["leak_frac"] = frac; F.Sim(s))
+    open_flow = (sim = F.Sim(rig()); F.act!(sim, "FILL", "open"); sim.net.edges[1].opening = 1.0; F.refresh!(sim); part_flow(sim, "FILL"))
+    sim = leaky(1e-3)
+    @test part_flow(sim, "FILL") ≈ 1e-3 * open_flow rtol = 1e-6
+    F.run_until!(sim, 120.0)
+    @test 0.5 * 120e-3 * open_flow < tank(sim).m < 1.2 * 120e-3 * open_flow     # the flow falls off as the tank comes up
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    @test abs(closure_mass(sim)) < 1e-8
+    tight = leaky(0.0); F.run_until!(tight, 120.0)
+    @test part_flow(tight, "FILL") == 0 && tank(tight).m == tank(F.Sim(rig())).m
+    # The lines hold no fluid, so a section of line between a leaking valve and a tight one has
+    # nothing to fill: it is at the pressure beyond the leak as soon as the equations are next
+    # evaluated, and nothing flows.
+    s = chain(["Valve", "Pipe", "Valve"]); s.parts[3].p["leak_frac"] = 1e-4
+    sim = F.Sim(s); F.run_until!(sim, 30.0)
+    held(sim) = F.node_report(sim.net, sim.net.nodes[2], sim.u).m       # in the tank
+    @test all(n -> n.kind !== :junction || n.P == sim.net.nodes[1].P, sim.net.nodes)
+    @test all(e -> e.mdot == 0, sim.net.edges) && held(sim) == held(F.Sim(s))
+    @test isempty(sim.failed) && sim.net.unconverged == 0
+    # Open the tight valve and the leak is all that feeds the tank, here through a check valve and
+    # a regulator: parts that have to settle a ten-thousandth of the way into their bands.
+    s = chain(["Valve", "CheckValve", "Regulator", "Valve"]); s.parts[3].p["leak_frac"] = 1e-4
+    sim = F.Sim(s); F.act!(sim, "P4", "open")
+    costliest = 0
+    while sim.t < 300 && isempty(sim.failed)
+        before = F.work(sim); F.advance!(sim, 300 - sim.t; max_steps = 1); costliest = max(costliest, F.work(sim) - before)
+    end
+    @test held(sim) > held(F.Sim(s)) + 0.02 && part_flow(sim, "P4") > 1e-5
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    @test abs(closure_mass(sim)) < 1e-8
+    @test costliest < 3000
+end
+
+@testset "relief valve band; a hand valve is not driven by a replayed log" begin
+    # band_frac is the share of the set pressure over which the valve opens. Left alone it is the
+    # tenth it always was, to the last bit.
+    s = rig()
+    prv(sim) = sim.net.edges[findfirst(e -> e.name == "PRV", sim.net.edges)]
+    e = prv(F.Sim(s))
+    @test e.band == 0.1 * 1000.0 * F.PSI + 500.0
+    s.parts[F.find_part(s, "PRV")].p["band_frac"] = 0.03
+    e = prv(F.Sim(s))
+    @test e.band == 0.03 * 1000.0 * F.PSI + 500.0
+    @test F.flow_area(e, e.set, 101325.0) == 0 && F.flow_area(e, e.set + 1.001 * e.band, 101325.0) == e.area
+    @test F.flow_area(e, e.set + 0.015 * 1000 * F.PSI + 250, 101325.0) ≈ 0.5 * e.area
+    # Venting what a part-open fill valve lets in, the tank settles as far above the set pressure
+    # as the valve has to lift: a fifth as far with a fifth of the band.
+    over(band) = begin
+        s = rig(); p = s.parts[F.find_part(s, "PRV")].p; p["set_psig"], p["band_frac"] = 500.0, band
+        sim = F.Sim(s); F.act!(sim, "FILL", "set", 0.2); F.run_until!(sim, 120.0)
+        @test isempty(sim.failed) && sim.net.unconverged == 0 && sim.u[end-2] > 1 && closes(sim)
+        (tank(sim).P - prv(sim).set) / F.PSI
+    end
+    wide, narrow = over(0.1), over(0.02)
+    @test 3 < wide < 6 && wide / 6 < narrow < wide / 4
+    # manual = 1 marks a valve nothing electrical moves. A log's valve columns replay as open and
+    # close commands, so a column that happens to carry a hand valve's name cannot drive it.
+    s = rig(); s.parts[F.find_part(s, "VENT")].p["manual"] = 1.0
+    t = collect(0.0:1.0:20.0)
+    cols = Dict("t_s" => t, "FILL" => Float64.(t .>= 2), "VENT" => Float64.(t .>= 2))
+    columns = F.guess_log_columns(["t_s", "FILL", "VENT"], s)
+    s.schedule = F.log_schedule(cols, columns; t0 = 0.0)
+    @test any(a -> a.part == "VENT" && a.action == "open", s.schedule)       # the column was matched to the valve
+    sim = F.Sim(s); F.run_until!(sim, 20.0)
+    @test all(==(0), sim.hist["VENT.position"]) && sim.hist["FILL.position"][end] == 1
+    @test !any(a -> a.part == "VENT", sim.log) && sim.u[end-2] == 0
+    # Nor does a power failure. A hand on it does.
+    @test !F.act!(sim, "VENT", "open") && !F.act!(sim, "VENT", "deenergise")
+    @test F.act!(sim, "VENT", "set", 0.4); F.fail_safe!(sim); F.run_until!(sim, 22.0)
+    @test sim.net.edges[findfirst(e -> e.name == "VENT", sim.net.edges)].opening == 0.4
+    @test F.act!(sim, "VENT", "toggle"); F.run_until!(sim, 24.0)
+    @test sim.hist["VENT.position"][end] == 1 && sim.hist["FILL.position"][end] == 0
+    @test isempty(sim.failed) && closes(sim)
+end
+
 # RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
 function log_rms(sim, key, D, col, t0, a, b, p_atm)
     d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]

@@ -261,7 +261,8 @@ via = [[24, 7]]           # optional: corners the drawn wire passes through (dra
 t = 63.1
 part = "AV203"
 action = "open"           # open, close, stuck_open, stuck_closed, unstick (valves);
-                          # on, off (heater, named by its vessel); set + value (regulator, relief)
+                          # set + value (a valve's opening, 0 to 1), stuck_at + value (likewise);
+                          # on, off (heater, named by its vessel); set + value (regulator, relief: psig)
 ```
 
 | Part | What it models |

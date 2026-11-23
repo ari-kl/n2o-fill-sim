@@ -38,7 +38,11 @@ mutable struct Edge
     travel::Float64               # s to stroke
     normally_open::Bool
     cmd::Bool                     # energised (commanded away from its fail state)
-    stuck::Int                    # 0 = healthy, 1 = stuck open, 2 = stuck closed
+    frac::Float64                 # opening it has been set to, 0..1; NaN while it is simply commanded open or shut
+    stuck::Int                    # 0 = healthy, 1 = stuck open, 2 = stuck closed, 3 = stuck at `stuck_at`
+    stuck_at::Float64
+    leak::Float64                 # share of the full area that passes when shut
+    manual::Bool                  # a hand valve: no actuator for a command to work
     mdot::Float64                 # kg/s, positive a → b
     # Memo of the last upstream state resolved for this part and its choking point (see hem_flux).
     m_P1::Float64
@@ -109,8 +113,11 @@ mutable struct Net
     stamp::UInt
 end
 
-"Is this valve meant to be open right now?"
-valve_target(e::Edge) = e.stuck == 1 ? 1.0 : e.stuck == 2 ? 0.0 : (e.cmd != e.normally_open ? 1.0 : 0.0)
+"The opening a valve is being told to take, 0 to 1, whether or not it can get there."
+valve_cmd(e::Edge) = isnan(e.frac) ? (e.cmd != e.normally_open ? 1.0 : 0.0) : e.frac
+
+"The opening a valve is heading for: where it is stuck, or else what it is told."
+valve_target(e::Edge) = e.stuck == 1 ? 1.0 : e.stuck == 2 ? 0.0 : e.stuck == 3 ? e.stuck_at : valve_cmd(e)
 
 function Env(settings::Dict)
     g(k) = settings[k]
@@ -185,7 +192,7 @@ function compile(s::Scene)
         g(k) = p.p[k]
         ka, kb = net_of[(p.name, "a")], net_of[(p.name, "b")]
         e = Edge(p.name, EDGE_KIND[p.kind], node_of_net[ka], port_of_net[ka], node_of_net[kb], port_of_net[kb],
-                 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, false, false, 0, 0.0,
+                 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.3, false, false, NaN, 0, 0.0, 0.0, false, 0.0,
                  NaN, NaN, Fluid(NaN, NaN, NaN, NaN, NaN, NaN, NaN, false), NaN, NaN, Inf, 0)
         if p.kind == "Pipe"
             e.L, e.D, e.K = g("L_m"), g("id_mm") * 1e-3, g("K")
@@ -196,13 +203,14 @@ function compile(s::Scene)
             if p.kind == "Valve"
                 g("Cv") > 0 && (e.area = g("Cv") * CV_AREA)
                 e.normally_open, e.travel = g("normally_open") > 0.5, max(g("travel_s"), 0.0)
+                e.leak, e.manual = clamp(g("leak_frac"), 0.0, 1.0), g("manual") > 0.5
                 e.opening = valve_target(e)
             elseif p.kind == "Regulator"
                 e.set, e.band = g("set_psig") * PSI + env.P_atm, max(g("droop_psi"), 0.1) * PSI
             elseif p.kind == "CheckValve"
                 e.set, e.band = g("crack_psi") * PSI, 0.2 * g("crack_psi") * PSI + 500.0
             elseif p.kind == "ReliefValve"
-                e.set, e.band = g("set_psig") * PSI + env.P_atm, 0.1 * g("set_psig") * PSI + 500.0
+                e.set, e.band = g("set_psig") * PSI + env.P_atm, max(g("band_frac"), 0.0) * g("set_psig") * PSI + 500.0
             end
         end
         push!(edges, e)
@@ -269,7 +277,7 @@ end
 
 "Effective flow area of an edge, given the pressures at its a and b ends."
 function flow_area(e::Edge, Pa, Pb)
-    e.kind === :valve && return e.area * e.opening
+    e.kind === :valve && return e.area * max(e.opening, e.leak)   # a leak is what still passes below that opening
     e.kind in (:regulator, :check, :relief) && return e.area * clamp(band_place(e, Pa, Pb), 0.0, 1.0)
     e.area
 end
@@ -1175,7 +1183,16 @@ _restart!(sim::Sim) = reinit!(sim.integ, copy(sim.u); t0 = sim.t, tf = Inf, eras
 "Wind the integrator back to now if it has run ahead."
 _rewind!(sim::Sim) = sim.integ.t > sim.t && _restart!(sim)
 
-"Apply an action (`open`, `close`, `toggle`, `deenergise`, `stuck_open`, `stuck_closed`, `unstick`, `on`, `off`, `set`) to a part by name."
+"""
+Apply an action to a part by name; returns false if the part does not take it.
+
+Valves: `open`, `close`, `toggle`, `deenergise`, `set` (to an opening `value`, 0 to 1, reached at
+the valve's travel rate), `stuck_open`, `stuck_closed`, `stuck_at` (an opening `value`), `unstick`.
+A hand valve (`manual`) has no actuator, so `open`, `close` and `de-energise`, which are commands
+to one, do not move it: it takes `set` and `toggle`, which are a hand on it. That is what keeps a
+replayed log's valve columns, which become `open` and `close`, from driving it.
+Heaters: `on`, `off`. Regulators and relief valves: `set` (to `value` psig).
+"""
 function act!(sim::Sim, part, action, value = 0.0; record = true)
     net = sim.net
     ie = findfirst(e -> e.name == part, net.edges)
@@ -1184,10 +1201,16 @@ function act!(sim::Sim, part, action, value = 0.0; record = true)
     if ie !== nothing
         e = net.edges[ie]
         if e.kind === :valve
-            action == "open" && (e.cmd = !e.normally_open)
-            action == "close" && (e.cmd = e.normally_open)
-            action == "toggle" && (e.cmd = !e.cmd)
-            action == "deenergise" && (e.cmd = false)
+            e.manual && action in ("open", "close", "deenergise") && return false
+            if action in ("open", "close", "toggle", "deenergise")
+                # Toggle goes to whichever end the valve is not being told to be nearer to.
+                want_open = action == "open" || action == "toggle" && valve_cmd(e) <= 0.5
+                e.cmd, e.frac = action != "deenergise" && want_open != e.normally_open, NaN
+            elseif action == "set"
+                e.cmd, e.frac = true, clamp(value, 0.0, 1.0)
+            elseif action == "stuck_at"
+                e.stuck, e.stuck_at = 3, clamp(value, 0.0, 1.0)
+            end
             action == "stuck_open" && (e.stuck = 1)
             action == "stuck_closed" && (e.stuck = 2)
             action == "unstick" && (e.stuck = 0)
@@ -1375,10 +1398,12 @@ function sample!(sim::Sim)
     for e in net.edges
         put(e.name * ".mdot", e.mdot)
         # Recorded by meaning, not as a bare 0/1: position is how far open the valve actually is,
-        # open_cmd is what it is being told to do, stuck says why the two may differ.
+        # cmd_frac how far open it is being told to be, open_cmd whether that is open at all (the
+        # 0/1 a log's valve column holds), stuck says why position and command may differ.
         if e.kind === :valve
             put(e.name * ".position", e.opening)
-            put(e.name * ".open_cmd", e.cmd != e.normally_open ? 1.0 : 0.0)
+            put(e.name * ".open_cmd", valve_cmd(e) > 0 ? 1.0 : 0.0)
+            put(e.name * ".cmd_frac", valve_cmd(e))
             put(e.name * ".stuck", Float64(e.stuck))
         elseif e.kind in (:regulator, :relief)
             put(e.name * ".set", e.set)

@@ -96,8 +96,10 @@ const KINDS = Dict{String,Kind}(
         vcat(_RESTRICTION, [
             Param("Cv", 0.0, "US flow coefficient; if > 0 it replaces d_mm and Cd"),
             Param("normally_open", 0.0, "1 = open when de-energised (fail state)"),
-            Param("travel_s", 0.3, "time to stroke fully")]),
-        "On/off valve. Click to command it in run mode."),
+            Param("travel_s", 0.3, "time to stroke fully"),
+            Param("leak_frac", 0.0, "share of the full area that still passes when the valve is shut (0 = shuts tight)"),
+            Param("manual", 0.0, "1 = a hand valve: no actuator, so open, close and de-energise commands (a replayed log's among them) do not move it; set its opening or click it")]),
+        "Valve: open, shut or set part-way. Click to command it in run mode."),
     "Orifice" => _two_pin(_RESTRICTION, "Fixed restriction (orifice, quick-disconnect, fitting)."),
     "Regulator" => _two_pin(
         vcat(_RESTRICTION, [
@@ -108,7 +110,9 @@ const KINDS = Dict{String,Kind}(
         vcat(_RESTRICTION, [Param("crack_psi", 1.0, "cracking pressure")]),
         "Check valve, flow a → b only."),
     "ReliefValve" => _two_pin(
-        vcat(_RESTRICTION, [Param("set_psig", 1000.0, "inlet pressure at which it starts to open (fully open 10 % above)")]),
+        vcat(_RESTRICTION, [
+            Param("set_psig", 1000.0, "inlet pressure at which it starts to open"),
+            Param("band_frac", 0.1, "share of the set pressure over which it opens: fully open at set_psig × (1 + band_frac)")]),
         "Relief valve, flow a → b only. Wire b to Atmosphere."),
     "Atmosphere" => Kind([Pin("a", -1, 0)], Param[], "Ambient boundary. Everything vented ends up here."),
     "Junction" => Kind([Pin("a", 0, 0)], Param[], "A dot to join several wires (tee, cross)."),
@@ -169,7 +173,11 @@ struct Wire
 end
 Wire(a, b) = Wire(a, b, Tuple{Int,Int}[])
 
-"A scripted action: at time `t`, `open`/`close` a valve, switch a heater `on`/`off`, or `set` a regulator."
+"""
+A scripted action: at time `t`, `open`/`close` a valve or `set` its opening to `value` (0 to 1),
+stick it (`stuck_open`, `stuck_closed`, `stuck_at` a `value`) or free it (`unstick`), switch a
+heater `on`/`off`, or `set` a regulator or relief valve to `value` psig.
+"""
 struct Action
     t::Float64
     part::String
@@ -449,7 +457,7 @@ function save_scene(path, s::Scene)
         end
         for a in s.schedule
             println(io, "\n[[schedule]]\nt = ", _num(a.t), "\npart = \"", a.part, "\"\naction = \"", a.action, "\"")
-            a.action == "set" && println(io, "value = ", _num(a.value))
+            a.action in ("set", "stuck_at") && println(io, "value = ", _num(a.value))
         end
     end
 end
