@@ -212,3 +212,121 @@ end
     sim, _, c = F._simulate(st, st.runs[1].overrides, st.runs[1].actions; case = "fill")
     @test !isempty(c.log) && c.log[1].action == "open" && F.signal_at(sim, "PT.P", c.log[1].t) > 2.0e6
 end
+
+@testset "control: conditions on known readings" begin
+    s = gauged_rig()
+    sim, c = controller(s, """
+        stand_ins = ["TANK.m"]
+        [[policy]]
+        name = "ready"
+        kind = "band_watch"
+        reading = "PT.P_read"
+        lo_psig = 100
+        hi_psig = 200
+        hold_s = 3
+        [[step]]
+        name = "only"
+        until = { any = [{ reading = "PT.P_read", ge_psig = 500 }, { rate = "TANK.m", window_s = 2, lt = 0.01 }, { mark = "ready" }] }
+        """)
+    cond(d) = F._cond(d, s.settings["P_atm_kPa"] * 1e3, "test", String[], c.mark_names)
+    c.step, c.t_start["only"] = "only", 10.0
+    obs!(p, m = 0.0) = (c.obs["PT.P_read"] = p * F.PSI + 101325; c.obs["TANK.m"] = m)
+    obs!(500); @test F._holds(cond(Dict("reading" => "PT.P_read", "ge_psig" => 500)), c, 11.0)
+    @test !F._holds(cond(Dict("reading" => "PT.P_read", "gt_psig" => 500)), c, 11.0)
+    @test F._holds(cond(Dict("reading" => "PT.P_read", "lt" => 5e6)), c, 11.0)
+    @test !F._holds(cond(Dict("elapsed_ge" => 5)), c, 14.0) && F._holds(cond(Dict("elapsed_ge" => 5)), c, 15.0)    # time in the step
+    r = cond(Dict("rate" => "TANK.m", "window_s" => 2, "lt" => 0.01))
+    rates = [(obs!(0, 0.2t); F._holds(r, c, t)) for t in 0.0:0.5:3.0]        # 0.2 kg/s for 3 s, then it stalls
+    @test rates[1] && !any(rates[2:end])                                         # (the first tick has no rate: 0)
+    stalled = [(obs!(0, 0.6); F._holds(r, c, t)) for t in 3.5:0.5:6.0]
+    @test stalled == [false, false, false, true, true, true]                    # true once the whole window is flat
+    h = cond(Dict("held" => Dict("reading" => "PT.P_read", "ge_psig" => 100), "for_s" => 2))
+    @test [(obs!(p); F._holds(h, c, t)) for (t, p) in zip(0:1:5, [150, 150, 150, 50, 150, 150])] == [false, false, true, false, false, false]
+    m = cond(Dict("mark" => "ready", "plus_s" => 1))
+    @test !F._holds(m, c, 5.0)
+    c.marks["ready"] = 4.0
+    @test !F._holds(m, c, 4.5) && F._holds(m, c, 5.0)
+    obs!(0)
+    @test F._holds(cond(Dict("any" => [Dict("elapsed_ge" => 100), Dict("mark" => "ready")])), c, 6.0)
+    @test !F._holds(cond(Dict("all" => [Dict("elapsed_ge" => 100), Dict("mark" => "ready")])), c, 6.0)
+    @test_throws ErrorException cond(Dict("reading" => "PT.P_read", "ge" => 1, "lt" => 2))      # one comparison each
+    @test_throws ErrorException cond(Dict("rate" => "TANK.m", "window_s" => 2, "lt_psig" => 1))  # a rate has no gauge zero
+    @test_throws ErrorException cond(Dict("mark" => "nope"))
+    # a reading in a condition is held to the same rule as a policy's
+    @test_throws ErrorException controller(s, "[[step]]\nname = \"a\"\nuntil = { reading = \"TANK.P\", ge = 1 }\n")
+    # settings by step: only steps that exist, and a value for each
+    vent = "[[policy]]\nname = \"v\"\nkind = \"hysteresis\"\nreading = \"PT.P_read\"\nactuator = \"VENT\"\nclose_below = 1\n"
+    steps = "[[step]]\nname = \"a\"\n[[step]]\nname = \"b\"\n"
+    _, c2 = controller(s, vent * "open_above = { a = 2, default = 3 }\n" * steps)
+    @test F._at(c2.policies[1].open_above, "a") == 2 && F._at(c2.policies[1].open_above, "b") == 3
+    @test_throws ErrorException controller(s, vent * "open_above = { a = 2 }\n" * steps)            # no value for b
+    @test_throws ErrorException controller(s, vent * "open_above = { a = 2, c = 3, b = 1 }\n" * steps)   # no step c
+    @test_throws ErrorException controller(s, vent * "open_above = { a = 2, b = 1 }\n")              # no steps at all
+end
+
+@testset "control: a sequence, marks, step and mark columns, windows from marks, a run ending on a step" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), gauged_rig())
+    file(name, body) = (p = joinpath(dir, name); write(p, body); p)
+    table(path) = (lines = readlines(path); (split(lines[1], ','), [split(l, ',') for l in lines[2:end]]))
+    body = """
+        scene = "rig.toml"
+        until = { step = "hold", edge = "end", max_s = 200 }
+        [controller]
+        dt = 0.5
+        stand_ins = ["TANK.m"]
+        [[controller.step]]
+        name = "prep"
+        duration_s = 2
+        [[controller.step]]
+        name = "fill"
+        on_enter = [{ part = "FILL", action = "open" }]
+        on_exit = [{ part = "FILL", action = "close" }]
+        until = { reading = "TANK.m", ge = 1.5 }
+        operator_delay_s = 1
+        timeout_s = 100
+        enable = ["ready"]
+        [[controller.step]]
+        name = "hold"
+        duration_s = 20
+        [[controller.policy]]
+        name = "ready"
+        kind = "band_watch"
+        enabled = false
+        reading = "PT.P_read"
+        lo_psig = LO
+        hi_psig = 2000
+        hold_s = 3
+        [metrics]
+        m_fill_end = { fn = "final", signal = "TANK.m", to = { step = "fill", edge = "end" } }
+        m_ready_5 = { fn = "final", signal = "TANK.m", to = { mark = "ready", plus_s = 5 } }
+        p_after_ready = { fn = "min", signal = "TANK.P", from = { mark = "ready" } }
+        m_ready_late = { fn = "final", signal = "TANK.m", to = { mark = "ready", plus_s = 1000 } }
+        [bands]
+        signals = ["TANK.P"]
+        align = "ready"
+        """
+    out = F.study(file("seq.toml", replace(body, "LO" => "100")); quiet = true)
+    head, rows = table(out)
+    val(name) = (x = rows[1][findfirst(==(name), head)]; isempty(x) ? NaN : parse(Float64, x))
+    @test isempty(rows[1][findfirst(==("failed"), head)]) && rows[1][findfirst(==("stand_ins"), head)] == "TANK.m"
+    @test val("t_prep.start") == 0 && val("t_prep.end") == 2 && val("t_fill.start") == 2
+    @test val("t_hold.start") == val("t_fill.end") && val("t_hold.end") == val("t_fill.end") + 20 == val("t_end")   # the run ends with hold
+    @test val("fill.timed_out") == 0 && val("m_fill_end") > 1.5                   # over the line by what came in during the operator's second
+    @test val("t_fill.start") < val("t_ready") <= val("t_fill.start") + 30         # watched only from the fill on
+    @test val("m_ready_5") > 0 && val("p_after_ready") > 100 * F.PSI && isnan(val("m_ready_late"))   # a window past the run's end has no value
+    b = readlines(joinpath(dir, "seq_results", "bands.csv"))
+    @test startswith(b[1], "t_s,n,TANK.P.p5") && length(b) - 1 == floor(Int, val("t_end") - val("t_ready")) + 1   # time from the mark
+    # a mark that never happens: its columns and its windows are empty, and the run has not failed
+    head, rows = table(F.study(file("never.toml", replace(body, "LO" => "1900")); quiet = true))
+    @test isempty(rows[1][findfirst(==("failed"), head)]) && isnan(val("t_ready")) && isnan(val("m_ready_5")) && isnan(val("p_after_ready"))
+    @test !isnan(val("m_fill_end")) && length(readlines(joinpath(dir, "never_results", "bands.csv"))) == 1
+    # a step that times out is marked, and the sequence goes on
+    head, rows = table(F.study(file("slow.toml", replace(replace(body, "LO" => "100"), "timeout_s = 100" => "timeout_s = 1")); quiet = true))
+    @test val("fill.timed_out") == 1 && val("t_fill.end") == 3 && val("m_fill_end") < 1.5
+    # mistakes in events are found when the file is read
+    body = replace(body, "LO" => "100")
+    @test_throws ErrorException F.read_study(file("bad1.toml", replace(body, "to = { mark = \"ready\", plus_s = 5 }" => "to = { mark = \"redy\" }")))
+    @test_throws ErrorException F.read_study(file("bad2.toml", replace(body, "step = \"hold\", edge = \"end\", max_s" => "step = \"hld\", edge = \"end\", max_s")))
+    @test_throws ErrorException F.read_study(file("bad3.toml", replace(body, "align = \"ready\"" => "align = \"fill\"")))
+end

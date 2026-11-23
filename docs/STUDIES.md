@@ -350,6 +350,106 @@ Each policy adds signals to the run's history, held from one tick to the next: `
 policy with a reading, `ctl.<name>.obs`, the reading it acted on, noise and all. They can be
 metrics, `[bands]` signals and `--keep-traces` columns like any other.
 
+### Sequences
+
+Most procedures are a series of steps: get ready, fill, hold until ready, fire. `[[controller.step]]`
+lists them in order. The sequence starts with the first step at t = 0, and each step ends when its
+`duration_s` has passed, when its `until` condition is met (and then `operator_delay_s` later,
+for a person who has to see it and act), or at its `timeout_s`, whichever is first. The next step
+starts at the same tick.
+
+```toml
+[[controller.step]]
+name = "fill"
+on_enter = [{ part = "AV201", action = "open" }]     # commands sent on entering the step
+on_exit = [{ part = "AV201", action = "close" }]     #   and on leaving it
+until = { reading = "LC1.m_read", ge = 9.0 }
+operator_delay_s = 2
+timeout_s = 600                                     # it ends here whatever; `fill.timed_out` says so
+enable = ["vent"]                                   # policies switched on and off on entering it
+disable = []
+
+[[controller.step]]
+name = "hold"
+duration_s = 600
+enable = ["ready"]
+```
+
+A step's commands are logged and delayed like a policy's. A policy switched on by a step that
+starts at a tick acts at that tick, with that step's settings. Once the last step has ended the
+policies keep its settings.
+
+A setting can differ from step to step: `open_above_psig = { fill = 820, hold = 800 }`, with
+`default = ...` for the steps not named. Every step must have a value, and every step named must
+exist. Varied, it is `controller.vent.open_above_psig.hold`.
+
+A run can end at a step's edge rather than at a time: `until = { step = "hold", edge = "end",
+max_s = 3600 }` at the top of the study file ends each run when its hold ends, and gives up on it
+at 3600 s (a run stopped by `max_s` is a failed row).
+
+### Conditions
+
+A step's `until` is a condition, written as a table:
+
+| Condition | True when |
+|---|---|
+| `{ reading = "PT202.P_read", ge_psig = 800 }` | the reading compares so (`gt`, `ge`, `lt`, `le`; SI, or `_psig`, `_C`) |
+| `{ rate = "LC1.m_read", window_s = 30, lt = 0.002 }` | its rate of change, from the earliest tick inside the window to now, compares so (SI per second, or `_psi` for psi per second) |
+| `{ elapsed_ge = 60 }` | the step has run this many seconds |
+| `{ held = { ... }, for_s = 30 }` | the condition inside has been true at every tick for this long |
+| `{ mark = "ready", plus_s = 0 }` | the mark has happened (and this long ago) |
+| `{ any = [ ... ] }`, `{ all = [ ... ] }` | any or all of the conditions in the list |
+
+The readings are held to the same rule as a policy's: an instrument's reading, or a stand-in. A
+rate and a hold keep what they have seen since their step began. A condition is looked at only
+while its step runs.
+
+### Marks
+
+A `band_watch` policy marks the moment a reading has stayed inside a band for a while:
+
+```toml
+[[controller.policy]]
+name = "ready"
+kind = "band_watch"
+enabled = false                                      # switched on by the hold step
+reading = "PT202.P_read"
+lo_psig = 780
+hi_psig = 820
+hold_s = 30                                          # in the band (ends included) at every tick for 30 s
+mark = "ready"                                       # the default is the policy's name
+```
+
+It counts only while it is enabled, starts again from zero whenever the reading leaves the band,
+and marks once. A mark can end a step (`{ mark = "ready" }`), place a metric's window, align the
+bands, and key a case's actions.
+
+### Results
+
+A study with a controller adds columns to `results.csv`: `stand_ins`, `escape_hatch`, for each
+step `t_<step>.start`, `t_<step>.end` and `<step>.timed_out` (1 if its timeout ended it), and for
+each mark `t_<mark>`, all in seconds from the start of the run. A step that never started or a mark
+that never happened leaves the cell empty, and that alone does not fail the run.
+
+A metric's window can be given by events instead of seconds: `from = { mark = "ready" }`,
+`to = { mark = "ready", plus_s = 300 }`, `from = { step = "fill", edge = "end" }`. A metric whose
+window needs an event that did not happen, or ends after the run did, is empty: the value a
+signal held at the end of the run is not presented as its value at a later time.
+
+```toml
+[metrics]
+m_fill_end = { fn = "final", signal = "TANK.m", to = { step = "fill", edge = "end" } }
+m_ready_300 = { fn = "final", signal = "TANK.m", to = { mark = "ready", plus_s = 300 } }
+```
+
+`[bands] align = "ready"` puts each run's grid on the time since that mark: `t_s` in `bands.csv` is
+then seconds after it, so runs that got ready at different times are compared at the same point
+in their procedure. A run that never made the mark is left out of the bands, and the number left
+out is printed.
+
+The controller's own signals include `ctl.step` (the number of the step running, 0 before the
+first and after the last) and `ctl.mark.<name>` (0, then 1 from the mark on).
+
 ### A policy written in Julia
 
 When none of the policies above will do, `kind = "julia"` names a file whose last expression is a

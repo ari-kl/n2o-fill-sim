@@ -48,7 +48,7 @@ struct Study
     targets::Vector{NamedTuple}               # features scored beside them (see `_target`)
     metrics::Vector{Pair{String,Dict{String,Any}}}
     bands::NamedTuple                         # (on, signals, percentiles, grid_s): the spread over the runs to write (see `study`)
-    controller::Any                           # nothing, or (; spec, fns, allow_julia, stand_ins, escape_hatch, signals): see control.jl
+    controller::Any                           # nothing, or (; spec, fns, allow_julia, stand_ins, escape_hatch, signals, end_on, steps, marks): see control.jl
 end
 
 # A small generator of our own, so that a seeded study draws the same samples on every machine and
@@ -76,7 +76,7 @@ _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict
 
 const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "mode", "n", "seed",
                      "vary", "case", "score", "targets", "metrics", "set", "sets", "bands", "controller")
-const _BANDS_KEYS = ("signals", "percentiles", "grid_s")
+const _BANDS_KEYS = ("signals", "percentiles", "grid_s", "align")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
 const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight", "offset")
 const _PHASE_KEYS = ("from", "to", "bin_s", "discrepancy")
@@ -120,7 +120,45 @@ function _run_controller(st, ctl_ov, scene, sim; seed = "")
     for (k, v) in ctl_ov
         _controller_override!(spec, k, v)
     end
-    _controller(spec, scene, sim; seed, allow_julia = st.controller.allow_julia, fns = st.controller.fns)
+    _controller(spec, scene, sim; seed, allow_julia = st.controller.allow_julia, fns = st.controller.fns, end_on = st.controller.end_on)
+end
+
+# A time given by an event of the run: `{ mark = "ready", plus_s = 300 }` or `{ step = "fill",
+# edge = "end" }`. NaN if it did not happen. A plain number is itself.
+function _event_time(x, c)
+    x isa Real && return Float64(x)
+    plus = Float64(get(x, "plus_s", 0.0))
+    haskey(x, "mark") && return get(c.marks, x["mark"], NaN) + plus
+    get(get(x, "edge", "start") == "start" ? c.t_start : c.t_end, x["step"], NaN) + plus
+end
+
+# Check an event named in a study file against the controller's steps and marks.
+function _check_event(x, ctl, where)
+    x isa Real && return
+    x isa AbstractDict || error("$where: a time is a number of seconds or a table like { mark = \"ready\", plus_s = 300 } or { step = \"fill\", edge = \"end\" }")
+    ctl === nothing && error("$where: a time given by a mark or a step needs a [controller]")
+    if haskey(x, "mark")
+        issubset(keys(x), ["mark", "plus_s"]) || error("$where: a mark's time takes only `plus_s` beside it")
+        x["mark"] in ctl.marks || error("$where: there is no mark called $(x["mark"]). Marks: $(join(ctl.marks, ", "))")
+    else
+        issubset(keys(x), ["step", "edge", "plus_s"]) && haskey(x, "step") || error("$where: a step's time is a table like { step = \"fill\", edge = \"end\", plus_s = 0 }")
+        x["step"] in ctl.steps || error("$where: there is no step called $(x["step"]). Steps: $(join(ctl.steps, ", "))")
+        get(x, "edge", "start") in ("start", "end") || error("$where: a step's edge is \"start\" or \"end\"")
+    end
+end
+
+# A metric with its window's events made times for this run, or nothing if an event it needs did
+# not happen or falls after the run's end (a value read there would be the last one, held).
+function _resolve(m, c, t_end)
+    any(k -> get(m, k, 0.0) isa AbstractDict, ("from", "to")) || return m
+    m = copy(m)
+    for k in ("from", "to")
+        haskey(m, k) || continue
+        live = m[k] isa AbstractDict
+        m[k] = _event_time(m[k], c)
+        (isnan(m[k]) || live && m[k] > t_end + 1e-6) && return nothing
+    end
+    m
 end
 
 # A study from its parsed file. `path` is only for messages; a fit builds one of these per dataset.
@@ -147,7 +185,15 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
         t_log = cols[names[1]] .- t0
         schedule = log_schedule(cols, columns; t0)
     end
-    until = Float64(get(d, "until", isempty(t_log) ? (isempty(scene.schedule) ? 0.0 : maximum(a.t for a in scene.schedule)) + 60 : t_log[end]))
+    until = get(d, "until", nothing)
+    end_on = ("", "")
+    if until isa AbstractDict                  # a run that ends at a step's edge, with a limit in seconds
+        (issubset(keys(until), ["step", "edge", "max_s"]) && haskey(until, "step") && haskey(until, "max_s") && get(until, "edge", "end") in ("start", "end")) ||
+            error("$path: `until` is a number of seconds, or a table like { step = \"hold\", edge = \"end\", max_s = 3600 }")
+        haskey(d, "controller") || error("$path: `until` at a step's edge needs a [controller] with steps")
+        end_on, until = (String(until["step"]), String(get(until, "edge", "end"))), until["max_s"]
+    end
+    until = Float64(something(until, isempty(t_log) ? (isempty(scene.schedule) ? 0.0 : maximum(a.t for a in scene.schedule)) + 60 : t_log[end]))
     # what is varied
     vary = collect(get(d, "vary", Dict{String,Any}()))
     sort!(vary; by = first)                    # a TOML table has no order; fix one
@@ -240,7 +286,7 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
         for p in get(spec, "policy", [])
             p isa AbstractDict && get(p, "kind", "") == "julia" && allow_julia && haskey(p, "file") && (fns[p["file"]] = _julia_policy(rel(p["file"])))
         end
-        controller = (; spec, fns, allow_julia, stand_ins = String[], escape_hatch = false, signals = String[])
+        controller = (; spec, fns, allow_julia, stand_ins = String[], escape_hatch = false, signals = String[], end_on)
         # Every run's controller is checked now, with its overrides: a name or a reading wrong in
         # one run should stop the study before any of it runs.
         sim0 = Sim(deepcopy(scene))
@@ -252,7 +298,8 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
                 err isa ErrorException ? error("$path: $(err.msg)") : rethrow()
             end
         end
-        controller = (; spec, fns, allow_julia, stand_ins = c.stand_ins, escape_hatch = c.escape_hatch, signals = c.signals)
+        controller = (; spec, fns, allow_julia, stand_ins = c.stand_ins, escape_hatch = c.escape_hatch, signals = c.signals, end_on,
+                      steps = [x.name for x in c.steps], marks = c.mark_names)
     end
     # what is scored: listed channels, or every log reading that a manifest maps to a model signal
     score = get(d, "score", Dict{String,Any}())
@@ -332,6 +379,9 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
     end
     metrics = Pair{String,Dict{String,Any}}[String(k) => Dict{String,Any}(v) for (k, v) in get(d, "metrics", Dict())]
     sort!(metrics; by = first)
+    for (name, m) in metrics, k in ("from", "to")
+        haskey(m, k) && _check_event(m[k], controller, "$path: metric $name: $k")
+    end
     for (name, m) in metrics
         get(m, "fn", "") in _METRIC_FNS || error("$path: metric $name needs fn, one of $(join(_METRIC_FNS, ", "))")
         haskey(m, "signal") || error("$path: metric $name needs a signal")
@@ -341,7 +391,10 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
     for k in keys(b)
         k in _BANDS_KEYS || error("$path: unknown key \"$k\" in [bands]. Keys: $(join(_BANDS_KEYS, ", "))")
     end
-    bands = (; on = haskey(d, "bands"), signals = String.(get(b, "signals", String[])), percentiles = Float64.(get(b, "percentiles", [5, 50, 95])), grid_s = Float64(get(b, "grid_s", 1.0)))
+    bands = (; on = haskey(d, "bands"), signals = String.(get(b, "signals", String[])), percentiles = Float64.(get(b, "percentiles", [5, 50, 95])), grid_s = Float64(get(b, "grid_s", 1.0)),
+             align = String(get(b, "align", "")))
+    isempty(bands.align) || (controller !== nothing && bands.align in controller.marks) ||
+        error("$path: [bands] align names $(bands.align), which is not a mark of the controller")
     bands.grid_s > 0 || error("$path: [bands] grid_s must be positive")
     (!isempty(bands.percentiles) && issorted(bands.percentiles) && allunique(bands.percentiles) && all(p -> 0 <= p <= 100, bands.percentiles)) ||
         error("$path: [bands] percentiles must be numbers from 0 to 100 in rising order, like [5, 50, 95]")
@@ -599,7 +652,8 @@ function _simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol,
         sim = Sim(scene; sample_dt = st.sample_dt, reltol)
         c = _run_controller(st, ctl_ov, scene, sim; seed = _noise_seed(scene_ov, case))
         run_controlled!(sim, c, st.until; wall_limit = st.wall_limit, work_limit = st.work_limit)
-        return sim, !isempty(sim.failed) ? sim.failed : simtime(sim) >= st.until - 1e-6 ? "" :
+        return sim, !isempty(sim.failed) ? sim.failed : c.ended || (c.end_on[1] == "" && simtime(sim) >= st.until - 1e-6) ? "" :
+                    simtime(sim) >= st.until - 1e-6 ? "reached max_s = $(st.until) before the $(c.end_on[2]) of step $(c.end_on[1])" :
                     work(sim) >= st.work_limit ? "stopped at the work limit ($(st.work_limit) part-flow evaluations)" : "stopped at the wall-time limit", c
     catch err
         return nothing, first(replace(sprint(showerror, err), '\n' => ' ', ',' => ';'), 200), c
@@ -611,7 +665,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
     row = Pair{String,Any}["id" => run.id, "case" => run.case]
     append!(row, [k => get(Dict(run.overrides), k, NaN) for k in st.varied])
     started = Base.time()
-    sim, failed = st.controller === nothing ? simulate(st, run.overrides, run.actions) : _simulate(st, run.overrides, run.actions; case = run.case)
+    sim, failed, c = st.controller === nothing ? (simulate(st, run.overrides, run.actions)..., nothing) : _simulate(st, run.overrides, run.actions; case = run.case)
     if sim === nothing
         append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], ["res.target." * g.name for g in st.targets],
                                          first.(_offset_names(st)), first.(_target_names(st)), first.(st.metrics))])
@@ -624,14 +678,25 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
         append!(row, s.offsets)
         append!(row, s.targets)
         p_atm = st.scene.settings["P_atm_kPa"] * 1e3
-        append!(row, [name => metric(sim, m, p_atm) for (name, m) in st.metrics])
+        if c === nothing
+            append!(row, [name => metric(sim, m, p_atm) for (name, m) in st.metrics])
+        else                                   # windows may be given by the run's marks and steps
+            append!(row, [name => (r = _resolve(m, c, simtime(sim)); r === nothing ? NaN : metric(sim, r, p_atm)) for (name, m) in st.metrics])
+        end
         r = run_summary(sim)
         append!(row, ["t_end" => r.t_s, "failed" => replace(failed, ',' => ';'), "unconverged" => r.unconverged, "mass_error" => r.mass_error,
                       "energy_error" => r.energy_error, "vented_kg" => r.vented_kg])
         seen === nothing || seen(sim)                          # the caller takes what it wants from the run before it is dropped
         keep === nothing || write_csv(keep, sim; columns = unique(vcat([_scored_signal(sim, c.model) for c in st.channels], [_scored_signal(sim, g.model) for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
     end
-    st.controller === nothing || append!(row, ["stand_ins" => join(st.controller.stand_ins, ";"), "escape_hatch" => st.controller.escape_hatch ? 1 : 0])
+    if st.controller !== nothing
+        append!(row, ["stand_ins" => join(st.controller.stand_ins, ";"), "escape_hatch" => st.controller.escape_hatch ? 1 : 0])
+        for n in st.controller.steps
+            append!(row, ["t_$n.start" => c === nothing ? NaN : get(c.t_start, n, NaN), "t_$n.end" => c === nothing ? NaN : get(c.t_end, n, NaN),
+                          "$n.timed_out" => c === nothing || !haskey(c.timed_out, n) ? NaN : Float64(c.timed_out[n])])
+        end
+        append!(row, ["t_$m" => c === nothing ? NaN : get(c.marks, m, NaN) for m in st.controller.marks])
+    end
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
 end
@@ -673,7 +738,8 @@ function study(path; resume = false, keep_traces = false, quiet = false, allow_j
     lock_ = ReentrantLock()
     header = !isfile(out)
     grids = [zeros(0, length(st.bands.signals)) for _ in st.runs]          # a run that cannot be built stays empty
-    seen = isempty(st.bands.signals) ? nothing : (index, sim) -> (grids[index] = _gridded(st, sim))
+    unaligned = falses(length(st.runs))       # with [bands] align: runs that never reached the mark, left out
+    seen = isempty(st.bands.signals) ? nothing : (index, sim) -> (g = _gridded(st, sim); g === nothing ? (unaligned[index] = true) : (grids[index] = g))
     Threads.@threads :dynamic for k in eachindex(todo)
         run = todo[k]
         index = findfirst(r -> r.id == run.id, st.runs)
@@ -686,7 +752,7 @@ function study(path; resume = false, keep_traces = false, quiet = false, allow_j
         end
     end
     st.mode == "morris" && _screening(st, out, quiet)
-    st.bands.on && _write_bands(st, out, grids, quiet)
+    st.bands.on && _write_bands(st, out, grids, quiet; unaligned)
     out
 end
 
@@ -695,6 +761,11 @@ _band_grid(st::Study) = 0:st.bands.grid_s:st.until
 # read beyond its end would give its last value for ever, so a run that stopped is cut off here.)
 function _gridded(st::Study, sim::Sim)
     grid = _band_grid(st)
+    if !isempty(st.bands.align)                # time from the mark: nothing for a run that never made it
+        k = findfirst(>=(0.5), sim.hist["ctl.mark." * st.bands.align])
+        k === nothing && return nothing
+        grid = grid .+ sim.t_hist[k]
+    end
     n = count(<=(simtime(sim) + 1e-6), grid)
     [signal_at(sim, key, grid[i]) for i in 1:n, key in st.bands.signals]
 end
@@ -729,7 +800,7 @@ _percent_label(p) = "p" * (isinteger(p) ? string(Int(p)) : string(p))
 
 # After a study with [bands]: bands.csv from the runs' gridded signals, and metric_bands.csv from
 # the results file (read back, as for a screening). Each case has its own.
-function _write_bands(st::Study, out, grids, quiet)
+function _write_bands(st::Study, out, grids, quiet; unaligned = falses(length(st.runs)))
     cases = unique(r.case for r in st.runs)
     ps = st.bands.percentiles
     cell(x) = isnan(x) ? "" : string(round(x, sigdigits = 7))
@@ -743,6 +814,8 @@ function _write_bands(st::Study, out, grids, quiet)
             end
         end
         quiet || println("bands in ", file)
+        left = count(unaligned[i] for (i, r) in enumerate(st.runs) if r.case == case)
+        quiet || left == 0 || println("  ", left, " run(s)", isempty(case) ? "" : " of case $case", " never reached mark ", st.bands.align, " and are left out")
     end
     isempty(st.metrics) && return
     head, rows = _table(out)
