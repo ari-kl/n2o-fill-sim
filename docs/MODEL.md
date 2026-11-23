@@ -32,7 +32,9 @@ A scene compiles to a graph.
   it that tolerance cannot be met; an imbalance under 1e-6 of the largest flow is then accepted.
   If Newton does not settle (a check valve cracking, a restriction starting to choke), each
   junction is balanced in turn with its neighbours held, repeatedly. A solve that still fails is
-  counted, and the window shows the count in amber.
+  counted, and the window shows the count in amber. A junction that is in balance and that no
+  flow responds to (every part on it at rest) is held where it is while the others are solved;
+  left in, its empty row makes the whole system singular.
 
 The vessel states are integrated with a stiff ODE solver (Rodas5P, adaptive step). Valve strokes,
 schedule actions and switches between vessel modes happen between steps.
@@ -190,6 +192,14 @@ section 9.
   for trickles of a gram per second or less.
 - No hydrostatic head or elevation differences (about 1 psi per metre of liquid).
 - No nitrogen pressurisation or dissolved nitrogen. Pure N2O plus inert air in a vessel's ullage.
+- **The air is a passenger, not a second gas.** It adds its partial pressure and leaves with the
+  ullage gas, but it has no heat capacity and is not counted in flow rates. That is a fair
+  picture once the ullage is mostly N2O, which takes about a tenth of a second of filling. Before
+  that it is not: the first cold vapour into an air-filled tank sets the ullage temperature by
+  itself, so the tank can read several psi below atmospheric for that instant, and gas leaving
+  through the vent is sent down the line with an enthalpy (tank pressure over the N2O's own
+  density) that belongs to no real state of N2O. The flow law returns nothing for such a stream.
+  Do not read anything into the first tenth of a second of a fill into air.
 - One wall temperature per vessel; no conduction along the wall or into stands and plumbing.
 - A single liquid temperature: no warm surface layer. Vent rebound comes only from the lag between
   liquid and ullage.
