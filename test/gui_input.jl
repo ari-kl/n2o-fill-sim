@@ -196,7 +196,7 @@ at(710, () -> ig.AddMouseButtonEvent(io(), 1, true))
 at(711, () -> (global drag_from = F.w2s(app, 13.5, 4); pointer[] = drag_from .+ (25f0, 0f0)))
 at(713, () -> (pointer[] = drag_from .+ (60f0, 10f0)))
 at(715, () -> ig.AddMouseButtonEvent(io(), 1, false))
-check(718, "a right-drag that starts on a wire pans and leaves the wire", () -> view_before[4] !== nothing && nwires() == view_before[2] && length(app.undo) == view_before[3] && app.origin[1] > view_before[1][1] + 30)
+check(718, "a right-drag that starts on a wire pans and leaves the wire", () -> app.sim === nothing && view_before[4] !== nothing && nwires() == view_before[2] && length(app.undo) == view_before[3] && app.origin[1] > view_before[1][1] + 30)
 at(719, () -> (app.origin = view_before[1]))
 
 # --- a number typed into a parameter box is one undo step, and undo keeps the part selected
