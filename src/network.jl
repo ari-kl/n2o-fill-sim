@@ -496,9 +496,10 @@ function _solve_active!(net::Net)
         # A junction that no flow responds to (every part on it at rest, or carrying a stream so
         # far outside the property range that the flow law returns nothing) has an empty row. Left
         # alone that makes the whole system singular and sends every junction to the slow fallback
-        # below, on every call. Hold that one junction where it is and solve the rest.
+        # below, on every call. If that junction is in balance as it stands, hold it where it is
+        # and solve the rest. (If it is not, nothing here can move it: the fallback has to.)
         for q in 1:na
-            J[q, q] == 0 && (J[q, q] = 1.0)
+            J[q, q] == 0 && abs(r[q]) < 1e-9 * scale + 1e-10 && (J[q, q] = 1.0)
         end
         r .= .-r
         net.lu = lu!(J; check = false)

@@ -226,13 +226,17 @@ function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e
     r === nothing && error("the model fails at the starting point of the fit")
     S, evals, λ, quiet_steps = sum(abs2, r), 1, 1e-2, 0
     ok(v) = v !== nothing && length(v) == length(r)
-    while evals + n + 4 <= max_evals
-        hs = [x[k] + step <= 1 ? step : -step for k in 1:n]
-        cols = batch([(y = copy(x); y[k] += hs[k]; y) for k in 1:n])
-        evals += n
-        J = zeros(length(r), n)
-        for k in 1:n
-            ok(cols[k]) && (J[:, k] .= (cols[k] .- r) ./ hs[k])
+    J, moved_since = zeros(length(r), n), true
+    while evals + (moved_since ? n : 0) + 4 <= max_evals
+        if moved_since                                         # after a step that was not taken, the sensitivities still stand
+            hs = [x[k] + step <= 1 ? step : -step for k in 1:n]
+            cols = batch([(y = copy(x); y[k] += hs[k]; y) for k in 1:n])
+            evals += n
+            fill!(J, 0.0)
+            for k in 1:n
+                ok(cols[k]) && (J[:, k] .= (cols[k] .- r) ./ hs[k])
+            end
+            moved_since = false
         end
         g, A = J' * r, J' * J
         free = [!((x[k] <= 0 && g[k] > 0) || (x[k] >= 1 && g[k] < 0)) for k in 1:n]
@@ -251,7 +255,7 @@ function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e
         b = argmin(Ss)
         if Ss[b] < S
             gain, moved = (S - Ss[b]) / S, maximum(abs.(trials[b] .- x))
-            x, r, S, λ = trials[b], rs[b], Ss[b], max(dampings[b] / 3, 1e-10)
+            x, r, S, λ, moved_since = trials[b], rs[b], Ss[b], max(dampings[b] / 3, 1e-10), true
             report(evals, S)
             quiet_steps = moved < xtol && (gain < ftol || S < 1e-18) ? quiet_steps + 1 : 0
             (quiet_steps >= 2 || S == 0) && break

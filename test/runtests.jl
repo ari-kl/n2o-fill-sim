@@ -755,7 +755,7 @@ end
     s.schedule = F.log_schedule(D, F.guess_log_columns(names, s); t0 = 21950.0)
     sim = F.Sim(s; sample_dt = 0.5)
     F.run_until!(sim, 19.1; work_limit = 400_000)                 # the fill valve opens at 19 s
-    @test isempty(sim.failed) && F.simtime(sim) > 19.09 && F.work(sim) < 200_000
+    @test isempty(sim.failed) && F.simtime(sim) > 19.09 && F.work(sim) < 200_000 && closes(sim) && sim.net.unconverged == 0
 end
 
 @testset "a supercritical bottle opened into an empty tank does not stall the junction solve" begin
