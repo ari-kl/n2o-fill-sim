@@ -938,4 +938,11 @@ end
     @test closes(sim)
 end
 
+
+@testset "window icon files load at their sizes" begin
+    icons = N2OFillSim.window_icons()
+    @test size.(icons) == [(16, 16), (32, 32), (48, 48)]
+    @test hasmethod(N2OFillSim.GLFW.SetWindowIcon, Tuple{N2OFillSim.GLFW.Window, typeof(icons)})
+end
+
 end

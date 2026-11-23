@@ -266,6 +266,7 @@ src/fit.jl            fitting to several logs, identifiability report, calibrati
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
 scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4.toml (further logs),
                       regulated_fill.toml (regulated hot-day fill)
+assets/               the window icon: icon.png, and the same picture as bare RGBA bytes at three sizes
 test/                 tests, benchmark, stress cases, and extracts of the fill logs
 docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
 docs/LOGS.md          how test logs are read; the manifest format

@@ -414,6 +414,24 @@ end
 window_title(app::App) = "n2o-fill-sim - " * (isempty(app.path) ? "untitled" : basename(app.path)) * (app.dirty ? " *" : "")
 
 """
+    window_icons()
+
+The window icon at 16, 32 and 48 pixels, each a matrix of RGBA pixels indexed `[row, column]` as
+`GLFW.SetWindowIcon` wants. The `assets/icon-N.rgba` files are `assets/icon.png` (transparent
+background) cropped to the square around the bottle, scaled to N x N and written as bare RGBA
+bytes, row by row from the top, so that no image decoder is needed here. To regenerate one with
+Python's PIL: `im.crop(square).convert("RGBa").resize((N, N), Image.LANCZOS).convert("RGBA").tobytes()`,
+where `square` is `im.getbbox()` widened to a square about its centre.
+"""
+function window_icons()
+    map((16, 32, 48)) do n
+        bytes = read(joinpath(pkgdir(@__MODULE__), "assets", "icon-$n.rgba"))
+        length(bytes) == 4n^2 || error("icon-$n.rgba is $(length(bytes)) bytes, expected $(4n^2)")
+        permutedims(reshape(reinterpret(NTuple{4,UInt8}, bytes), n, n))   # file is row by row
+    end |> collect
+end
+
+"""
     gui(app; shot = "", frames = 0, script = nothing)
 
 Open the window and run until it is closed. With `shot`, save a picture after `frames` frames and
@@ -438,6 +456,11 @@ function gui(app::App; shot = "", frames = 0, script = nothing)
     h = min(round(Int, 950 * UI[]), round(Int, 0.88 * mode.height))
     title = window_title(app)
     window = GLFW.CreateWindow(w, h, title)
+    try                                           # an icon is decoration: never let it stop the window
+        GLFW.SetWindowIcon(window, window_icons())    # ignored by Wayland and macOS
+    catch e
+        @warn "could not set the window icon" exception = e
+    end
     GLFW.MakeContextCurrent(window)
     GLFW.SwapInterval(1)
 
