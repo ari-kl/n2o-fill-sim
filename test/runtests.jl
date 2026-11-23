@@ -721,6 +721,10 @@ end
     @test m("max") == 100 && m("max"; from = 2, to = 5) ≈ 50 && m("min"; from = 5) ≈ 50 && m("final"; to = 5) ≈ 50       # the window's ends are interpolated
     @test m("slope"; from = 0, to = 10) ≈ 10 && m("slope"; from = 10, to = 20) ≈ 0 && 0 < m("slope") < 10
     @test isnan(m("max"; from = 30, to = 40))                                                    # a window the run never reached
+    bad = joinpath(mktempdir(), "s.toml")                                                        # a unit shifts a pressure by one atmosphere: no good for a slope
+    F.save_scene(joinpath(dirname(bad), "rig.toml"), rig())
+    write(bad, "scene = \"rig.toml\"\n[metrics]\nrise = { fn = \"slope\", signal = \"TANK.P\", unit = \"psig\" }\n")
+    @test_throws ErrorException F.read_study(bad)
     dir = mktempdir()
     made_up_log(joinpath(dir, "log.csv"); more = ["RAMP_psig" => (sim, t) -> 100 + 2t])
     F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
@@ -844,6 +848,13 @@ end
     write(out, join(lines[1:6], "\n") * "\n")
     F.study(file; resume = true, quiet = true)
     @test split.(readlines(joinpath(dirname(out), "screening.csv")), ',') == rows
+    # a run that stopped partway has numbers in its row, but the steps that touch it are left out
+    lines = readlines(out)
+    cells = split(lines[2], ','); cells[findfirst(==("failed"), split(lines[1], ','))] = "stopped at the work limit"
+    write(out, join(vcat(lines[1], join(cells, ','), lines[3:end]), "\n") * "\n")
+    F.study(file; resume = true, quiet = true)
+    @test sum(parse(Int, r[5]) for r in split.(readlines(joinpath(dirname(out), "screening.csv")), ',')[2:4]) in (10, 11)      # one or two of the twelve steps
+    @test_throws ErrorException F.read_study(study("", "\"BOTTLE.T_C\" = [20]\n"))                                       # a single value is not a range
     @test_throws ErrorException F.read_study(study("", vary * "[[case]]\nname = \"other\"\n"))                           # one case at most
     # against a log, the score and every scored number are screened too, and the ranking is printed
     made_up_log(joinpath(dir, "log.csv"))
@@ -896,7 +907,7 @@ end
     @test abs(r.values["FILL.d_mm"] - 4) < 0.1 && !haskey(r.values, "BOTTLE.T_C@b")
     @test r.holdout.name == "b" && r.holdout.score < 1 && r.holdout.start_score > 5 * r.holdout.score && isapprox(r.scores["a"], r.score; rtol = 0.05)
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
-    @test record["datasets"] == ["a"] && record["holdout"]["name"] == "b" && isapprox(record["holdout"]["score"], r.holdout.score; rtol = 1e-4)
+    @test record["datasets"] == ["a"] && record["identifiability"] isa Vector && record["holdout"]["name"] == "b" && isapprox(record["holdout"]["score"], r.holdout.score; rtol = 1e-4)
     @test haskey(record["holdout"]["readings"], "rms.PT_psig.closed") && isapprox(record["dataset"][1]["score"], r.scores["a"]; rtol = 1e-4)
     @test occursin("Held out: b", read(joinpath(r.dir, "report.txt"), String)) && isfile(joinpath(r.dir, "a.toml")) && !isfile(joinpath(r.dir, "b.toml"))
     # held out the other way round, a's bottle stays at its start value (24, not the 27 of its log), and the prediction shows it
@@ -951,7 +962,7 @@ end
     rows = split.(readlines(joinpath(r.dir, "profile_BOTTLE.T_C.csv")), ',')
     @test rows[1] == ["value", "score", "TANK.heater_W"] && length(rows) == 5 && isapprox(parse(Float64, rows[3][2]), r.profile.scores[2]; rtol = 1e-5)
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
-    @test record["profile"]["parameter"] == "BOTTLE.T_C" && record["profile"]["flat"] == false && record["collinearity"] ≈ 1
+    @test haskey(record, "identifiability") && record["profile"]["parameter"] == "BOTTLE.T_C" && record["profile"]["flat"] == false && record["collinearity"] ≈ 1
     @test occursin("Profile of BOTTLE.T_C", read(joinpath(r.dir, "report.txt"), String)) && occursin("Collinearity index", read(joinpath(r.dir, "report.txt"), String))
     @test countlines(joinpath(r.dir, "evals.csv")) == r.evals + 1                              # the profile's runs are not part of the search's log
     # the heater's profile is flat from one bound to the other: the fit says so instead of giving it a value

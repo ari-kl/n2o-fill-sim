@@ -513,6 +513,7 @@ function fit(path; write_scenes = false, holdout = nothing, profile = nothing, p
         println(out, "# Calibration record written by `fit`. Values, what they were fitted to, and how well.")
         println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nmodel_commit = ", repr(_commit(@__DIR__)), "\nscore = ", round(fx, sigdigits = 6))
         println(out, "datasets = ", _list(ft.names), "\ncollinearity = ", isfinite(γ) ? round(γ, sigdigits = 4) : "inf")
+        println(out, "identifiability = ", _list(statements))    # here, before any table, so that it is a key of the record itself
         for (k, p) in enumerate(ft.params)
             println(out, "\n[[parameter]]\nname = ", repr(p.name), "\ndatasets = ", repr(ft.names[p.datasets]), "\nvalue = ", round(values[k], sigdigits = 7),
                     "\nfrom = ", p.lo, "\nto = ", p.hi, "\nlog = ", p.log, "\nspread = ", round(spread[k], sigdigits = 4))
@@ -534,7 +535,6 @@ function fit(path; write_scenes = false, holdout = nothing, profile = nothing, p
             println(out, "readings = { ", join(["$(repr(key)) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in held.readings], ", "), " }")
         end
         prof === nothing || println(out, "\n[profile]\nparameter = ", repr(profile), "\nvalues = ", prof.values, "\nscores = [", join((isnan(v) ? "nan" : string(round(v, sigdigits = 6)) for v in prof.scores), ", "), "]\nflat = ", prof.flat, "\nverdict = ", repr(prof.verdict))
-        println(out, "\nidentifiability = ", _list(statements))
     end
     if write_scenes
         for (k, name) in enumerate(ft.names)

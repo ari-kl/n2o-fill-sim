@@ -181,7 +181,8 @@ seconds, only that window of the run is looked at (so `final` with `to = 300` is
 300 s); without them, the whole run. Signals are the names in an exported run (`TANK.P`, `TANK.m`,
 `AV203.mdot`, `vented.m`, ...) and are in SI units. An argument can be given as a gauge pressure
 or in Celsius by its name (`lo_psig`, `value_C`), and `unit = "psig"` or `"C"` converts a result
-that is a pressure or a temperature (not a slope: that stays in SI per second).
+that is a pressure or a temperature (a slope stays in SI per second: `unit` with `slope` is an
+error).
 
 **Every row** also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
@@ -217,7 +218,8 @@ Besides `results.csv` (one row per run, ids beginning `m<trajectory>.<step>;`), 
   other, and a wider range gives a larger number: the answer is about the ranges you gave.
 - `sigma`: the spread of the effects. Small beside `mu_star` means the parameter acts the same
   way wherever the others are. Large means its effect depends on the others, or bends.
-- `n`: how many effects went into it. A step with a failed run at either end is left out.
+- `n`: how many effects went into it. A step with a run at either end that failed, or stopped
+  partway, is left out.
 
 The ranking by `mu_star` on the score is printed. Read the table by output as well: a parameter
 with a small effect on the score can still be the only one that moves a particular scored number,

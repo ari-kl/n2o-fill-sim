@@ -149,6 +149,7 @@ function _study(d, base, path, dir, allowed)
         # levels, down from the upper two. That is k + 1 runs for k effects, one per parameter, each
         # taken somewhere different in the space.
         n, g = Int(get(d, "n", 20)), _Lcg(UInt64(get(d, "seed", 1)))
+        all(v -> (s = _span(last(v)); s[2] > s[1]), vary) || error("$path: a morris study needs a range for every varied parameter, like { from = 0.5, to = 1.0 }")
         at(u) = [(s = _span(vary[k][2]); names_v[k] => (s[3] ? s[1] * (s[2] / s[1])^u[k] : s[1] + (s[2] - s[1]) * u[k])) for k in eachindex(vary)]
         for traj in 1:n
             u = [floor(4 * _next!(g)) / 3 for _ in vary]
@@ -258,6 +259,7 @@ function _study(d, base, path, dir, allowed)
     for (name, m) in metrics
         get(m, "fn", "") in _METRIC_FNS || error("$path: metric $name needs fn, one of $(join(_METRIC_FNS, ", "))")
         haskey(m, "signal") || error("$path: metric $name needs a signal")
+        m["fn"] == "slope" && haskey(m, "unit") && error("$path: metric $name: a slope is in the signal's SI units per second; `unit` would shift it, not scale it. Remove `unit`")
     end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
           Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, [_span(s) for (_, s) in vary], mode, channels, phases, scored, targets, metrics)
@@ -592,6 +594,7 @@ function _screening(st::Study, out, quiet)
     lines = readlines(out)
     head = split(lines[1], ',')
     rows = Dict(String(first(f)) => f for f in split.(lines[2:end], ','))
+    failed = findfirst(==("failed"), head)                      # a run that stopped partway has numbers, but not ones to compare
     X = [(v = Dict(r.overrides)[name]; (lo, hi, logscale) = st.spans[k]; logscale ? log(v / lo) / log(hi / lo) : (v - lo) / (hi - lo)) for r in st.runs, (k, name) in enumerate(st.varied)]
     outputs = [h for h in head if (h == "score" && n_scored(st) > 0) || startswith(h, "res.") || (startswith(h, "target.") && endswith(h, ".model")) || h in first.(st.metrics)]
     file = joinpath(st.dir, "screening.csv")
@@ -599,7 +602,7 @@ function _screening(st::Study, out, quiet)
         println(io, "parameter,output,mu_star,sigma,n")
         for o in outputs
             c = findfirst(==(o), head)
-            y = [haskey(rows, r.id) ? something(tryparse(Float64, rows[r.id][c]), NaN) : NaN for r in st.runs]
+            y = [haskey(rows, r.id) && isempty(rows[r.id][failed]) ? something(tryparse(Float64, rows[r.id][c]), NaN) : NaN for r in st.runs]
             ee = elementary_effects(X, y)
             for (k, e) in enumerate(ee)
                 println(io, st.varied[k], ",", o, ",", round(e.mu_star, sigdigits = 6), ",", round(e.sigma, sigdigits = 6), ",", e.n)
