@@ -106,8 +106,8 @@ are listed in red at the bottom of the Build tab.
 | Start, pause | Simulate starts the run paused; Run or `Space` |
 | Speed | `1` to `5`: ×1, ×5, ×20, ×100, max |
 | Step | "Step 1 s" runs one second at the chosen speed and pauses again |
-| Valves | left-click opens or closes |
-| Faults and set-points | right-click a part: stick a valve open or closed, switch a heater, change a set-point |
+| Valves | left-click opens or closes; right-click, "Set opening..." for a slider that sets it part-open |
+| Faults and set-points | right-click a part: stick a valve open, closed or part-way, switch a heater, change a set-point |
 | Read a part | hover it for pressures, flow and temperature |
 | Back to editing | Stop / edit. The plumbing cannot be changed during a run. |
 

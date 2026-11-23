@@ -254,18 +254,28 @@ check(846, "a file that is not a bands file is refused and the bands stay", () -
 # --- pictures: the schematic and the plots, each cut from the frame as drawn
 const PIC_BASE = joinpath(BANDS_DIR, "pic")
 png_size(path) = (b = read(path); b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] ? Int.(ntoh.(reinterpret(UInt32, b[17:24]))) : [0, 0])
-at(847, () -> (global pic_path = app.path; app.path = PIC_BASE * ".toml"))
-press(848, "Save pictures")
-check(853, "'Save pictures' writes the schematic and the plots as two PNG files the size they were drawn", () -> begin
+at(890, () -> (global pic_path = app.path; app.path = PIC_BASE * ".toml"))
+press(892, "Save pictures")
+check(898, "'Save pictures' writes the schematic and the plots as two PNG files the size they were drawn", () -> begin
     k = F.GLFW.GetFramebufferSize(F.GLFW.GetCurrentContext())[1] / unsafe_load(ig.GetIO().DisplaySize).x
     a, b = png_size(PIC_BASE * "_schematic.png"), png_size(PIC_BASE * "_plots.png")
     app.path = pic_path
     all(abs.(a .- k .* app.canvas[3:4]) .<= 1) && all(abs.(b .- k .* app.plots[3:4]) .<= 1) && filesize(PIC_BASE * "_plots.png") > 5000
 end)
-click(856, 12, 4); click(862, 21, 4)                          # AV201, AV203: something for the bands to lie behind
+click(848, 12, 4); click(854, 21, 4)                          # AV201, AV203: something for the bands to lie behind
+
+# --- a valve set part-open from its right-click menu, and how it is drawn once it rests there
+click(860, 29, -2; button = 1)                                # right-click the vent: its menu opens
+press(866, "menu Set opening...")
+check(872, "'Set opening...' shows the valve's slider", () -> F.OPENING_OF[] == "AV204" && haskey(F.RECTS, "menu Apply opening"))
+at(873, () -> (F.OPENING_PCT[] = 30f0))
+press(876, "menu Apply opening")
+check(882, "applying it commands the opening", () -> F.valve_target(edge("AV204")) == 0.3 && app.sim.log[end].action == "set" && app.sim.log[end].value == 0.3)
+click(884, 5, 9)                                              # click away to close the menu
+check(950, "the valve strokes there and rests part-open, no longer shown as moving", () -> edge("AV204").opening == 0.3 && F.pending(edge("AV204")) == 0 && app.sim.hist["AV204.cmd_frac"][end] == 0.3)
 
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "900")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "960")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)

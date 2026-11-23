@@ -187,6 +187,11 @@ end
 "Which way a valve has been told to go and has not yet got to: +1 opening, -1 closing, 0 if it is where it was told to be."
 pending(e) = Int(sign(valve_target(e) - e.opening))
 
+const C_PART = col(90, 170, 240)                              # a valve at rest part-open
+
+# An opening as a percentage: whole numbers, except below 10 %, where a leak of 0.1 % has to show.
+percent(x) = x >= 0.1 || x == 0 ? string(round(Int, 100x)) : string(round(100x, sigdigits = 2))
+
 function draw_part(dl, app::App, part::Part)
     L(dx, dy) = local_pt(app, part, dx, dy)
     z = UI[] * app.zoom
@@ -238,9 +243,14 @@ function draw_part(dl, app::App, part::Part)
         state, shut = C_DIM, 1f0
         if live && k == "Valve"
             e = edge_of(app, part.name)
-            shut = e.opening > 0.99 ? 0f0 : e.opening < 0.01 ? 1f0 : 1f0 - Float32(e.opening)
-            state = shut == 0 ? C_OPEN : shut == 1 ? C_SHUT : col(230, 180, 60)
-            e.stuck != 0 && ig.AddText(dl, L(-0.5, 0.75), C_WARN, "STUCK")
+            # Part-way keeps some fill and some gap however near an end it is, so a valve set to
+            # 1 % does not pass for shut. It is amber while the valve is moving and blue once it
+            # rests there (set part-open, or stuck part-way): with the actuator's arrow gone as
+            # well, a valve left part-open cannot be taken for one still on its way.
+            shut = e.opening >= 1 ? 0f0 : e.opening <= 0 ? 1f0 : clamp(1f0 - Float32(e.opening), 0.15f0, 0.85f0)
+            state = shut == 0 ? C_OPEN : shut == 1 ? C_SHUT : pending(e) != 0 ? col(230, 180, 60) : C_PART
+            flags = (e.stuck != 0 ? "STUCK " : "") * (e.leak > e.opening ? "LEAKS" : "")
+            isempty(flags) || ig.AddText(dl, L(-0.5, 0.75), C_WARN, flags)
         elseif live && k != "Pipe" && k != "Orifice"
             shut = abs(edge_of(app, part.name).mdot) > 1e-6 ? 0f0 : 1f0
             state = shut == 0 ? C_OPEN : C_SHUT
@@ -379,7 +389,8 @@ function describe(app::App, part::Part)
         push!(lines, "flow " * fmt(app, :flow, abs(e.mdot)) * (e.mdot > 0 ? "  a to b" : e.mdot < 0 ? "  b to a" : ""))
         push!(lines, "a: " * fmt(app, :pressure, ra.P) * "   b: " * fmt(app, :pressure, rb.P) * "   drop $(round((ra.P - rb.P) / PSI, digits = 1)) psi")
         abs(e.mdot) > 0 && push!(lines, "upstream " * fmt(app, :temperature, up.T) * ", $(round(Int, 100 * up.x)) % vapour by mass")
-        k == "Valve" && push!(lines, "position $(round(Int, 100 * e.opening)) % open" * (e.stuck != 0 ? " (stuck)" : ""))
+        k == "Valve" && push!(lines, "position $(percent(e.opening)) % open" * (e.stuck != 0 ? " (stuck)" : pending(e) != 0 ? ", going to $(percent(valve_target(e))) %" : "") *
+                              (e.leak > 0 ? ", leaks $(percent(e.leak)) % of its area when shut" : "") * (e.manual ? ", hand valve" : ""))
     else
         i = k == "Atmosphere" ? node_index(app, "atmosphere") : get(net.pin_node, (part.name, "a"), 0)
         if i != 0

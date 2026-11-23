@@ -97,6 +97,10 @@ end
 
 # What a heater's controller is set to hold, for display.
 heater_holds(app::App, n::Node) = "holds " * (n.heater_ctl == 1 ? fmt(app, :pressure, n.heater_set) : "wall at " * fmt(app, :temperature, n.heater_set))
+# The valve whose "Set opening..." was pressed last (the slider shows for that one only), and
+# where its slider stands.
+const OPENING_OF = Ref("")
+const OPENING_PCT = Ref(Cfloat(50))
 
 "Action buttons for a part. `ctx` distinguishes the right-click menu's copies from the side panel's."
 function part_actions(app::App, part::Part, ctx = "")
@@ -108,6 +112,14 @@ function part_actions(app::App, part::Part, ctx = "")
         ig.SameLine(); b("Stick open") && act!(sim, part.name, "stuck_open")
         ig.SameLine(); b("Stick closed") && act!(sim, part.name, "stuck_closed")
         e.stuck != 0 && (ig.SameLine(); b("Free") && act!(sim, part.name, "unstick"))
+        b("Set opening...") && (OPENING_OF[] = part.name; OPENING_PCT[] = round(100 * valve_cmd(e)))
+        if OPENING_OF[] == part.name
+            ig.SetNextItemWidth(px(140))
+            ig.SliderFloat("% open", OPENING_PCT, 0, 100, "%.0f")
+            opening = Float64(round(OPENING_PCT[])) / 100
+            ig.SameLine(); b("Apply opening") && act!(sim, part.name, "set", opening)
+            ig.SameLine(); b("Stick there") && act!(sim, part.name, "stuck_at", opening)
+        end
     elseif part.kind in VESSEL_KINDS && part.p["heater_W"] > 0
         on = node_of(app, part.name).heater_on
         b(on ? "Heater off" : "Heater on") && act!(sim, part.name, on ? "off" : "on")
