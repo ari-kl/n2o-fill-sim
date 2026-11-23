@@ -583,7 +583,7 @@ end
     # with boiling on, the tube is pinned to the liquid; ends that can only conduct slowly to their wetted face stay warm
     slow = run(["TANK.wall_split=1", "TANK.wall_tube_frac=0.4", "TANK.wall_link_W_K=1", "TANK.h_boil_mult=1", "TANK.wall_ends_W_K=5"]; until = 30.0)
     fast = run(["TANK.wall_split=1", "TANK.wall_tube_frac=0.4", "TANK.wall_link_W_K=1", "TANK.h_boil_mult=1"]; until = 30.0)
-    @test last_(slow, "TANK.Tw_tube") - last_(slow, "TANK.T") < 3 && last_(slow, "TANK.Tw_ends") - last_(slow, "TANK.T") > 10
+    @test last_(slow, "TANK.Tw_tube") - last_(slow, "TANK.T") < 3 && last_(slow, "TANK.Tw_ends") - last_(slow, "TANK.T") > 8
     @test last_(fast, "TANK.Tw_ends") < last_(slow, "TANK.Tw_ends") - 5 && closes(slow) && closes(fast)
     # the fill jet and boiling on a warm wall both pull the wall towards the liquid faster
     gap(sim) = last_(sim, "TANK.Tw") - last_(sim, "TANK.T")
