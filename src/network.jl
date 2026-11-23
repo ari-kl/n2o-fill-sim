@@ -70,6 +70,7 @@ mutable struct Net
     unconverged::Int              # evaluations in which the junction solve did not converge
     # which parts can carry flow and which junctions need solving right now (see plan!)
     live::Vector{Bool}
+    opened::Vector{Bool}          # parts a round of `solve_junctions!` found open after planning them shut
     active::Vector{Int}
     pruned::Vector{Int}
     feeder::Vector{Int}
@@ -186,7 +187,7 @@ function compile(s::Scene)
     net = Net(nodes, edges, env, i - 1, junctions, adj, gauges, pin_node, collect(eachindex(nodes)),
               zeros(length(junctions)), zeros(length(junctions)), zeros(length(junctions)),
               zeros(length(junctions), length(junctions)), row, nothing, 0,
-              falses(length(edges)) |> collect, Int[], Int[], zeros(Int, length(nodes)), zeros(Int, length(nodes)), Int[], UInt(1))
+              falses(length(edges)) |> collect, falses(length(edges)) |> collect, Int[], Int[], zeros(Int, length(nodes)), zeros(Int, length(nodes)), Int[], UInt(1))
 
     u0 = zeros(i + 2)
     for n in nodes
@@ -274,6 +275,9 @@ dead ends (repeatedly, since removing one can expose another) leaves the junctio
 real flow path; only those go to Newton. With every valve shut there may be none at all. Besides
 the saving, this makes dead-end flows exactly zero instead of a trickle of solver noise.
 
+A part counts as able to carry flow if it has any area at the present pressures, or if an earlier
+round of this same solve found it open (`net.opened`, see `solve_junctions!`).
+
 Sets `net.live` (per edge), `net.active` (junction node indices to solve), `net.row`, and
 `net.pruned` / `net.feeder` (dead-end junctions in the order removed, and the edge each hangs by;
 0 for a junction cut off on every side). Returns true if the plan differs from last time.
@@ -282,7 +286,7 @@ function plan!(net::Net)
     nodes, edges = net.nodes, net.edges
     stamp = UInt(0)
     for (k, e) in enumerate(edges)
-        net.live[k] = flow_area(e, nodes[e.a].P, nodes[e.b].P) > 0
+        net.live[k] = net.opened[k] || flow_area(e, nodes[e.a].P, nodes[e.b].P) > 0
         net.live[k] || (e.mdot = 0.0)                   # shut: no flow, and it will not be visited again
         stamp = hash(net.live[k], stamp)
     end
@@ -406,10 +410,21 @@ the Jacobian from differencing each edge with respect to its two end pressures. 
 √ΔP, on which a full Newton step overshoots by exactly its own length and cycles for ever, so a
 step is halved if the imbalance does not fall. Parts whose opening depends on pressure (relief
 and check valves, regulators) can open or shut as the pressures move, so the plan is checked
-again afterwards and the solve repeated if it changed.
+again afterwards and the solve repeated if it left out a part that turned out to be open.
+
+A part found open like that stays in the plan for the rest of this solve, whatever the pressures
+of the next round say. Without that the plan can flip for ever. A dead end rests exactly where
+the part it hangs by has just shut (a regulator's outlet at the set-point, a check valve's one
+cracking pressure short), and at exactly that pressure the part has no area, so the next plan
+reads it as shut and hangs the section off its other neighbour instead, which then looks shut
+in turn: two check valves in series, or a regulator feeding a check valve, alternated until the
+rounds ran out and were left carrying no flow at all with the full supply pressure across them.
+Since the set of parts kept in only grows, the rounds end after at most one per pressure-operated
+part, with every such part either at rest or in the solve.
 """
 function solve_junctions!(net::Net)
-    for round in 1:4
+    fill!(net.opened, false)
+    for round in 0:count(e -> e.kind in (:regulator, :check, :relief), net.edges)
         plan!(net) && (net.lu = nothing)                # a different set of unknowns: old factorisation is useless
         _solve_active!(net)
         settle_dead_ends!(net)
@@ -420,11 +435,11 @@ function solve_junctions!(net::Net)
         for (k, e) in enumerate(net.edges)
             now_open = flow_area(e, net.nodes[e.a].P, net.nodes[e.b].P) > 0
             was_open = net.live[k] || e.mdot == 0 && _hangs_dead(net, k)
-            now_open && !was_open && (stable = false)
+            now_open && !was_open && (stable = false; net.opened[k] = true)
         end
         stable && return
     end
-    net.unconverged += 1                                # still opening and shutting parts after four rounds
+    net.unconverged += 1                                # cannot happen by the argument above; counted in case it does
     nothing
 end
 

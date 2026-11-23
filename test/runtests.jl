@@ -1474,6 +1474,46 @@ end
     @test isempty(sim.failed) && sim.net.unconverged == 0
 end
 
+# Bottle → the parts named, in order → tank. Parts are named P1, P2, ...; the vessels B and T.
+function chain(kinds; tank_pin = "bottom")
+    s = F.Scene()
+    F.add_part!(s, "Bottle", 0, 0; name = "B"); F.add_part!(s, "Tank", 30, 0; name = "T")
+    prev = ("B", "out")
+    for (i, k) in enumerate(kinds)
+        F.add_part!(s, k, 3i, 0; name = "P$i"); F.connect!(s, prev, ("P$i", "a")); prev = ("P$i", "b")
+    end
+    F.connect!(s, prev, ("T", tank_pin))
+    s
+end
+part_flow(sim, name) = sim.net.edges[findfirst(e -> e.name == name, sim.net.edges)].mdot
+
+@testset "pressure-operated parts in series carry flow (the plan does not flip between them)" begin
+    # Two regulators at lock-up feeding a check valve. Shut the fill valve mid-fill and open it
+    # again: every section between them is then resting exactly where its neighbour has just shut.
+    # The fill has to resume. It used to stop dead, with the supply pressure across open parts.
+    sim = F.Sim(chain(["Regulator", "Regulator", "CheckValve", "Valve"]))
+    T = sim.net.nodes[findfirst(n -> n.name == "T", sim.net.nodes)]
+    F.run_until!(sim, 2.0); F.act!(sim, "P4", "open"); F.run_until!(sim, 8.0)
+    m1 = sim.u[T.i]
+    F.act!(sim, "P4", "close"); F.run_until!(sim, 12.0); F.act!(sim, "P4", "open"); F.run_until!(sim, 20.0)
+    @test m1 > 1 && sim.u[T.i] > m1 + 2 && part_flow(sim, "P4") > 0.1
+    @test isempty(sim.failed) && sim.net.unconverged <= 2 && closes(sim)
+    # Two check valves in series into a tank that vents freely: the bottle empties through them
+    # for as long as it has a few cracking pressures over the tank.
+    s = chain(["CheckValve", "CheckValve"]; tank_pin = "top")
+    F.add_part!(s, "Pipe", 33, 0; name = "VENT"); F.add_part!(s, "Atmosphere", 36, 0; name = "ATM")
+    F.connect!(s, ("T", "top"), ("VENT", "a")); F.connect!(s, ("VENT", "b"), ("ATM", "a"))
+    sim = F.Sim(s)
+    B, T = sim.net.nodes[1], sim.net.nodes[2]
+    starved = 0
+    while sim.t < 160 && isempty(sim.failed)
+        F.advance!(sim, 0.5)
+        starved += B.P - T.P > 3 * sim.net.edges[1].set && part_flow(sim, "P1") == 0
+    end
+    @test starved == 0
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+end
+
 # RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
 function log_rms(sim, key, D, col, t0, a, b, p_atm)
     d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]
