@@ -357,9 +357,11 @@ tank the sun takes past the set-point stays there.
 
 The default band is 10 (psi or K). It was chosen for pressure control. The heater warms the wall
 and the wall warms the liquid, so when the power comes off there is still heat in the wall on its
-way in. A sealed 19 L tank holding 8 kg under 300 W in 10 °C air reaches its resting pressure
-without falling back at 10 psi (0.04 psi); at 5 psi it passes it by 0.4 psi once, and at 2 psi
-by 0.6 psi with a few decaying swings, never reaching the set-point. Ten psi is about half a
+way in. A sealed 19 L tank holding 8 kg under 300 W in 10 °C air climbs to its resting
+pressure and falls back from its peak by 0.04 psi with a 10 psi band, by 0.4 psi with 5 psi, and
+by 0.6 psi with a few decaying swings with 2 psi, never reaching the set-point. A 40 L steel
+bottle, whose wall holds more heat, falls back 0.25 psi with 10 psi and 0.7 psi with 5 psi.
+Ten psi is about half a
 kelvin of saturation temperature. Wall-temperature control acts on the state it heats and does
 not overshoot at any band, so 1 to 2 K is a reasonable setting there.
 
