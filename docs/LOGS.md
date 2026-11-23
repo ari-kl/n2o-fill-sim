@@ -91,8 +91,8 @@ board whose own offset is smaller than `already_aligned_s` the rule changes noth
 ### Sampling grid
 
 Each grid point takes the median of the readings within half a `sample_dt` either side (for
-valves and heaters, the last state in that interval). **An interval with no reading is left
-empty.** A gap is never filled in, so a silent sensor cannot pass for a steady one.
+valves and heaters, the last state in that interval). An interval with no reading is left
+empty. A gap is never filled in, so a silent sensor cannot pass for a steady one.
 
 With `debounce_s`, a change of a 0/1 column is kept only if the new value then holds for that
 long; a kept change is therefore reported up to that much late.

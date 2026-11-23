@@ -81,23 +81,23 @@ datasets together (`weight` scales a whole dataset). See [STUDIES.md](STUDIES.md
 A fit always returns numbers. Whether they mean anything is decided before it runs, by these
 five choices.
 
-1. **Fix what was measured.** A bottle temperature read from its pressure, a wall mass from a
+1. Fix what was measured. A bottle temperature read from its pressure, a wall mass from a
    drawing, the weather on the day: put them in the scene or in `set` and do not fit them. Every
    value left free is one the fit can use to hide an error somewhere else.
-2. **Count the scored numbers against the parameters.** A fit with about as many parameters as
+2. Count the scored numbers against the parameters. A fit with about as many parameters as
    scored numbers can match anything and determines nothing. Two channels over three phases are
    six numbers. `bin_s` under `[dataset.score]` turns each long phase into several, and is the
    first thing to reach for when a fit has too little to go on.
-3. **Choose which parameters are shared.** Physics and hardware that did not change between
+3. Choose which parameters are shared. Physics and hardware that did not change between
    tests (heat-transfer coefficients, a vent's discharge coefficient, a wall's mass) should be
    shared. Things that differ from day to day and were not measured (how full the bottle was)
    should be per dataset. Getting that split wrong in either direction is the commonest way to
    fit nonsense.
-4. **State what the model cannot do.** If the model is known to be wrong in part of a log, say
+4. State what the model cannot do. If the model is known to be wrong in part of a log, say
    so with a `discrepancy` on that phase ([STUDIES.md](STUDIES.md), "Stated model error").
    Without it the fit spends its parameters on an error they cannot remove, and returns biased
    values with a small spread, which is the worst combination.
-5. **Keep a log back.** Fit with one log held out and see whether it is predicted better than
+5. Keep a log back. Fit with one log held out and see whether it is predicted better than
    before (next section). A fit that improves its own logs and worsens the one it did not see
    has fitted those logs, not the hardware.
 
@@ -181,13 +181,13 @@ not the data: look at why they fail.
 `<fit file>_results/report.txt`, also printed, has these sections. With `--holdout` and `--profile`
 it also has the held-out dataset's scores and the profile.
 
-**Parameters.** The fitted values with an approximate spread, and a flag on any that ended on a
+The Parameters section gives the fitted values with an approximate spread, and a flag on any that ended on a
 bound (which means the bound, not the data, chose the value).
 
-**How close.** The RMS per dataset, channel and phase, in the log's own units; the offset taken
+The "How close" section gives the RMS per dataset, channel and phase, in the log's own units; the offset taken
 out of any channel whose zero is free; and each target's value in the model and in the log.
 
-**What these data do and do not determine.** This comes from the sensitivity of every residual
+The last of the three, "What these data do and do not determine", comes from the sensitivity of every residual
 to every parameter, taken at a tighter solver tolerance with steps of 1 % of each parameter's
 range so that the differences are signal and not solver noise. It makes statements of these
 kinds:

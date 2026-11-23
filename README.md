@@ -11,16 +11,17 @@
 A simulator for filling a hybrid rocket's nitrous oxide run tank. Draw the plumbing, press
 Simulate, and click valves while it runs. It shows pressure, temperature, mass and flow
 everywhere in the system, and how the tank responds when you vent, heat, wait in the sun, or
-leave a valve stuck. Think of it as LTspice for a nitrous fill.
+leave a valve stuck. Think of it as LTspice for a nitrous fill. It is useful in three ways:
 
 ![A recorded fill replayed: the plumbing coloured by pressure while the tank vents, with the logged pressures and load cell overlaid on the plots](docs/screenshot.png)
 
-- **Building intuition.** Why a fill stalls, what a vent pulse actually buys, how fast a closed
-  tank warms. [docs/MODEL.md](docs/MODEL.md) starts with a plain-language account of the physics.
-- **Replaying a real fill.** Load a telemetry log, replay its valve sequence through the model,
-  and see where the two agree and where they do not.
-- **Asking "what if".** Change a bore, a bottle temperature or the weather and run it again, once
-  in the window or thousands of times from the command line.
+- To build intuition for why a fill stalls, what a vent pulse actually buys, and how fast a
+  closed tank warms. [docs/MODEL.md](docs/MODEL.md) starts with a plain-language account of the
+  physics.
+- To replay a real fill: load a telemetry log, run its valve sequence through the model, and see
+  where the two agree and where they do not.
+- To ask "what if": change a bore, a bottle temperature or the weather and run it again, once in
+  the window or thousands of times from the command line.
 
 It is an analysis tool. It does not talk to any control system or hardware.
 
@@ -34,11 +35,11 @@ cd n2o-fill-sim
 julia --project -e "using Pkg; Pkg.instantiate()"
 ```
 
-**Windows.** Install Julia first (`winget install julia -s msstore`, then `juliaup add 1.13.4`).
+On Windows, install Julia first (`winget install julia -s msstore`, then `juliaup add 1.13.4`).
 After the lines above, double-click `n2o-fill-sim.cmd`, or from a terminal run
 `n2o-fill-sim.cmd scenes\hf4.toml`.
 
-**Linux or WSL.** Install [juliaup](https://github.com/JuliaLang/juliaup) first. Then:
+On Linux or WSL, install [juliaup](https://github.com/JuliaLang/juliaup) first. Then:
 
 ```
 julia --project bin/n2o-fill-sim.jl scenes/hf4.toml
@@ -57,8 +58,8 @@ The repository includes a real fill to play with: `scenes/hf4.toml` is the fill 
 student hybrid motor's test stand, and `test/data/hf4_fill_10hz.csv` is the telemetry from a
 static fire on it.
 
-**Watch a recorded fill.** This replays the logged valve sequence through the model and overlays
-the logged pressures and load cell on the plots:
+To watch a recorded fill, replay the logged valve sequence through the model. The logged
+pressures and load cell are overlaid on the plots:
 
 ```
 julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --replay test/data/hf4_fill_10hz.csv --t0 9020 --run
@@ -69,12 +70,12 @@ meet, two vent pulses with the pressure rebounding after each, and a slow climb 
 Where the model's line leaves the logged one is where the model is wrong; MODEL.md says why for
 each case.
 
-**Drive it yourself.** Open the scene without a replay, press Simulate, then `Space` to run.
+To drive it yourself, open the scene without a replay, press Simulate, then `Space` to run.
 Click the fill valves open and watch the tank fill and stall. Click the vent. Right-click a valve
 and stick it open to see what a failure does. The Tanks tab shows what the present load would do
 if the tank were sealed and left to warm to 30 °C and 35 °C.
 
-**Build your own.** Stop / edit returns to the editor. Pick parts from the palette, click to
+To build your own plumbing, use Stop / edit to return to the editor. Pick parts from the palette, click to
 place them, and click one pin and then another to wire them. A new, empty schematic offers the
 example scenes to start from.
 
@@ -201,7 +202,7 @@ Four logs come with the repository, as 10 Hz or 1 Hz extracts in `test/data`:
 
 ## Studies and fitting
 
-A **study** runs one scene many times with parameters varied, scores each run against a log, and
+A study runs one scene many times with parameters varied, scores each run against a log, and
 writes one row per run. It answers "how much does this number matter?" and "which values can the
 log not rule out?". See [docs/STUDIES.md](docs/STUDIES.md).
 
@@ -209,14 +210,14 @@ log not rule out?". See [docs/STUDIES.md](docs/STUDIES.md).
 julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml
 ```
 
-Where a log leaves parameters undetermined, a prediction is better shown as a **band** than as
+Where a log leaves parameters undetermined, a prediction is better shown as a band than as
 one line. `study keep` lists the parameter sets of a study that its log could not rule out, a
 study with `mode = "sets"` and `[bands]` runs them on the scenario to predict, and the window
 draws the spread behind the live plots ("Load bands..." or `--bands`). See "Prediction bands" in
 [docs/STUDIES.md](docs/STUDIES.md); `studies/hf4_sample.toml` and `studies/hf4_bands.toml` are a
 worked example.
 
-A **fit** adjusts parameters to match one or several logs at once, and reports which of them the
+A fit adjusts parameters to match one or several logs at once, and reports which of them the
 logs cannot tell apart. That report matters more than the fitted numbers. See
 [docs/FITTING.md](docs/FITTING.md).
 

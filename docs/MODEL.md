@@ -19,27 +19,27 @@ files are relative to the `P_atm_kPa` setting.
 Nitrous oxide is stored as a liquid under its own vapour pressure. That one fact explains most of
 what a fill does.
 
-**Pressure is temperature.** A bottle or tank holding liquid and vapour together sits at the
+Pressure is temperature. A bottle or tank holding liquid and vapour together sits at the
 vapour pressure of its liquid: about 718 psig at 20 °C, 900 psig at 30 °C. You do not set the
 pressure of such a vessel; you set its temperature and the pressure follows. Warm the liquid and
 pressure rises by 14 to 21 psi per kelvin. Let some boil off and it cools and the pressure falls.
 
-**A fill is driven by a temperature difference.** Liquid flows from the bottle to the tank only
+A fill is driven by a temperature difference. Liquid flows from the bottle to the tank only
 while the bottle is at a higher pressure, which means while it is warmer. As it delivers, the
 bottle cools (its liquid boils to fill the space left behind) and the tank warms (vapour is
 compressed and condenses). The two pressures meet and the flow stalls, usually well before the
 tank is full.
 
-**Liquid flashes on the way in.** Saturated liquid dropping to a lower pressure cannot stay
+Liquid flashes on the way in. Saturated liquid dropping to a lower pressure cannot stay
 liquid: part of it boils at once. From a 30 °C bottle into a 550 psig tank, 29 % of the mass
 arrives as vapour. That vapour takes up room and has to be vented if the fill is to continue.
 
-**Venting buys flow by throwing nitrous away.** Opening the vent drops the tank pressure, the
+Venting buys flow by throwing nitrous away. Opening the vent drops the tank pressure, the
 liquid surface boils and cools, and the fill resumes. Shut the vent and the pressure rebounds
 within a minute as the cooled surface warms from the liquid below. Every kelvin of cooling costs
 one to eight percent of the liquid, more the warmer it is.
 
-**Heat arrives slowly and from several directions.** The tank wall, the sun, the air and a heater
+Heat arrives slowly and from several directions. The tank wall, the sun, the air and a heater
 all move heat in or out on a time scale of minutes. That is what makes a sealed tank's pressure
 drift, and what a heater uses to raise it.
 
@@ -93,26 +93,26 @@ handling.
 
 Two details make this dependable in practice:
 
-- **Dead ends are removed first.** A junction with only one open path cannot pass flow, so it
+- Dead ends are removed first. A junction with only one open path cannot pass flow, so it
   takes the pressure of what it hangs off and the part leading to it carries exactly zero. With
   every valve shut there is nothing to solve. Where the part leading to a dead end shuts on the
   dead end's own pressure, it stops earlier: behind a shut valve a regulator's outlet rests at
   min(supply, set-point) and never falls with the supply; a check valve stops one cracking
   pressure short; a relief valve reseats at its set pressure.
-- **Parts that open on pressure are planned in rounds.** Regulators, check valves and relief
+- Parts that open on pressure are planned in rounds. Regulators, check valves and relief
   valves open and shut on the pressures being solved for. After each solve the plan is checked,
   and a part that was planned as shut and turns out open sends the solve round again with that
   part in. A part found open this way stays in for the rest of that solve. Without that rule two
   check valves in series, or regulators in series, could flip each other shut in turn until the
   rounds ran out, leaving no flow and the full supply pressure across open parts. With the set
   only growing, the rounds end after at most one per pressure-operated part.
-- **The solve is Newton's method.** It works to a mass imbalance of 1e-9 of the largest flow. It
+- The solve is Newton's method. It works to a mass imbalance of 1e-9 of the largest flow. It
   also stops once no pressure moves by more than 0.01 Pa, because the flow laws carry round-off
   of their own (largest with supercritical fluid upstream); an imbalance under 1e-6 of the
   largest flow is then accepted. A junction that is in balance and that no flow responds to is
   held where it is while the others are solved; left in, its empty row would make the whole
   system singular.
-- **Two rules keep Newton from cycling.** No pressure moves more than 20 bar in a step, and a
+- Two rules keep Newton from cycling. No pressure moves more than 20 bar in a step, and a
   step is halved (twice at most) if the imbalance does not fall. And a step may not jump a
   pressure-operated part's band. Outside its band (shut, or fully open) such a part's area does
   not answer the pressures, so the Jacobian knows nothing of the band ahead, which is 30 psi
@@ -120,13 +120,13 @@ Two details make this dependable in practice:
   part from outside its band past the middle of it is cut to stop at the middle; the next step
   has the part's real slope. Circuit simulators limit the voltage step across a diode for the
   same reason.
-- **A fallback handles what is left.** If Newton does not settle (a restriction starting to
+- A fallback handles what is left. If Newton does not settle (a restriction starting to
   choke; the top of the two-phase dome, where the flux through a restriction turns from falling
   to rising as its upstream pressure climbs), each junction is balanced in turn with its
   neighbours held. That cannot fail, since a junction's imbalance falls steadily as its own
   pressure rises, but it closes in slowly along pipes in series. Its use is to get off the
   corner: Newton is tried again after eight passes, and once more after sixty further passes.
-- **A solve that still fails is counted,** and the window shows the count in amber. It is not
+- A solve that still fails is counted, and the window shows the count in amber. It is not
   harmless: the flows it leaves do not balance, so mass goes missing between vessels.
 
 ### Time stepping
@@ -209,10 +209,10 @@ Cold liquid through an orifice follows the textbook law: flux proportional to th
 the pressure drop. Saturated liquid does not, because it starts to boil as the pressure falls
 through the restriction. Two limits bracket what happens:
 
-- **No time to boil (single-phase incompressible, SPI).** The liquid passes through still liquid:
+- With no time to boil, the liquid passes through still liquid (single-phase incompressible, SPI):
   $G_{SPI} = \sqrt{2\rho_1 (P_1 - P_2)}$. This overestimates the flow of a liquid close to boiling.
-- **Boils instantly and fully (homogeneous equilibrium, HEM).** Liquid and vapour stay in
-  equilibrium along the expansion: $G_{HEM} = \rho_2 \sqrt{2(h_1 - h_2)}$ along the isentrope. The
+- If it boils instantly and fully, liquid and vapour stay in equilibrium along the expansion
+  (homogeneous equilibrium, HEM): $G_{HEM} = \rho_2 \sqrt{2(h_1 - h_2)}$ along the isentrope. The
   vapour that forms chokes the flow, so past a certain pressure drop the flux stops rising. This
   underestimates the flow through a short restriction.
 
@@ -226,17 +226,17 @@ HEM when it is at it. The model blends the two by how close the liquid is to boi
 | Liquid or two-phase | Dyer's blend as written in Zimmerman et al. (2013), eq. 7: $G = (\kappa\,G_{SPI} + G_{HEM})/(1 + \kappa)$ with $\kappa = \sqrt{(P_1 - P_2)/(P_{sat}(T_1) - P_2)}$. Subcooled liquid discharging above its vapour pressure is pure $G_{SPI}$. With vapour already present upstream the result is faded towards $G_{HEM}$ by quality. |
 | Vapour or supercritical | $G_{HEM}$ alone: real-gas isentropic nozzle flow, choked when the back pressure is low enough. |
 
-- **Choking** is found by searching for the maximum of $G_{HEM}$ along the expansion. Inside the
+- Choking is found by searching for the maximum of $G_{HEM}$ along the expansion. Inside the
   dome the search runs along the saturation table. Coming from single phase, the point where the
   expansion enters the dome is evaluated directly, because the speed of sound drops there and the
   flux often peaks exactly at it; the single-phase stretch above is searched only if the flow is
   already supersonic at that point.
-- **Near the critical point** the $G_{SPI}$ share is faded out linearly over the last 2 K below
+- Near the critical point the $G_{SPI}$ share is faded out linearly over the last 2 K below
   the critical temperature, so that the two rows of the table meet. This is a numerical choice,
   not a measured one: liquid and vapour become one fluid there, and without the fade the flux
   stepped by about 15 % where a supercritical supply crossed into the two-phase region. Nothing
   below 34.2 °C is affected.
-- **Supercritical supply** (a bottle left in the sun past 36.4 °C) runs but is unvalidated and
+- Supercritical supply (a bottle left in the sun past 36.4 °C) runs but is unvalidated and
   slow. Every flux evaluation there needs iterative property solves in place of table look-ups
   (51 µs against 3.6 µs for saturated liquid at 25 °C), and the window can hitch for up to a
   second when such a bottle is opened into an empty tank.
@@ -280,13 +280,13 @@ This is the normal mode. The states are liquid mass and temperature, ullage N2O 
 temperature, wall temperature and air mass. The formulation follows Zilliac & Karabeyoglu (2005)
 as set out in Zimmerman et al. (2013).
 
-- **Liquid** has the density and energy of saturated liquid at its own temperature.
-- **Ullage** is real gas, which may be superheated or slightly supersaturated. Tank pressure is
+- Liquid has the density and energy of saturated liquid at its own temperature.
+- Ullage is real gas, which may be superheated or slightly supersaturated. Tank pressure is
   the ullage N2O pressure plus the partial pressure of any air.
-- **The surface** between them is saturated at the N2O partial pressure. Heat reaches it from the
+- The surface between them is saturated at the N2O partial pressure. Heat reaches it from the
   liquid and leaves it to the ullage; evaporation is the net heat arriving divided by the latent
   heat.
-- **Geometry** is an upright cylinder of the given volume and diameter. A port draws liquid or
+- Geometry is an upright cylinder of the given volume and diameter. A port draws liquid or
   ullage according to its height: fully liquid once the level is 1 cm above it.
 
 Each path that moves heat or mass has its own law and, where the law is uncertain, a knob:
@@ -351,7 +351,7 @@ dynamic model, and it reproduces the liquid-full thresholds in section 9.
 
 Each of these is a deliberate limit. The first is the one most likely to matter.
 
-- **The lines hold no fluid.** Giving every junction a volume and a fluid state would show a hose
+- The lines hold no fluid. Giving every junction a volume and a fluid state would show a hose
   charging and liquid trapped between closed valves, but it could not be solved reliably: a few
   millilitres of nearly incompressible liquid on the edge of boiling make the equations so stiff
   and kinked that every solver tried took microsecond steps or stalled. So there is no
@@ -361,30 +361,31 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
   100 psi low for the first 10 to 20 s. In HF3 the hose was not pre-charged and the first 20 s
   agree to 27 psi, which fits that explanation without proving it. To study trapped liquid, put a
   small Tank where the trapped volume is; there is a test doing exactly that.
-- **A single liquid temperature.** There is no warm layer at the surface. Vent rebound comes only
+- The liquid has a single temperature, with no warm layer at the surface. Vent rebound comes only
   from the lag between liquid and ullage. Section 7 has evidence that this matters in a long hold.
-- **No boiling swell.** In a real tank, bubbles formed in the liquid while venting raise the
+- Boiling swell is not modelled. In a real tank, bubbles formed in the liquid while venting raise the
   level for as long as it boils, and can put liquid at a dip tube before the settled level gets
   there. Here the level is always the settled level, so "liquid %" can fall during a vent (the
   liquid boils off and contracts as it cools, about 1 % in volume per kelvin near 23 °C) and
   liquid reaches the vent later than it would in practice.
-- **Air is a second gas in the ullage only.** It has its own heat capacity and partial pressure,
+- Air is a second gas in the ullage only. It has its own heat capacity and partial pressure,
   and leaves with the ullage gas in proportion to how much of the gas it is. Once in the lines the
   stream is counted as N2O: the lines carry one fluid, sized by the flow law as if it were N2O
   vapour at the same pressure and temperature, which overstates the mass flow of nearly pure air
   by about a fifth. Anything that flows back in from the atmosphere arrives as N2O. A tank's worth
   of air is tens of grams, so this matters only until the first N2O has displaced it.
-- **One wall temperature per vessel** (two with `wall_split`), and no conduction into stands and
+- Each vessel has one wall temperature (two with `wall_split`), and there is no conduction into stands and
   plumbing.
-- **No nitrogen.** No pressurisation with it and none dissolved: pure N2O plus inert air.
-- **No hydrostatic head** or elevation differences (about 1 psi per metre of liquid).
-- **Flow near zero pressure difference** is smoothed within about 300 Pa so that it passes through
+- There is no nitrogen, either as a pressurant or dissolved: the contents are pure N2O plus
+  inert air.
+- Hydrostatic head and elevation differences are ignored (about 1 psi per metre of liquid).
+- Flow near zero pressure difference is smoothed within about 300 Pa so that it passes through
   zero with a finite slope; the true √ΔP law has infinite slope there.
-- **Laminar pipe flow** is not modelled (the friction factor is held below Re = 4000). It matters
+- Laminar pipe flow is not modelled (the friction factor is held below Re = 4000). It matters
   only for trickles of a gram per second or less.
-- **Pipe friction is an equivalent orifice,** which is rough for a long line that flashes along
+- Pipe friction is an equivalent orifice, which is rough for a long line that flashes along
   its length.
-- **The relief valve** has no pop and reseat hysteresis.
+- The relief valve has no pop and reseat hysteresis.
 
 ## 7. Calibration
 
@@ -433,7 +434,7 @@ Tank pressure, model against PT202 (RMS over each period):
 | PT201, 9100-10000 | bottle side | 9 psi |
 
 Mass: 9.5 kg at the end of fill; the load cell, tared with the hose charged, reads 9.5 kg at fill
-close and 9.8 kg before firing. **Open discrepancy:** at the stall the model has 8.3 kg where the
+close and 9.8 kg before firing. One discrepancy is open: at the stall the model has 8.3 kg where the
 load cell reads 6.7 kg. Section 8 gives a reason to doubt the load cell there, but it is a
 hypothesis; if the load cell is right, the model overstates how much goes in before the first
 vent.
@@ -480,19 +481,20 @@ the ODE solver rejects, and a solve that fails costs about a hundred times one t
 Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (data in
 `test/data`).
 
-- **HF3 cold flow (nitrous, unvented fill, 4.3 kg).** HF4 fit unchanged: tank pressure through the
+- On the HF3 cold flow (nitrous, unvented fill, 4.3 kg), with the HF4 fit unchanged, tank pressure
+  stays through the
   100 s sealed period within 5.1 psi RMS, bottle recovery within about 4 psi, load 4.6 kg against
   4.3 kg on the stand load cell. Post-fill warming is 0.08 psi/s in the model against 0.13 logged.
   Open: the model empties the tank through the injector, while the load cell shows about 2.3 kg
   left at 0 psig.
-- **HF4 vents prefer a larger vent.** Vent `Cd` 0.85 with `interphase_E` 300 takes vent 1 from 16
+- HF4 vents prefer a larger vent. Vent `Cd` 0.85 with `interphase_E` 300 takes vent 1 from 16
   to 8 psi RMS (minimum 696 against 696 logged) and vent 2 from 8 to 3, but the heater period from
   3 to 7 psi. Final load 9.7 kg. The scenes keep the published values.
-- **LC26 day 4 has tank temperatures.** The two heater thermistors sit within about 1 K of the
+- LC26 day 4 has tank temperatures. The two heater thermistors sit within about 1 K of the
   saturation temperature of PT202 through the 1000 s sealed hold, and 1 to 2 K above it during the
   vented fill. With `h_in_mult` 0.3 the model's wall runs about 6 K warmer than its liquid after
   the fill. That is the reason for the optional wall model in section 4.
-- **Not identifiable from LC26:** the tower load cell is unusable, so the vent size, fill flow
+- On LC26 the tower load cell is unusable, so the vent size, fill flow
   and bottle contents trade off. The scene uses vent `Cd` 1.0 and a 28 kg bottle, and follows the
   tank through the hold within 5 psi RMS but the vented fill only within about 33 psi.
 
@@ -502,13 +504,13 @@ These came out of a systematic comparison with all four logs: measured inputs fi
 parameter sets sampled, and a joint fit repeated with each log held out in turn. They are stated
 here because they limit what the model can be trusted for.
 
-**Measured inputs.** The HF4 and HF3 cold flow scenes carry the test days' weather from a
+The scenes use measured inputs where they exist. The HF4 and HF3 cold flow scenes carry the test days' weather from a
 historical archive (air temperature good to about 2 °C, sun, wind reduced from 10 m to stand
 height by estimate), the tank wall mass from the vehicle mass budget (9.06 kg: tube 7.18 kg,
 bulkheads 0.88 and 1.00 kg) and bottle start temperatures from the bottle-side pressure before
 the fill. Tank start temperature on the stand was not measured and is set to ambient.
 
-**What the logs determine, and what they do not.** A joint fit of sixteen values to all four
+The logs determine some values and not others. A joint fit of sixteen values to all four
 logs, with the measured inputs fixed, a bare-aluminium tank surface (absorptivity 0.3, emissivity
 0.1) and the two-node wall switched on, brings every log to about one tolerance in the scoring of
 [STUDIES.md](STUDIES.md) (30 s bins, load-cell changes, a stated allowance for the first 20 s of a
@@ -530,7 +532,7 @@ in the scenes. `interphase_E` moves no scored number by much between 100 and 200
 wall coefficient has no visible effect at all. What moves a result most is what was not recorded:
 how full the bottle was.
 
-**The fill line is probably tighter than the scenes say.** The load cell's fill rate against the
+The fill line is probably tighter than the scenes say. The load cell's fill rate against the
 logged line pressures puts the restriction between bottle and panel at about 2.2 to 2.4 mm bore
 (at `Cd` 0.7) on HF3, its cold flow and HF4; the scenes use 2.5 mm. With 2.3 mm the cold flow
 loads 4.0 kg and its sealed pressure comes out 36 psi low. Raising wall and outside heat transfer
@@ -538,7 +540,7 @@ about tenfold and fourfold restores the three stand logs but makes LC26 day 4, h
 the published 2.5 mm and wall coefficient 0.3 agree with the stand logs partly by compensating
 each other, and the scenes keep them until the tank's heat balance during a fill is understood.
 
-**A sealed tank warms faster than the model allows.** Through the 1000 s hold of LC26 day 4 the
+A sealed tank warms faster than the model allows. Through the 1000 s hold of LC26 day 4 the
 saturation temperature of the tank pressure rises 0.8 K/min at 2 °C, falling to 0.4 K/min at
 10 °C. For the whole contents and wall to warm at that rate takes 250 to 500 W. A bare aluminium
 tube of this size in that day's weather (about 20 °C, 600 W/m² of sun, 2 to 3 m/s of wind) takes
@@ -547,13 +549,13 @@ tank, or only about half of its heat capacity is warming, as it would if the liq
 with the warm part on top. One hold cannot tell these apart; temperatures at two or three heights
 on the tank would. The scene's fitted "ambient" of 30 °C for that day stands in for this.
 
-**During a fill the tank is not short of heat; the wall gives its heat up late.** With wall
+During a fill the tank is not short of heat; the wall gives its heat up late. With wall
 boiling near its correlation value the single tube temperature follows the logged skin
 temperature to 2 to 3 K. Three changes of structure were tried against LC26 day 4 (boiling past
 the peak flux, a wall wetted by the incoming jet, an onset threshold for boiling). None improved
 it and none is in the code.
 
-**Scoring short valve pulses point by point is unreliable.** The HF3 cold flow opens its fill
+Scoring short valve pulses point by point is unreliable. The HF3 cold flow opens its fill
 valve in pulses of about a second, and the bottle-side pressure score over that period moves
 between 42 and 55 psi RMS with the solver tolerance alone. Use bins or features there.
 
@@ -561,7 +563,7 @@ between 42 and 55 psi RMS with the solver tolerance alone. Use bins or features 
 
 Two things about the HF4 and HF3 logs matter when comparing the model with them.
 
-**The two pressure transducers disagree by about ±5 psi.** With the fill valve open and almost no
+The two pressure transducers disagree by about ±5 psi. With the fill valve open and almost no
 flow, PT201 (fill panel) reads 3 to 5 psi *above* PT202 (tank) in HF4 and 4 to 7 psi *below* it in
 HF3. Flow was into the tank both times, so the HF3 sign is physically impossible: the difference
 is sensor mismatch, and it changes between tests. A "stall 3 to 6 psi below the fill line" read
@@ -569,7 +571,7 @@ off the HF4 log is therefore inside that mismatch and says nothing about the pre
 driving the flow. Before the HF4 fill PT201 read 936 rising to 953 psig, which puts the bottle at
 about 33 °C.
 
-**The load cell is usable for the end state, not for the fill history.**
+The load cell is usable for the end state, not for the fill history:
 
 - Charging the fill hose adds 0.8 kg with nothing in the tank.
 - Every vent opening and closing sets it ringing at about 5 Hz with ±2 kg amplitude for several
@@ -587,7 +589,7 @@ about 33 °C.
 Property values are for saturated N2O; gauge pressures use 14.4 psi for the atmosphere. The tests
 check these tables against the property code.
 
-**A pressure target is a temperature target.** A self-pressurising tank sits at the vapour
+A pressure target is a temperature target. A self-pressurising tank sits at the vapour
 pressure of its liquid. Reaching a higher pressure means adding heat (HF4: 469 s on the heater to
 reach 850 psig); holding a lower one on a warm day means removing heat and keeping it out.
 
@@ -602,7 +604,7 @@ The other way: 0 °C = 438 psig, 10 °C = 566, 20 °C = 718, 25 °C = 805, 30 °
 A colder load is denser: the 19.16 L HF4 tank at 90 % liquid by volume holds 15.0 kg at 550 psig
 and 12.8 kg at 850 psig.
 
-**Flash on entry.** Saturated liquid from a warm bottle partly flashes on entering a
+Saturated liquid from a warm bottle partly flashes on entering a
 lower-pressure tank. That vapour has to be vented and is lost.
 
 | Supply liquid | into 550 psig | into 700 psig | into 850 psig |
@@ -611,21 +613,21 @@ lower-pressure tank. That vapour has to be vented and is lost.
 | 30 °C (900 psig) | 29.2 % | 20.3 % | 7.1 % |
 | 33 °C (962 psig, about HF4's bottle) | 35.7 % | 28.1 % | 17.2 % |
 
-**Venting to cool the load** costs the boil-off column above for every kelvin removed.
+Venting to cool the load costs the boil-off column above for every kelvin removed.
 
-**Cooling the supply bottle** reduces flash loss but also lowers the pressure difference that
+Cooling the supply bottle reduces flash loss but also lowers the pressure difference that
 drives the fill. Padding the bottle with nitrogen restores it, but nitrogen dissolves in nitrous
 and breaks "pressure = vapour pressure of the liquid"; this model has no nitrogen.
 
-**An unvented fill stalls at equalisation** (HF4: 0.089 kg/s, then 0.008 kg/s for about 107 s).
+An unvented fill stalls at equalisation (HF4: 0.089 kg/s, then 0.008 kg/s for about 107 s).
 In a vented fill the vent sets the tank pressure, which settles where vent outflow balances flash
 vapour plus displaced ullage; the vent has to carry roughly the flash fraction times the fill
 flow. Vent flow and duration are also the icing exposure of the vent valve.
 
-**A vent pulse cools the surface, then the pressure rebounds** (HF4 vent 1: 803 to 698 psi in
+A vent pulse cools the surface, then the pressure rebounds (HF4 vent 1: 803 to 698 psi in
 13.8 s, back to about 775 within a minute).
 
-**Going liquid-full is the main overfill hazard.** A cold, dense load expands as it warms. If the
+Going liquid-full is the main overfill hazard. A cold, dense load expands as it warms. If the
 tank is closed and soaks to ambient, a tank filled too full goes liquid-full, and pressure then
 rises hydraulically, far faster than the vapour-pressure curve.
 
@@ -639,7 +641,7 @@ The allowed fill fraction should come from the worst-case warm soak (sun, vent f
 not from the operating pressure: 35 °C is 1005 psig whatever the fill pressure was. HF4 for
 reference: about 9.3 kg in 19.16 L at about 775 psig, 53 % liquid by volume.
 
-**Reading the sensors.** Pressure transducers are gauge, so a saturation temperature needs the
+Pressure transducers are gauge, so a saturation temperature needs the
 local atmospheric pressure (a setting here). A thermocouple needs better than ±1 °C to be useful:
 1 °C is 14 to 21 psi. Pressure above the vapour pressure of the bulk liquid means a warm surface
 layer or a sensor problem.

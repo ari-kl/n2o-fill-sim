@@ -86,7 +86,7 @@ The model is interpolated onto the log's sample times; times with no log reading
 skipped. Each channel and phase gives an RMS difference in the log's own units (psi, °C, kg), in a
 column named `rms.<log column>.<phase>`. Those are the numbers to read.
 
-`score` is the one number to sort by, and it has no units. It is made of **scored numbers**, each
+`score` is the one number to sort by, and it has no units. It is made of scored numbers, each
 a difference divided by how far that reading can be trusted, its `sigma`. Without `bin_s` there is
 one scored number per channel and phase, weight · rms / sigma, and the score is their root mean
 square:
@@ -265,10 +265,10 @@ not rule out, and each signal's percentiles over those runs at every time.
 
 It takes two studies and one command between them.
 
-**1. Sample.** A study with `mode = "lhs"` over the ranges the parameters could plausibly lie in,
-scored against the log, with any model error you know of stated as a `discrepancy`.
+1. Sample. Run a study with `mode = "lhs"` over the ranges the parameters could plausibly lie
+   in, scored against the log, with any model error you know of stated as a `discrepancy`.
 
-**2. Keep.**
+2. Keep the runs the log could not rule out.
 
 ```
 julia --project bin/n2o-fill-sim.jl study keep studies/hf4_sample_results/results.csv [--cutoff 3] [--nth 2]
@@ -282,7 +282,7 @@ A run that failed or stopped early is ruled out. The command prints how many run
 for each parameter, the range left among the kept runs beside the range sampled, and writes
 `kept.csv` beside the results: one row per kept run, one column per parameter.
 
-**3. Run the kept sets on the scenario to predict.**
+3. Run the kept sets on the scenario to predict.
 
 ```toml
 scene = "../scenes/hf4.toml"                  # need not be the scene or the log the sets came from
@@ -315,7 +315,7 @@ With several cases there is a `bands_<case>.csv` for each, because cases are dif
 and their runs are not pooled. A study with band signals cannot be resumed (`--resume`): the runs
 already done left no history to take a band from.
 
-**4. Look.** In run mode, "Load bands..." (or `--bands bands.csv` on the command line) draws each
+4. Load the bands in the window. In run mode, "Load bands..." (or `--bands bands.csv` on the command line) draws each
 band on the plot of its kind: shaded between its lowest and highest percentile, with the median as
 a thin line, behind the live lines and in the colour of its signal's line.
 
@@ -328,11 +328,11 @@ do not tell these runs apart, and this is how far they disagree about the signal
 
 It is not a confidence interval. Three things it does not contain:
 
-- **Model error outside the stated allowances.** Every run in the band is the same model. What the
+- It does not include model error outside the stated allowances. Every run in the band is the same model. What the
   model leaves out moves all of them together, and the band does not widen to show it. A real test
   can land outside a narrow band for that reason alone.
-- **Anything not varied.** A parameter held fixed contributes no width, however poorly it is known.
-- **Probabilities.** The percentiles are over the kept sets, which were spread evenly over the
+- It does not include anything that was not varied. A parameter held fixed contributes no width, however poorly it is known.
+- It does not give probabilities. The percentiles are over the kept sets, which were spread evenly over the
   sampled ranges and then cut by a pass/fail rule. Wider ranges, a different cutoff or a different
   `sigma` give a different band. "5-95 %" says where nine tenths of the kept runs lie, not that
   the truth is inside with nine chances in ten.
