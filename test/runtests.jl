@@ -486,7 +486,7 @@ end
     @test r.score < 1.5 < r.start_score                           # down to about the noise put in
     @test !any(occursin("do not determine", t) for t in r.statements)   # correlated (both set the fill rate) but both recovered
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "made-up.toml"), readdir(r.dir; join = true))))
-    @test record["datasets"] == ["run1"] && length(record["parameter"]) == 2 && record["dataset"][1]["channels"][1]["sigma"] == 0.5
+    @test record["datasets"] == ["run1"] && length(record["parameter"]) == 2 && record["dataset"][1]["channels"][1]["sigma"] == 0.5 && haskey(record, "model_commit")
     fitted = F.load_scene(joinpath(r.dir, "run1.toml"))
     @test abs(fitted.parts[F.find_part(fitted, "FILL")].p["d_mm"] - r.values["FILL.d_mm"]) < 1e-3
     @test occursin("[cal ", readline(joinpath(r.dir, "run1.toml"))) && isfile(joinpath(r.dir, "report.txt")) && countlines(joinpath(r.dir, "evals.csv")) == r.evals + 1

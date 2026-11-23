@@ -416,7 +416,7 @@ function fit(path; write_scenes = false, quiet = false)
     record = joinpath(ft.dir, "$(_today())-$(ft.name).toml")
     open(record, "w") do out
         println(out, "# Calibration record written by `fit`. Values, what they were fitted to, and how well.")
-        println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nscore = ", round(fx, sigdigits = 6))
+        println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nmodel_commit = ", repr(_commit(@__DIR__)), "\nscore = ", round(fx, sigdigits = 6))
         println(out, "datasets = ", repr(ft.names))
         for (k, p) in enumerate(ft.params)
             println(out, "\n[[parameter]]\nname = ", repr(p.name), "\ndatasets = ", repr(ft.names[p.datasets]), "\nvalue = ", round(values[k], sigdigits = 7),

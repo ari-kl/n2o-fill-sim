@@ -124,7 +124,8 @@ each other, not as a confidence interval.
 - `evals.csv`: every evaluation (parameter values, score, each dataset's score, failures).
 - `report.txt`.
 - `<date>-<name>.toml`: the **calibration record**. The values, their bounds and spread, the
-  datasets, channels, phases and trust they were fitted against, the RMS reached, the commit, and
-  the identifiability statements. A fitted number without this is a number nobody can check.
+  datasets, channels, phases and trust they were fitted against, the RMS reached, the commit of the fit file's own
+  folder (`commit`) and of the model that ran it (`model_commit`), and the identifiability
+  statements. A fitted number without this is a number nobody can check.
 - with `--write-scenes`, `<dataset>.toml`: a copy of each dataset's scene with the fitted values
   in place and a header saying which fit produced them. The scenes you gave are never modified.
