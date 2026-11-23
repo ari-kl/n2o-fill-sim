@@ -396,8 +396,11 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
   of a fill; no heat is picked up in the hose; and an isolated section of line just holds its
   last pressure. In HF4 the hose was charged before the tank valve opened and the model is about
   100 psi low for the first 10 to 20 s. In HF3 the hose was not pre-charged and the first 20 s
-  agree to 27 psi, which fits that explanation without proving it. To study trapped liquid, put a
-  small Tank where the trapped volume is; there is a test doing exactly that.
+  agree to 27 psi, which fits that explanation without proving it. A small Tank teed onto the
+  fill line was tried as a stand-in for the hose's volume and is not recommended: it behaves as a
+  gas cushion, softens the start of any fill whether or not the hose was pre-charged, and did not
+  improve held-out logs. To study liquid trapped between two shut valves, put a small Tank where
+  the trapped volume is; there is a test doing exactly that.
 - The liquid has a single temperature, with no warm layer at the surface. Vent rebound comes only
   from the lag between liquid and ullage. Section 7 has evidence that this matters in a long hold.
 - Boiling swell is not modelled. In a real tank, bubbles formed in the liquid while venting raise the
@@ -569,7 +572,10 @@ fill). Repeating it with each log held out shows which values are properties of 
 | Vent `Cd`, stand tests | 0.5-1.2 | not determined |
 
 The fit improved two of the four held-out logs and worsened the other two, so its values are not
-in the scenes. `interphase_E` moves no scored number by much between 100 and 2000. The bottle
+in the scenes. `interphase_E` matters only around vents, and there the logs disagree: between 200
+and 2000 the error over HF4's first vent goes from 15 to 30 psi, preferring the low end, while the
+pressure at which LC26 day 4's vent shuts and the 30 s recovery after it prefer the high end. One
+shared value fitted freely improves two held-out logs and worsens two. The bottle
 wall coefficient has no visible effect at all. What moves a result most is what was not recorded:
 how full the bottle was.
 
@@ -587,8 +593,22 @@ saturation temperature of the tank pressure rises 0.8 K/min at 2 °C, falling to
 tube of this size in that day's weather (about 20 °C, 600 W/m² of sun, 2 to 3 m/s of wind) takes
 in roughly 120 to 240 W: about half, steadily through the hold. Either twice the heat reaches the
 tank, or only about half of its heat capacity is warming, as it would if the liquid were layered
-with the warm part on top. One hold cannot tell these apart; temperatures at two or three heights
-on the tank would. The scene's fitted "ambient" of 30 °C for that day stands in for this.
+with the warm part on top.
+
+The second reading is the likelier one. Two limiting cases need no fitted number. If everything
+warms together, the hold's pressure rise (437 to 584 psig in 1060 s) takes 310 to 380 W for 8 to
+12 kg loaded. If all the heat evaporates liquid at the surface and the liquid below does not
+change, it takes 50 to 80 W. The heat available lies between the two, so no extra heat is needed
+if the bulk liquid takes only part. The timescales agree: in this tank heat needs about an hour to
+travel half a metre along the wall and about 40 minutes to diffuse through a centimetre of still
+liquid, and a warm layer on top is stable, so heat entering the upper wall stays near the surface
+for the length of a hold. Self-pressurisation tests on cryogenic tanks show the same thing,
+with measured rise rates from 1.1 to about 5 times the fully mixed rate depending on where the
+heat enters (Aydelott 1967; Van Dresar, Lin and Hasan 1992). The model has one liquid temperature
+and cannot represent this, so a fit raises the outside heat transfer in its place: the fits'
+outside multiplier of about 3 and the scene's fitted "ambient" of 30 °C for that day both stand
+in for a layered liquid and are not heat-transfer results. One hold cannot fix how much of the
+liquid takes part; a temperature near the tank bottom during a hold would.
 
 During a fill the tank is not short of heat; the wall gives its heat up late. With wall
 boiling near its correlation value the single tube temperature follows the logged skin
@@ -750,9 +770,13 @@ would replace them, most valuable first:
 - The supply bottle's weight before and after a fill. How full the bottle was moves the result
   more than any model coefficient, and it was not recorded for any of the four logs.
 - Ambient temperature, sun and wind on the day.
-- Tank temperatures at two or three heights. Of the four logs only LC26 day 4 has any (two
-  thermistors at one height). Thermocouples on the fill and vent lines would show flash and
-  liquid at the vent directly.
+- Tank temperatures at two or three heights, one of them near the bottom. Of the four logs only
+  LC26 day 4 has any (two thermistors at one height, just under the liquid surface). A bottom
+  sensor that lags the saturation temperature during a hold shows a layered liquid directly.
+  Thermocouples on the fill and vent lines would show flash and liquid at the vent.
+- The fill hose's internal volume, or its weight empty and charged. The load cell weighs the
+  nitrous in the hose with the tank (a step of about 0.8 kg), so tank mass during a fill is known
+  only to that step.
 - Vent orifice size; vent and fill valve Cv.
 - Heater power (it turns a heater period into a calibration of the tank's thermal mass).
 - Run tank and bottle dimensions, wall material, thickness and surface finish.
@@ -779,6 +803,10 @@ would replace them, most valuable first:
 - Zimmerman, Waxman, Cantwell and Zilliac, "Review and Evaluation of Models for Self-Pressurizing
   Propellant Tank Dynamics", AIAA 2013-4045 (tank model, Dyer flow model, convection constants).
 - Zilliac and Karabeyoglu, "Modeling of Propellant Tank Pressurization", AIAA 2005-3549.
+- Aydelott, "Normal Gravity Self-Pressurization of 9-Inch-Diameter Spherical Liquid Hydrogen
+  Tankage", NASA TN D-4171 (1967), and Van Dresar, Lin and Hasan, "Self-Pressurization of a
+  Flightweight Liquid Hydrogen Tank: Effects of Fill Level at Low Wall Heat Flux", NASA TM-105411
+  (1992): pressure rise of a sealed tank against the fully mixed and surface-evaporation limits.
 - Churchill, S. W., "Friction-factor equation spans all fluid-flow regimes", Chem. Eng. 84 (1977).
 - Bergman et al., "Fundamentals of Heat and Mass Transfer" (natural convection on a vertical
   surface; Hilpert correlation for a cylinder in cross flow). The constants for these two and for

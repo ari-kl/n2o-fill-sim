@@ -140,7 +140,7 @@ figures described above. The Signals tab plots any recorded signal.
 "Export CSV" writes two files next to the scene:
 
 - `NAME_run.csv`: every signal, in SI units. Per vessel: pressure, liquid/ullage/wall temperature,
-  mass, level, liquid share by volume and by mass, vapour pressure of the liquid, heater on/off.
+  mass, level, liquid share by volume and by mass, vapour pressure of the liquid, heater on/off and the power it delivers.
   Per flow part: mass flow. Per valve: `position` (0 shut to 1 open), `open_cmd` (1 = commanded
   open) and `stuck`. Regulator and relief set-points. Ambient temperature, sun and wind. Per
   gauge: the true pressure and temperature (`P`, `T`) and, if it has a sensor model, its reading
