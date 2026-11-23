@@ -18,7 +18,7 @@ same to the last digit however many threads there are. Each finished run is appe
 `<study file>_results/results.csv`; `--resume` skips the runs already there, and `--keep-traces`
 also writes each run's scored and measured signals to `traces/<n>.csv`.
 
-## The file
+## Study file
 
 ```toml
 scene  = "../scenes/hf4.toml"                 # relative to the study file
@@ -127,7 +127,7 @@ now, whatever the parameters. Short bins therefore count the same information ma
 the fit comes out more confident than the data justify. A bin should be about as long as it takes
 for the model's error to change of its own accord.
 
-### A reading whose zero is unknown
+### Unknown offsets
 
 A load cell that was not tared, or was tared with plumbing
 hanging on it, reads the right changes around the wrong zero. `offset = "free"` on a channel says
@@ -208,7 +208,7 @@ Every row also carries how far the run got (`t_end`), why it failed if it did (`
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
 wall time. A run that cannot be built or does not finish is still a row.
 
-## Screening: which parameters matter
+## Screening
 
 Before fitting ten parameters it is worth knowing which of them the scored numbers respond to at
 all. `mode = "morris"` answers that cheaply, by the method of elementary effects (Morris, 1991).
@@ -249,7 +249,7 @@ Screening says what matters, not what the values are, and not which parameters c
 from each other (two can both matter and still only act together: the "What these data do and do not determine" section of the fit
 report, described in [FITTING.md](FITTING.md), is for that).
 
-## Reading the result
+## Results
 
 `results.csv` opens in any spreadsheet. Two things worth doing with it:
 

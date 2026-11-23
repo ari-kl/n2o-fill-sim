@@ -1,20 +1,20 @@
-# How the model works
+# Model
 
 This page explains what the simulator computes and why, how far it has been checked against real
 fills, and what it leaves out. Read the first part to understand what you are looking at in the
 window. Read the rest before you rely on a number.
 
-- [The short version](#the-short-version): a fill, start to finish, in plain terms
+- [Overview](#overview): a fill, start to finish, in plain terms
 - Sections 1 to 5: how the simulator represents it
-- Section 6: what it leaves out
+- Section 6: limitations
 - Sections 7 and 8: how it compares with four test logs, and what is still open
-- Section 9: property numbers for planning a fill
+- Section 9: property data for planning a fill
 - Section 10: sources
 
 The code works in SI units with absolute pressures. Gauge pressures in the window and in scene
 files are relative to the `P_atm_kPa` setting.
 
-## The short version
+## Overview
 
 Nitrous oxide is stored as a liquid under its own vapour pressure. That one fact explains most of
 what a fill does.
@@ -182,7 +182,7 @@ state and not from fitted curves.
 Every flow part is an effective area times one function: the mass flux G for a given upstream
 state and downstream pressure.
 
-### Why one simple formula is not enough
+### Flashing flow
 
 Cold liquid through an orifice follows the textbook law: flux proportional to the square root of
 the pressure drop. Saturated liquid does not, because it starts to boil as the pressure falls
@@ -198,7 +198,7 @@ through the restriction. Two limits bracket what happens:
 Real flow sits between them, nearer SPI when the liquid is well below its boiling point and nearer
 HEM when it is at it. The model blends the two by how close the liquid is to boiling.
 
-### What the code uses
+### Flux law
 
 | Upstream | Law |
 |---|---|
@@ -220,7 +220,7 @@ HEM when it is at it. The model blends the two by how close the liquid is to boi
   (51 µs against 3.6 µs for saturated liquid at 25 °C), and the window can hitch for up to a
   second when such a bottle is opened into an empty tank.
 
-### From flux to flow: each part's area
+### Effective areas
 
 | Part | Effective area |
 |---|---|
@@ -326,7 +326,7 @@ were closed and brought to 30 °C and 35 °C. It answers "what if this sits in t
 vent shut?". It is a property calculation on (mass, volume, temperature), independent of the
 dynamic model, and it reproduces the liquid-full thresholds in section 9.
 
-## 6. What is left out, and numerical compromises
+## 6. Limitations
 
 Each of these is a deliberate limit. The first is the one most likely to matter.
 
@@ -365,7 +365,7 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
   its length.
 - **The relief valve** has no pop and reseat hysteresis.
 
-## 7. Calibration against HF4
+## 7. Calibration
 
 This section and the next say how far to trust the model. The summary first:
 
@@ -378,7 +378,7 @@ This section and the next say how far to trust the model. The summary first:
 | Which are not? | The boiling factor `interphase_E`, the wall and outside heat-transfer multipliers, the vent coefficient on the test stand. They are published values, not calibrated ones. |
 | Is it validated? | No. It has been fitted to one fill and compared with three more. |
 
-### The HF4 fit
+### HF4
 
 HF4 was a static hot fire on 2026-07-11. `scenes/hf4.toml` is the fill panel and tank as drawn
 in the QRET Chimera Final Design Report (2026), Fig. 35. The logged valve and heater states
@@ -420,7 +420,7 @@ vent.
 This is a fit to one fill with five adjusted numbers. It shows the model has the right structure.
 It is not a validation.
 
-### Independent check: HF3
+### HF3
 
 HF3 (2026-06-07) was a different procedure on the same hardware: AV-203 open first, then one
 unvented fill through AV-201 for 288 s, bottle at 849 psig. The HF4 scene was run against it with
@@ -441,7 +441,7 @@ guess matters. After the fill, HF3's log shows the run heater switched on for 15
 pressure fell about 5 psi; the model with HF4's 300 W rises 20 psi. The log records that the
 heater was switched on, not what it delivered.
 
-### Speed
+### Performance
 
 The 990 s HF4 replay takes about 0.3 s (559 solver steps, about 230,000 equation-of-state
 evaluations). In the window at ×1 the solver uses a few hundredths of a millisecond of a typical
@@ -450,7 +450,7 @@ heated until supercritical, and random plumbing from default parts); chains of c
 regulators are the remaining weak spot, with junction solves that fail to settle and frames of up
 to about 0.6 s. `test/bench.jl` prints these numbers.
 
-### Further checks: HF3 cold flow and LC26 day 4
+### HF3 cold flow and LC26 day 4
 
 Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (data in
 `test/data`).
@@ -532,7 +532,7 @@ it and none is in the code.
 valve in pulses of about a second, and the bottle-side pressure score over that period moves
 between 42 and 55 psi RMS with the solver tolerance alone. Use bins or features there.
 
-## 8. Reading the two logs
+## 8. Sensor notes
 
 Two things about the HF4 and HF3 logs matter when comparing the model with them.
 
@@ -557,7 +557,7 @@ about 33 °C.
   load cell, with no vent event, climbs smoothly and agrees with the model.
 - With the tank isolated during heating it climbs 0.36 kg with no flow at all.
 
-## 9. Background numbers for planning a fill
+## 9. Reference data
 
 Property values are for saturated N2O; gauge pressures use 14.4 psi for the atmosphere. The tests
 check these tables against the property code.
@@ -619,7 +619,7 @@ local atmospheric pressure (a setting here). A thermocouple needs better than ±
 1 °C is 14 to 21 psi. Pressure above the vapour pressure of the bulk liquid means a warm surface
 layer or a sensor problem.
 
-### Inputs worth measuring
+### Recommended measurements
 
 Several inputs in the scene files are guesses (marked `[guess]` or `[fit]`). Measuring these
 would replace them, most valuable first:

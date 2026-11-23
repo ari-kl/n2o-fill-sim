@@ -5,7 +5,7 @@ draw its readings next to the model's. This file says how the columns of a log a
 by name or through a manifest, and gives the manifest format. Read it before replaying a log of
 your own, or scoring a study or a fit against one.
 
-## Reading a log by column names
+## Column names
 
 `--replay log.csv`, or "Load test log..." with a CSV, guesses what each column is from its name.
 The first column is time. Rows closer together than 0.05 s are skipped, so a long log is thinned
@@ -88,7 +88,7 @@ shifted, is left as it is. This holds for estimated and given offsets alike. Eac
 such rows is reported as a warning, and they are left out when the offset is estimated. For a
 board whose own offset is smaller than `already_aligned_s` the rule changes nothing.
 
-### The grid
+### Sampling grid
 
 Each grid point takes the median of the readings within half a `sample_dt` either side (for
 valves and heaters, the last state in that interval). **An interval with no reading is left
@@ -103,7 +103,7 @@ long; a kept change is therefore reported up to that much late.
 second. A part's state at the start of the log is not an event. A `to` without `#n` is the first
 such event after `from`.
 
-### Errors and known conversions
+### Errors and conversions
 
 An unknown key, a missing column, a valve without `one_means` or a phase event that never happens
 stops the load with a message; nothing is skipped quietly.
@@ -113,7 +113,7 @@ reading whose zero is not known (an untared load cell) is dealt with when a run 
 `offset = "free"` or `"per_phase"` on a `[score]` channel: see [STUDIES.md](STUDIES.md). The
 manifest describes only what the log says.
 
-### Drafting and extracting
+### Commands
 
 ```
 julia --project bin/n2o-fill-sim.jl manifest suggest log.csv scene.toml

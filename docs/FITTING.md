@@ -25,7 +25,7 @@ determine that number is a separate question, and the report answers it: it name
 parameters the data cannot tell apart, and every combination of parameters that could change
 without changing any reading.
 
-## The file
+## Fit file
 
 ```toml
 name = "wall-model"
@@ -76,7 +76,7 @@ RMS difference over a phase, or its mean difference over a time bin with `bin_s`
 by how far that reading can be trusted (`sigma`), and every target over its tolerance, over all
 datasets together (`weight` scales a whole dataset). See [STUDIES.md](STUDIES.md).
 
-## Setting up a fit
+## Setup
 
 A fit always returns numbers. Whether they mean anything is decided before it runs, by these
 five choices.
@@ -101,7 +101,7 @@ five choices.
    before (next section). A fit that improves its own logs and worsens the one it did not see
    has fitted those logs, not the hardware.
 
-## Checking a fit on a log it never saw
+## Hold-out
 
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml --holdout coldflow
@@ -122,7 +122,7 @@ The report and the calibration record give each fitted dataset's own score, and 
 one its score with the fitted values beside its score with every parameter at its start value.
 If the second is the better of the two, the fit made the model worse at predicting.
 
-## Profiling a parameter
+## Profiles
 
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml --profile VENT_ORIFICE.Cd --profile-n 9
@@ -149,7 +149,7 @@ worth the cost because it assumes nothing: the spread and the correlations in th
 from straight-line sensitivities at one point, which is a poor description of a long curved
 valley. If the model fails at one of the values, no verdict is given.
 
-## How it searches
+## Search
 
 Optionally a Latin hypercube over the bounds (`explore`) to find a good place to start. Then, by
 default, the Levenberg-Marquardt method (`method = "lm"`): at each iteration it takes the
@@ -167,7 +167,7 @@ Either finds a nearby minimum, not necessarily the best one. `evals.csv` records
 if the exploratory runs show several separate good regions, the fit is telling you the problem has
 more than one answer.
 
-### Runs that fail
+### Failed runs
 
 A parameter set for which a dataset cannot be simulated to the end (the
 solver fails, or it takes more than `work_limit` part-flow evaluations) is not scored as a bad
@@ -176,7 +176,7 @@ limit counts work done, not seconds, so the result does not depend on how busy t
 If the best points sit next to failed ones, the model's ability to run is deciding the answer,
 not the data: look at why they fail.
 
-## The report
+## Report
 
 `<fit file>_results/report.txt`, also printed, has these sections. With `--holdout` and `--profile`
 it also has the held-out dataset's scores and the profile.
@@ -213,7 +213,7 @@ for the real number of independent readings in a time series (and too generous i
 see "Time bins" in [STUDIES.md](STUDIES.md)). Use it to compare parameters with each other, not as a
 confidence interval.
 
-## What it writes
+## Output files
 
 Everything goes in `<fit file>_results/`.
 

@@ -15,8 +15,6 @@ leave a valve stuck. Think of it as LTspice for a nitrous fill.
 
 ![A recorded fill replayed: the plumbing coloured by pressure while the tank vents, with the logged pressures and load cell overlaid on the plots](docs/screenshot.png)
 
-What it is for:
-
 - **Building intuition.** Why a fill stalls, what a vent pulse actually buys, how fast a closed
   tank warms. [docs/MODEL.md](docs/MODEL.md) starts with a plain-language account of the physics.
 - **Replaying a real fill.** Load a telemetry log, replay its valve sequence through the model,
@@ -53,7 +51,7 @@ Nothing is fetched at run time. To use it somewhere without a network, run `Pkg.
 for the project and for `test/` beforehand, start the program once, and set
 `JULIA_PKG_OFFLINE=true`. `Manifest.toml` is committed, so every machine gets the same versions.
 
-## A five-minute tour
+## First run
 
 The repository includes a real fill to play with: `scenes/hf4.toml` is the fill plumbing of a
 student hybrid motor's test stand, and `test/data/hf4_fill_10hz.csv` is the telemetry from a
@@ -80,7 +78,7 @@ if the tank were sealed and left to warm to 30 °C and 35 °C.
 place them, and click one pin and then another to wire them. A new, empty schematic offers the
 example scenes to start from.
 
-## The window
+## Window
 
 ### Editing
 
@@ -115,7 +113,7 @@ are listed in red at the bottom of the Build tab.
 If the simulation cannot keep up with the speed asked for, it falls behind instead of stuttering,
 and the panel shows the speed achieved.
 
-### Reading the schematic
+### Schematic symbols
 
 | Symbol | Meaning |
 |---|---|
@@ -133,7 +131,7 @@ The View tab sets units and colours the plumbing by pressure, temperature or vap
 wire is one colour, because a wire has no pressure drop in this model; the step in colour across
 a part is the drop that part causes.
 
-### Tabs and export
+### Tabs and CSV export
 
 The Tanks tab shows each tank's pressure, liquid share and temperatures, and the warm-soak
 figures described above. The Signals tab plots any recorded signal.
@@ -150,7 +148,7 @@ figures described above. The Signals tab plots any recorded signal.
 
 On WSL the window is software-rendered at 10-20 ms a frame; on Windows it draws on the GPU.
 
-## Running without the window
+## Command line
 
 `--headless` runs the schedule or a replay with no window and prints a summary. Changes go on the
 command line, so a scene file does not have to be edited to try something:
@@ -261,7 +259,7 @@ action = "open"           # open, close, stuck_open, stuck_closed, unstick (valv
 | Atmosphere | Where vented nitrous goes; totals what was lost |
 | Junction, Gauge | A tee; a pressure and temperature reading |
 
-Rules worth knowing:
+Wiring rules:
 
 - Wires are ideal, so everything wired together is one point.
 - A Bottle or Tank cannot be wired straight to another vessel or to Atmosphere. Put a valve,
@@ -274,7 +272,7 @@ Rules worth knowing:
 Every parameter of every part kind, with its meaning, is in one table at the top of
 `src/scene.jl`; the property panel shows the same text.
 
-## How far to trust it
+## Accuracy and limitations
 
 The model has the right structure and the right fluid properties. It has been fitted to one fill
 and compared with three more. It is not validated. [docs/MODEL.md](docs/MODEL.md) has the detail;
@@ -287,8 +285,6 @@ in short:
 | Tank pressure through the fast part of a fill | 15 to 60 psi off. The middle of a fill is too quick in the model, and the first 20 s are not modelled at all. |
 | Loaded mass at the end of a fill | Within about 0.5 kg of the load cell on the three tests that have one. |
 | A long sealed hold | The tank warms about twice as fast as the model's outside heat allows. The cause is open. |
-
-Things to keep in mind:
 
 - Several inputs are guesses nobody has measured, above all how full the supply bottle was. They
   are marked `[guess]` or `[fit]` in the scene files, and MODEL.md lists what to measure.
@@ -310,7 +306,7 @@ julia --project test/stress.jl            # worst cases: a supercritical bottle,
 
 `test/` needs its own `Pkg.instantiate()` once (it adds CoolProp, to check the property code).
 
-## Layout
+## Repository layout
 
 ```
 n2o-fill-sim.cmd      Windows launcher
