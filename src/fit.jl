@@ -438,8 +438,7 @@ function fit(path; write_scenes = false, quiet = false)
         for (k, name) in enumerate(ft.names)
             st = ft.datasets[k]
             println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until)
-            println(out, "channels = [", join(["{ log = $(repr(c.log)), model = $(repr(c.model)), sigma = $(c.sigma), weight = $(c.weight)" * (c.offset ? ", offset = \"free\"" : "") *
-                                             (c.correct === nothing ? "" : ", correct = { by = $(repr(c.correct[1])), per_unit = $(c.correct[2]) }") * " }" for c in st.channels], ", "), "]")
+            println(out, "channels = [", join(["{ log = $(repr(c.log)), model = $(repr(c.model)), sigma = $(c.sigma), weight = $(c.weight), offset = $(repr(c.offset)) }" for c in st.channels], ", "), "]")
             println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
             println(out, "scored = [", join(["{ name = $(repr(g.name)), sigma = $(round(g.sigma, sigdigits = 6)) }" for g in st.scored], ", "), "]")
             isempty(st.targets) || println(out, "targets = [", join(["{ name = $(repr(g.name)), " * join(["$k = $(v isa AbstractString ? repr(v) : v)" for (k, v) in sort!(collect(g.m); by = first)], ", ") * " }" for g in st.targets], ", "), "]")

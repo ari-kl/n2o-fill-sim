@@ -70,10 +70,9 @@ Rules worth knowing:
   `"AV201 open#2"` the second. A part's state at the start of the log is not an event. A `to`
   without `#n` is the first such event after `from`.
 - **What a manifest does not do.** `gain` and `offset` here are known conversions, applied once
-  when the log is read. A reading whose zero is *not* known (an untared load cell), or one that
-  creeps with another reading, is dealt with when a run is scored, by `offset = "free"` and
-  `correct` on a `[score]` channel: see docs/STUDIES.md. The manifest still describes only what
-  the log says.
+  when the log is read. A reading whose zero is *not* known (an untared load cell) is dealt with
+  when a run is scored, by `offset = "free"` or `"per_phase"` on a `[score]` channel: see
+  docs/STUDIES.md. The manifest still describes only what the log says.
 - **Mistakes are errors.** An unknown key, a missing column, a valve without `one_means` or a
   phase event that never happens stops the load with a message; nothing is skipped quietly.
 

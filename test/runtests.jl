@@ -645,42 +645,48 @@ end
     @test record["dataset"][1]["scored"][end]["sigma"] ≈ sqrt(1 + 25^2) rtol = 1e-5
 end
 
-@testset "scoring: a channel whose zero is unknown, corrected for creep with another channel" begin
+@testset "scoring: a channel whose zero is unknown, for the whole run or phase by phase" begin
     dir = mktempdir()
-    # A load cell that was not tared (it reads 3.2 kg high) and creeps by 0.004 kg per psi of tank pressure.
-    psig(sim, t) = (F.signal_at(sim, "TANK.P", t) - 101325) / F.PSI
-    made_up_log(joinpath(dir, "log.csv"); more = ["LC_kg" => (sim, t) -> F.signal_at(sim, "TANK.m", t) + 3.2 + 0.004 * psig(sim, t)])
+    # A load cell that was not tared (it reads 3.2 kg high), and that steps down by 0.8 kg as the vent valve shuts at 15 s.
+    made_up_log(joinpath(dir, "log.csv"); more = ["LC_kg" => (sim, t) -> F.signal_at(sim, "TANK.m", t) + 3.2,
+                                                  "LC_step_kg" => (sim, t) -> F.signal_at(sim, "TANK.m", t) + 3.2 - (t >= 15 ? 0.8 : 0.0)])
     F.save_scene(joinpath(dir, "rig.toml"), scoring_rig(bottle_T = 27.0))
-    study(options) = (p = joinpath(dir, "s$(hash(options)).toml"); write(p, """
+    study(channel) = (p = joinpath(dir, "s$(hash(channel)).toml"); write(p, """
         scene = "rig.toml"
         replay = "log.csv"
         [set]
         "FILL.d_mm" = 4
         [score]
-        channels = [{ log = "LC_kg", model = "TANK.m"$options }]
-        phases = { venting = [1, 15], closed = [15, 30] }
+        channels = [{ $channel, model = "TANK.m" }]
+        phases = { venting = [1, 14.9], closed = [15, 30] }
         """); p)
-    run(options) = (st = F.read_study(study(options)); (st, F.score_run(st, F.simulate(st, [])[1])))
+    run(channel) = (st = F.read_study(study(channel)); (st, F.score_run(st, F.simulate(st, [])[1])))
     # scored as it stands, the model at the log's own values looks more than 3 kg out
-    st, s = run("")
-    @test all(>(3.2), last.(s.rms)) && isempty(s.offsets)
-    # with the zero free, what is left is the creep: small, and not nothing
-    st, s = run(", offset = \"free\"")
-    p1 = st.cols["PT_psig"][findfirst(==(1.0), st.t_log)]
-    @test all(x -> 0.02 < x < 0.5, last.(s.rms)) && first(s.offsets[1]) == "offset.LC_kg"
-    # with the creep taken out as well, the model lies on the log (to the log's four decimals),
-    # and the offset is what the load cell read too much at the first scored sample
-    st, s = run(", offset = \"free\", correct = { by = \"PT_psig\", per_unit = 0.004 }")
-    @test all(<(2e-3), last.(s.rms)) && isapprox(last(s.offsets[1]), -(3.2 + 0.004 * p1); atol = 2e-3)
-    @test st.cols["LC_kg"] !== st.channels[1].y && st.channels[1].y[3] == st.cols["LC_kg"][3]      # the log itself is untouched; sample 3 is t = 1 s
-    # the offset is a column of the results
-    lines = readlines(F.study(study(", offset = \"free\""); quiet = true))
-    @test parse(Float64, split(lines[2], ',')[findfirst(==("offset.LC_kg"), split(lines[1], ','))]) ≈ last(run(", offset = \"free\"")[2].offsets[1]) rtol = 1e-6
-    @test_throws ErrorException F.read_study(study(", offset = \"yes\""))
-    @test_throws ErrorException F.read_study(study(", correct = { by = \"PT9_psig\", per_unit = 0.004 }"))
-    @test_throws ErrorException F.read_study(study(", correct = { by = \"PT_psig\" }"))
-    @test_throws ErrorException F.read_study(study(", ofset = \"free\""))
-    # a fit on the mass alone, zero unknown: the bottle temperature is found from how the mass changes
+    st, s = run("log = \"LC_kg\"")
+    @test all(>(3.1), last.(s.rms)) && isempty(s.offsets)
+    # with the zero free the model lies on the log, and the offset is what the load cell read too much
+    st, s = run("log = \"LC_kg\", offset = \"free\"")
+    @test all(<(0.01), last.(s.rms)) && first.(s.offsets) == ["offset.LC_kg"] && isapprox(last(s.offsets[1]), -3.2; atol = 0.01)
+    # one offset for the run cannot follow a zero that jumps: half the step is left in each phase
+    st, s = run("log = \"LC_step_kg\", offset = \"free\"")
+    @test all(x -> 0.3 < x < 0.5, last.(s.rms))
+    # an offset for each phase can, and both are reported
+    st, s = run("log = \"LC_step_kg\", offset = \"per_phase\"")
+    @test all(<(0.01), last.(s.rms)) && first.(s.offsets) == ["offset.LC_step_kg.closed", "offset.LC_step_kg.venting"]
+    @test isapprox(last(s.offsets[1]), -2.4; atol = 0.01) && isapprox(last(s.offsets[2]), -3.2; atol = 0.01)
+    # but then only changes inside a phase are scored: a run that loads the wrong mass by the end of
+    # the venting phase and then tracks the log is not told apart by the closed phase
+    wrong = F.simulate(st, [])[1]
+    wrong.hist["TANK.m"] .+= [t >= 15 ? 1.0 : t / 15 for t in wrong.t_hist]
+    sw = Dict(F.score_run(st, wrong).rms)
+    @test sw["rms.LC_step_kg.closed"] < 0.01 && sw["rms.LC_step_kg.venting"] > 0.2
+    # the offsets are columns of the results
+    lines = readlines(F.study(study("log = \"LC_step_kg\", offset = \"per_phase\""); quiet = true))
+    @test isapprox(parse(Float64, split(lines[2], ',')[findfirst(==("offset.LC_step_kg.venting"), split(lines[1], ','))]), -3.2; atol = 0.01)
+    @test_throws ErrorException F.read_study(study("log = \"LC_kg\", offset = \"yes\""))
+    @test_throws ErrorException F.read_study(study("log = \"LC_kg\", ofset = \"free\""))
+    @test_throws ErrorException F.read_study(study("log = \"LC_kg\", correct = { by = \"PT_psig\", per_unit = 0.004 }"))
+    # a fit on the mass alone, its zero unknown in each phase: the bottle temperature is found from how the mass changes
     write(joinpath(dir, "fit.toml"), """
         max_evals = 25
         jacobian_reltol = 1e-5
@@ -690,8 +696,8 @@ end
         replay = "log.csv"
         set = { "FILL.d_mm" = 4 }
         [dataset.score]
-        channels = [{ log = "LC_kg", model = "TANK.m", sigma = 0.01, offset = "free", correct = { by = "PT_psig", per_unit = 0.004 } }]
-        phases = { venting = [1, 15], closed = [15, 30] }
+        channels = [{ log = "LC_step_kg", model = "TANK.m", sigma = 0.01, offset = "per_phase" }]
+        phases = { venting = [1, 14.9], closed = [15, 30] }
         bin_s = 5
         [[parameter]]
         name = "BOTTLE.T_C"
@@ -702,8 +708,8 @@ end
     r = F.fit(joinpath(dir, "fit.toml"); quiet = true)
     @test abs(r.values["BOTTLE.T_C"] - 27) < 0.2
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))["dataset"][1]
-    @test isapprox(record["offset"]["LC_kg"], -(3.2 + 0.004 * p1); atol = 0.01) && record["channels"][1]["offset"] == "free" && record["channels"][1]["correct"]["per_unit"] == 0.004
-    @test occursin("offset.LC_kg", read(joinpath(r.dir, "report.txt"), String))
+    @test isapprox(record["offset"]["LC_step_kg.closed"], -2.4; atol = 0.02) && record["channels"][1]["offset"] == "per_phase"
+    @test occursin("offset.LC_step_kg.venting", read(joinpath(r.dir, "report.txt"), String))
 end
 
 @testset "scoring: targets (a feature of the log against the same feature of the model), slope, windows" begin
