@@ -346,7 +346,7 @@ function identifiability(J, labels)
 end
 
 """
-    fit(path; write_scenes = false, holdout = nothing, quiet = false) -> report
+    fit(path; write_scenes = false, holdout = nothing, profile = nothing, profile_n = 9, quiet = false) -> report
 
 Run the fit in `path`. Optionally explore the bounds first with a Latin hypercube, then search from
 the best point found (or from the given starts) with Levenberg-Marquardt (or Nelder-Mead, once and
@@ -357,10 +357,12 @@ record `<date>-<name>.toml`, and with `write_scenes` a copy of each dataset's sc
 values in place and a note of where each came from.
 
 `holdout` names a dataset to leave out of the fit and then predict with the fitted values: a check
-on a log the fit never saw.
+on a log the fit never saw. `profile` names a fitted parameter (by its label in the report) to
+profile afterwards: see `profile_parameter`.
 """
-function fit(path; write_scenes = false, holdout = nothing, quiet = false)
+function fit(path; write_scenes = false, holdout = nothing, profile = nothing, profile_n = 9, quiet = false)
     ft = read_fit(path; holdout)
+    profile === nothing || any(p -> p.label == profile, ft.params) || error("$path: no fitted parameter called \"$profile\" to profile. Parameters: $(join((p.label for p in ft.params), ", "))")
     mkpath(ft.dir)
     np = length(ft.params)
     say(args...) = quiet || println(args...)
@@ -443,6 +445,7 @@ function fit(path; write_scenes = false, holdout = nothing, quiet = false)
         score, readings, why = predict(values)
         held = (; name = ft.held_name, score, start_score = predict([p.start for p in ft.params])[1], readings, failed = why)
     end
+    prof = profile === nothing ? nothing : profile_parameter(ft, x, findfirst(p -> p.label == profile, ft.params); n = profile_n)
     io = IOBuffer()
     println(io, "Fit \"", ft.name, "\"    score ", round(fx, digits = 4), " (", round(f0, digits = 3), " at the start), ", evals[], " evaluations")
     println(io, "\nParameters (± is approximate: one scored number counted as one observation)")
@@ -470,6 +473,13 @@ function fit(path; write_scenes = false, holdout = nothing, quiet = false)
     println(io, "\nWhat these data do and do not determine")
     isempty(statements) ? println(io, "  Every parameter is separately determined (no correlation over 0.9, no undetermined combination).") :
                           foreach(s -> println(io, "  - ", s), statements)
+    if prof !== nothing
+        println(io, "\nProfile of ", profile, " (held at each value in turn, the others refitted): ", basename(prof.file))
+        for (v, sc) in zip(prof.values, prof.scores)
+            println(io, "    ", rpad(round(v, sigdigits = 5), 14), isnan(sc) ? "the model fails here" : string(round(sc, sigdigits = 5)))
+        end
+        println(io, "  ", prof.verdict)
+    end
     println(io, "\nSensitivities were taken with steps of ", ft.jac_step, " of each parameter's range at solver tolerance ", ft.jac_reltol, ".")
     report = String(take!(io))
     write(joinpath(ft.dir, "report.txt"), report)
@@ -498,6 +508,7 @@ function fit(path; write_scenes = false, holdout = nothing, quiet = false)
             println(out, "name = ", repr(held.name), "\nscore = ", isnan(held.score) ? "nan" : round(held.score, sigdigits = 6), "\nstart_score = ", isnan(held.start_score) ? "nan" : round(held.start_score, sigdigits = 6))
             println(out, "readings = { ", join(["$(repr(key)) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in held.readings], ", "), " }")
         end
+        prof === nothing || println(out, "\n[profile]\nparameter = ", repr(profile), "\nvalues = ", prof.values, "\nscores = [", join((isnan(v) ? "nan" : string(round(v, sigdigits = 6)) for v in prof.scores), ", "), "]\nflat = ", prof.flat, "\nverdict = ", repr(prof.verdict))
         println(out, "\nidentifiability = ", _list(statements))
     end
     if write_scenes
@@ -513,7 +524,48 @@ function fit(path; write_scenes = false, holdout = nothing, quiet = false)
     end
     say("\n", report, "\nwritten: ", joinpath(ft.dir, "report.txt"), ", ", record)
     (; score = fx, start_score = f0, values = Dict(labels .=> values), spread = Dict(labels .=> spread), statements, rms = Dict(ft.names .=> rms), evals = evals[], dir = ft.dir,
-       scores = Dict(ft.names .=> each), holdout = held)
+       scores = Dict(ft.names .=> each), holdout = held, profile = prof)
+end
+
+"""
+    profile_parameter(fit, x, k; n = 9, flat = 0.05) -> (; file, values, scores, flat, verdict)
+
+The profile of fitted parameter `k`: hold it at `n` values across its bounds, and at its fitted
+value, and at each refit all the others (Levenberg-Marquardt from the best point `x`). The best score reached at each value
+is the profile. Where it rises steeply either side of the fitted value, the data pin the parameter.
+Where it is flat, the other parameters can make up for any value of this one: the data do not
+determine it, whatever spread the fit reported (that spread assumes the model is a straight line
+near the best point; the profile assumes nothing).
+
+"Flat" is stated: the score rises by less than `flat` (5 %) of its lowest value across the whole
+range. No verdict is given if the model failed at any of the values. Writes `profile_<label>.csv`
+with the value, the score and the other parameters' refitted values.
+"""
+function profile_parameter(ft::Fit, x, k; n = 9, flat = 0.05)
+    p, others = ft.params[k], setdiff(eachindex(ft.params), k)
+    numbers = sum(n_scored, ft.datasets)
+    rows = map(sort!(unique!(vcat(range(0, 1; length = n), x[k])))) do u     # the fitted value itself is one of the points
+        at(xo) = (y = copy(x); y[k] = u; y[others] = xo; y)
+        residuals(xs) = [all(isempty, e[3]) ? e[1] : nothing for e in _evaluate_all(ft, at.(xs))]
+        try
+            xo, S = isempty(others) ? (Float64[], sum(abs2, something(residuals([Float64[]])[1], NaN))) : levenberg_marquardt(residuals, x[others]; max_evals = ft.max_evals)
+            (_value(p, u), sqrt(S / numbers), [_value(ft.params[j], v) for (j, v) in zip(others, xo)])
+        catch                                                  # the model fails with the parameter held here
+            (_value(p, u), NaN, fill(NaN, length(others)))
+        end
+    end
+    file = joinpath(ft.dir, "profile_" * replace(p.label, r"[^A-Za-z0-9._@+-]" => "_") * ".csv")
+    open(file, "w") do io
+        println(io, join(vcat("value", "score", [ft.params[j].label for j in others]), ","))
+        foreach(r -> println(io, join((isnan(v) ? "" : string(round(v, sigdigits = 7)) for v in vcat(r[1], r[2], r[3])), ",")), rows)
+    end
+    scores = [r[2] for r in rows]
+    rise = (maximum(scores) - minimum(scores)) / minimum(scores)
+    is_flat = !any(isnan, scores) && rise < flat
+    verdict = any(isnan, scores) ? "No verdict: the model failed at $(count(isnan, scores)) of the $(length(scores)) values." :
+              is_flat ? "Flat: the score rises by $(round(100 * rise, sigdigits = 2)) % across the whole range (under $(round(Int, 100 * flat)) %). $(p.label) is not determined by these data: fix it at a measured or published value." :
+              "The score rises by $(round(100 * rise, sigdigits = 3)) % from its lowest (at $(round(rows[argmin(scores)][1], sigdigits = 4))) across the range ($(round(Int, 100 * flat)) % or more): these data constrain $(p.label)."
+    (; file, values = [r[1] for r in rows], scores, flat = is_flat, verdict)
 end
 
 # Each dataset's own score from the combined residual vector.

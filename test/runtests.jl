@@ -904,6 +904,54 @@ end
     @test r2.holdout.score > 3 * r.holdout.score
 end
 
+@testset "fitting: the profile of a parameter" begin
+    dir = mktempdir()
+    made_up_log(joinpath(dir, "log.csv"))
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    file = joinpath(dir, "fit.toml")
+    # the bottle temperature is what the log is about; the tank heater is never switched on, so its power changes nothing
+    write(file, """
+        max_evals = 20
+        jacobian_reltol = 1e-5
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        set = { "FILL.d_mm" = 4 }
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "TANK.P", sigma = 0.5 }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        bin_s = 5
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 24
+        [[parameter]]
+        name = "TANK.heater_W"
+        from = 0
+        to = 200
+        start = 50
+        """)
+    @test_throws ErrorException F.fit(file; profile = "BOTTLE.T", quiet = true)                # no such parameter
+    r = redirect_stdout(() -> F.main(["fit", file, "--profile", "BOTTLE.T_C", "--profile-n", "3"]), devnull)
+    @test abs(r.values["BOTTLE.T_C"] - 27) < 0.2
+    # held at 15, 23.5 and 32 °C the score cannot be brought down by the other parameter: the data constrain it.
+    # The fitted value is a point of the profile too, and its lowest.
+    @test r.profile.values[[1, 2, 4]] == [15.0, 23.5, 32.0] && r.profile.values[3] ≈ r.values["BOTTLE.T_C"] && argmin(r.profile.scores) == 3
+    @test !r.profile.flat && all(>(10 * r.score), r.profile.scores[[1, 2, 4]]) && occursin("constrain", r.profile.verdict)
+    rows = split.(readlines(joinpath(r.dir, "profile_BOTTLE.T_C.csv")), ',')
+    @test rows[1] == ["value", "score", "TANK.heater_W"] && length(rows) == 5 && isapprox(parse(Float64, rows[3][2]), r.profile.scores[2]; rtol = 1e-5)
+    record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
+    @test record["profile"]["parameter"] == "BOTTLE.T_C" && record["profile"]["flat"] == false
+    @test occursin("Profile of BOTTLE.T_C", read(joinpath(r.dir, "report.txt"), String))
+    @test countlines(joinpath(r.dir, "evals.csv")) == r.evals + 1                              # the profile's runs are not part of the search's log
+    # the heater's profile is flat from one bound to the other: the fit says so instead of giving it a value
+    r = F.fit(file; profile = "TANK.heater_W", profile_n = 3, quiet = true)
+    @test r.profile.flat && occursin("not determined by these data", r.profile.verdict) && maximum(r.profile.scores) < 1.05 * r.score
+    @test any(occursin("TANK.heater_W has no measurable effect", t) for t in r.statements)
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

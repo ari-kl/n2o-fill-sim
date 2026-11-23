@@ -6,6 +6,7 @@ and then says how well those logs determine each value.
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml [--write-scenes]
 julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml --holdout coldflow      # leave one log out, then predict it
+julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml --profile VENT_ORIFICE.Cd [--profile-n 9]
 julia --project bin/n2o-fill-sim.jl fit --init scenes/hf4.toml      # a draft fit file from the scene's [fit] tags
 ```
 
@@ -110,6 +111,31 @@ The report and the calibration record give each fitted dataset's own score, and 
 one its score with the fitted values beside its score with every parameter at its start value.
 If the second is the better of the two, the fit made the model worse at predicting.
 
+## Profiling a parameter
+
+    fit myfit.toml --profile VENT_ORIFICE.Cd --profile-n 9
+
+After the fit, the named parameter (by its label in the report, so `BOTTLE.fill_kg@hf4` for one
+that belongs to a dataset) is held at each of 9 values evenly across its bounds, and at its fitted
+value, and at each one **all the other parameters are fitted again**, starting from the best point.
+The best score reached at each value is the parameter's profile, written to
+`profile_<label>.csv` with the other parameters' refitted values.
+
+- A profile that rises steeply either side of the fitted value: the data pin the parameter.
+- A **flat** profile: whatever value this parameter is given, the others can make up for it. The
+  data do not determine it. The rule used is stated in the report: the score rises by less than
+  5 % of its lowest value across the whole range. Fix such a parameter at a measured or published
+  value and take it out of the fit.
+- A profile flat on one side only gives a bound, not a value.
+
+The other columns of the file show *which* parameters did the making up: one that swings across
+its range as the profiled one moves is its partner.
+
+This costs a full fit per value, so use it on the parameters the report is doubtful about. It is
+worth the cost because it assumes nothing: the spread and the correlations in the report come
+from straight-line sensitivities at one point, which is a poor description of a long curved
+valley. If the model fails at one of the values, no verdict is given.
+
 ## How it searches
 
 Optionally a Latin hypercube over the bounds (`explore`) to find a good place to start. Then, by
@@ -165,6 +191,8 @@ confidence interval.
 - `<date>-<name>.toml`: the **calibration record**. The values, their bounds and spread, the
   datasets, channels, phases, scored numbers and trust they were fitted against, the RMS reached, the commit of the fit file's own
   folder (`commit`) and of the model that ran it (`model_commit`), the
-  identifiability statements; with `--holdout`, the held-out dataset's scores under `[holdout]`. A fitted number without this is a number nobody can check.
+  identifiability statements; with `--holdout`, the held-out dataset's scores under `[holdout]`;
+  with `--profile`, the profile and its verdict under `[profile]`. A fitted number without this is a number nobody can check.
+- with `--profile`, `profile_<label>.csv`.
 - with `--write-scenes`, `<dataset>.toml`: a copy of each fitted dataset's scene with the fitted values
   in place and a header saying which fit produced them. The scenes you gave are never modified.
