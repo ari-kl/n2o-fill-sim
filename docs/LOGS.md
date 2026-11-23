@@ -113,6 +113,11 @@ reading whose zero is not known (an untared load cell) is dealt with when a run 
 `offset = "free"` or `"per_phase"` on a `[score]` channel: see [STUDIES.md](STUDIES.md). The
 manifest describes only what the log says.
 
+What a manifest cannot express (a lag, a range limit, a load cell that steps when the hose is
+charged) goes on the model's side: a Gauge or LoadCell in the scene is given the instrument's
+behaviour and the channel's `maps_to` names its reading, `"PT202.P_read"` or `"LC.m_read"`
+([MODEL.md](MODEL.md) section 8; STUDIES.md, "Sensor readings").
+
 ### Commands
 
 ```

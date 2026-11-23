@@ -154,6 +154,33 @@ score nothing. A phase scored whole then says only how well the shape inside it 
 at all. If the offsets found for neighbouring phases differ by more than the reading could have
 stepped, the model moved a different mass between them than the test did.
 
+### Sensor readings
+
+A channel or a target can name an instrument's reading as its model signal: `model =
+"PT202.P_read"`, `"PT202.T_read"`, or a load cell's `"LC.m_read"`. The reading carries the
+sensor parameters set on that Gauge or LoadCell in the scene (offset, gain, lag, range, the hose
+step; [MODEL.md](MODEL.md) section 8), which can be set per run with `set`, swept, or fitted like
+any other parameter. A gauge with no sensor parameter set records no reading; in `[score]` and
+`[targets]` its `P_read` and `T_read` then mean its true `P` and `T`, so a fit may start a
+sensor parameter from its default. Metrics, `[bands]` and `--columns` take recorded signals
+only.
+
+Which tool for an instrument that reads off:
+
+- A fixed offset or scale that is known (from a calibration, or from a stretch of the log where
+  the truth is known) belongs in the manifest (`gain`, `offset`: the log is corrected as it is
+  read) or on the gauge (`offset_psi`, `offset_kg`: the model reports what the instrument would).
+  Use one, not both. The manifest is the place when the number belongs to the log file; the
+  gauge when it should show in the window and the exported run, or when it is to be fitted.
+- An offset that is not known belongs in the score: `offset = "free"`, or `"per_phase"` if it
+  also jumps. Nothing is fitted and the channel then only scores changes. Fitting `offset_psi`
+  instead spends a parameter to learn the same number and keeps the absolute level in the
+  score, which is only worth it if something else in the log pins that level down.
+- A lag, a range limit or a hose step is not an offset and no score setting stands in for it:
+  put it on the instrument and score against the reading.
+
+A lagged reading depends a little on `sample_dt`; see the note on the lag in MODEL.md section 8.
+
 ### Stated model error
 
 Sometimes the model is known to be wrong in one stretch of a test: it

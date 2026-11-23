@@ -142,7 +142,9 @@ figures described above. The Signals tab plots any recorded signal.
 - `NAME_run.csv`: every signal, in SI units. Per vessel: pressure, liquid/ullage/wall temperature,
   mass, level, liquid share by volume and by mass, vapour pressure of the liquid, heater on/off.
   Per flow part: mass flow. Per valve: `position` (0 shut to 1 open), `open_cmd` (1 = commanded
-  open) and `stuck`. Regulator and relief set-points. Ambient temperature, sun and wind.
+  open) and `stuck`. Regulator and relief set-points. Ambient temperature, sun and wind. Per
+  gauge: the true pressure and temperature (`P`, `T`) and, if it has a sensor model, its reading
+  (`P_read`, `T_read`). Per load cell: `m_read`.
 - `NAME_run_events.csv`: every valve, heater and set-point action with its time, whether scripted
   or clicked. Loaded as a schedule it repeats the run. "Keep my clicks as the schedule" does the
   same without leaving the window.
@@ -270,7 +272,8 @@ action = "open"           # open, close, stuck_open, stuck_closed, unstick (valv
 | Regulator | Closes as its outlet reaches the set pressure; saturated liquid flashes across it |
 | CheckValve, ReliefValve | One-way; cracking pressure / set pressure |
 | Atmosphere | Where vented nitrous goes; totals what was lost |
-| Junction, Gauge | A tee; a pressure and temperature reading |
+| Junction, Gauge | A tee; a pressure and temperature reading. A Gauge can carry a sensor model (offset, gain, lag, dead band, range) and then also records what the instrument would report |
+| LoadCell | A mass reading of the vessel it is wired to: tare offset, a step while the valve on its `valve` pin is open (a charged hose), lag. An instrument only; nothing flows through it |
 
 Wiring rules:
 

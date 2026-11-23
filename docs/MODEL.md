@@ -173,6 +173,8 @@ energy. If it drifts, something is wrong.
 A run records, at up to ten samples a second, every vessel and junction state, every flow, each
 valve's position and command, heater states, set-points and the ambient conditions, plus a
 timestamped log of every action applied. The README lists the exported columns.
+A Gauge or LoadCell whose sensor parameters are set also records what the instrument would have
+reported (`NAME.P_read`, `NAME.T_read`, `NAME.m_read`; see section 8).
 
 ## 2. Nitrous oxide properties (`src/n2o.jl`)
 
@@ -622,6 +624,61 @@ The load cell is usable for the end state, not for the fill history:
   including the 6.7 kg at the stall, are about a kilogram low. The log cannot confirm it. HF3's
   load cell, with no vent event, climbs smoothly and agrees with the model.
 - With the tank isolated during heating it climbs 0.36 kg with no flow at all.
+
+### Sensor models
+
+A model is compared with what a sensor reported, not with the truth. If the comparison does not
+carry an instrument's quirks, a fit bends the physics to absorb them: a transducer reading 5 psi
+high becomes a bottle a few tenths of a degree warmer. So a Gauge can be given the instrument's behaviour,
+and a LoadCell part reads a vessel's mass the way a load cell under it would.
+
+A Gauge always records the true pressure and temperature of the point it is wired to, `NAME.P`
+and `NAME.T`. With any of the parameters below set it also records its reading, `NAME.P_read`
+(Pa absolute, like every pressure signal) and `NAME.T_read` (K). At the defaults it records
+nothing extra and the reading is the truth. The steps are applied in the order of the table.
+
+| Gauge parameter | Default | What it is for |
+|---|---|---|
+| `gain` | 1 | Multiplies the gauge pressure: a span error, a mismatch that grows with pressure |
+| `offset_psi` | 0 | Added to it: a zero that is off. The ±5 psi between PT201 and PT202 above is this, and its sign changes between tests, so it is a number per test |
+| `tau_s` | 0 | First-order lag: a transducer, snubber or filter slower than the transient it is watching (a vent pulse, the first seconds of a fill) |
+| `deadband_psi` | 0 | The reading holds until the pressure has moved by more than this: a sticky or coarsely stepped reading |
+| `min_psig`, `max_psig` | none | The transducer's range. The reading stops at the limit while the pressure carries on (the defaults, −1e6 and 1e6, are no limit) |
+| `T_offset_K` | 0 | Added to the temperature reading |
+| `T_tau_s` | 0 | First-order lag on the temperature: a thermocouple or thermistor on the wall or in a well follows the fluid late |
+
+A LoadCell has two pins. `a` is wired to any pin of the Bottle or Tank it weighs; `valve` is
+wired to a point that exactly one Valve is on, or left unwired. It records `NAME.m_read` (kg).
+Nothing flows through it and it adds no junction: a run with one in the scene is the same
+solve, to the last bit, as the run without.
+
+| LoadCell parameter | Default | What it is for |
+|---|---|---|
+| `offset_kg` | 0 | Added to the vessel's N2O mass: a tare that is off |
+| `line_step_kg` | 0 | Added while the valve on the `valve` pin is open at all: the 0.8 kg that charging the fill hose put on the HF4 stand |
+| `tau_s` | 0 | First-order lag: the filtering of the load cell's amplifier |
+
+The other load-cell behaviour above is deliberately not modelled. The ringing at valve events
+averages out over a time bin (`bin_s`), or those seconds can be left out of the scored phases.
+The shift at the first vent and the creep during heating have no known cause to model: score the
+channel with `offset = "per_phase"` or state a discrepancy for the phase
+([STUDIES.md](STUDIES.md)).
+
+**The lag is not a state of the equations.** It is advanced each time a sample is recorded, by
+the exact solution of τ·y′ = x − y over the interval since the last sample, taking the input `x`
+as a straight line between the two samples. That is how the recorded history is read everywhere
+else, so a lagged reading is the exact lag of the recorded history and has no step-size error of
+its own. For an input that really is straight between samples (a step, a ramp, a quiet hold) the
+recording interval changes the reading only by round-off. Otherwise two recording intervals give
+readings that differ as their histories of the true value differ, and by less: the lag smooths
+the difference. The first seconds of a fill into an air-filled tank are the worst case. There,
+recorded every 0.1 s and every 0.5 s, the true pressure histories are up to about 7 psi apart and
+a reading lagged by 2 s up to about 3 psi. A valve that moves between two samples reaches a
+load cell's `line_step_kg` as a ramp across that interval. Keep the time constant several
+recording intervals long, or shorten the interval (`sample_dt` in a study).
+
+In the window a gauge with a sensor model shows its reading, as of the last recorded sample,
+and its hover text gives the true values. A gauge without one is unchanged.
 
 ## 9. Reference data
 
