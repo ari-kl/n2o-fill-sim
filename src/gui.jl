@@ -31,12 +31,8 @@ const C_LINE, C_DIM, C_SEL, C_WIRE = col(220, 220, 225), col(120, 120, 130), col
 const C_OPEN, C_SHUT, C_LIQ, C_VAP, C_WARN = col(70, 200, 110), col(205, 80, 80), col(60, 130, 230), col(70, 80, 100), col(255, 90, 60)
 const WARN4, OK4, GREY4, AMBER4 = (1f0, 0.4f0, 0.3f0, 1f0), (0.4f0, 0.9f0, 0.5f0, 1f0), (0.7f0, 0.7f0, 0.7f0, 1f0), (1f0, 0.8f0, 0.3f0, 1f0)
 
-# Colour scale for "colour by": the viridis sequence, violet (low) through teal and green to
-# yellow (high). Lightness rises evenly from end to end, so the order reads without telling hues
-# apart and no stop looks like a boundary that is not in the data. The low end is lifted from
-# viridis's near-black violet (CIE L* 35 here, in steps of 7 to 9 up to 91) to stay clear of the
-# dark background.
-const SCALE = RGB[(94, 60, 165), (76, 94, 176), (52, 124, 172), (36, 150, 160), (34, 176, 138), (86, 202, 104), (165, 223, 56), (253, 231, 37)]
+# Colour scale for "colour by": blue (low) through green and yellow to red (high).
+const SCALE = RGB[(58, 76, 192), (65, 140, 240), (50, 200, 220), (70, 225, 140), (190, 235, 70), (250, 195, 50), (245, 120, 40), (200, 45, 30)]
 function scale_colour(f)
     f = clamp(Float32(f), 0f0, 1f0) * (length(SCALE) - 1)
     i = min(floor(Int, f), length(SCALE) - 2)
