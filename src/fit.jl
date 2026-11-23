@@ -342,7 +342,30 @@ function identifiability(J, labels)
         abs(corr[i, j]) > 0.9 && push!(statements, "$(labels[i]) and $(labels[j]) are not separately determined (correlation $(round(corr[i, j], digits = 2))): " *
                                                     "a change in one can be made up by the other.")
     end
+    γ = collinearity(J)
+    γ > 15 && push!(statements, "As a set, the parameters are nearly collinear (collinearity index $(round(γ, sigdigits = 3)); above about 15 to 20 is trouble): " *
+                                "some change in one can be all but cancelled by changes in the others, so they cannot all be estimated from these data. Fix one or more of them.")
     std, corr, statements
+end
+
+"""
+    collinearity(J) -> γ
+
+The collinearity index of Brun, Reichert and Künsch (2001) for the parameters whose sensitivity
+columns are in `J`. Each column is scaled to unit length, so that only its direction counts (which
+readings the parameter moves, and in what proportion), and γ is one over the square root of the
+smallest eigenvalue of the scaled S'S. It reads as: a change in one parameter can be made up by
+the others to within 1/γ of its effect. 1 means the parameters act on the readings in entirely
+separate ways. Above about 15 to 20, the set cannot be estimated together from these data, however
+good the fit looks. A correlation shows this for a pair; the index shows it for three or more that
+only cancel as a group. Columns with no effect at all are left out (they are reported separately).
+
+Give it a subset of columns to ask whether that subset could be estimated with the rest fixed.
+"""
+function collinearity(J)
+    scale = [sqrt(sum(abs2, c)) for c in eachcol(J)]
+    keep = scale .>= max(1e-9 * maximum(scale), 1e-300)
+    any(keep) ? 1 / minimum(svd(J[:, keep] ./ scale[keep]').S) : NaN
 end
 
 """
@@ -473,6 +496,8 @@ function fit(path; write_scenes = false, holdout = nothing, profile = nothing, p
     println(io, "\nWhat these data do and do not determine")
     isempty(statements) ? println(io, "  Every parameter is separately determined (no correlation over 0.9, no undetermined combination).") :
                           foreach(s -> println(io, "  - ", s), statements)
+    γ = collinearity(J)
+    println(io, "  Collinearity index of the fitted set: ", round(γ, sigdigits = 3), "  (1: the parameters act in separate ways; above about 15 to 20: they cannot all be estimated together)")
     if prof !== nothing
         println(io, "\nProfile of ", profile, " (held at each value in turn, the others refitted): ", basename(prof.file))
         for (v, sc) in zip(prof.values, prof.scores)
@@ -487,7 +512,7 @@ function fit(path; write_scenes = false, holdout = nothing, profile = nothing, p
     open(record, "w") do out
         println(out, "# Calibration record written by `fit`. Values, what they were fitted to, and how well.")
         println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nmodel_commit = ", repr(_commit(@__DIR__)), "\nscore = ", round(fx, sigdigits = 6))
-        println(out, "datasets = ", _list(ft.names))
+        println(out, "datasets = ", _list(ft.names), "\ncollinearity = ", isfinite(γ) ? round(γ, sigdigits = 4) : "inf")
         for (k, p) in enumerate(ft.params)
             println(out, "\n[[parameter]]\nname = ", repr(p.name), "\ndatasets = ", repr(ft.names[p.datasets]), "\nvalue = ", round(values[k], sigdigits = 7),
                     "\nfrom = ", p.lo, "\nto = ", p.hi, "\nlog = ", p.log, "\nspread = ", round(spread[k], sigdigits = 4))
@@ -524,7 +549,7 @@ function fit(path; write_scenes = false, holdout = nothing, profile = nothing, p
     end
     say("\n", report, "\nwritten: ", joinpath(ft.dir, "report.txt"), ", ", record)
     (; score = fx, start_score = f0, values = Dict(labels .=> values), spread = Dict(labels .=> spread), statements, rms = Dict(ft.names .=> rms), evals = evals[], dir = ft.dir,
-       scores = Dict(ft.names .=> each), holdout = held, profile = prof)
+       scores = Dict(ft.names .=> each), collinearity = γ, holdout = held, profile = prof)
 end
 
 """

@@ -904,7 +904,15 @@ end
     @test r2.holdout.score > 3 * r.holdout.score
 end
 
-@testset "fitting: the profile of a parameter" begin
+@testset "fitting: the profile of a parameter, and the collinearity of the set" begin
+    # the collinearity index: 1 for parameters that act separately, large for a set that cancels
+    @test F.collinearity([1.0 0.0; 0.0 2.0; 0.0 0.0]) ≈ 1
+    @test F.collinearity([1.0 0.0; 0.0 1.0; 1.0 -1.0]) ≈ sqrt(2)
+    @test F.collinearity([1.0 0.0 0.0; 0.0 5.0 0.0; 0.0 0.0 0.0]) ≈ 1                  # a column with no effect is left out
+    # three parameters, no two of them alike, of which the third does what the first two do together
+    J = [1.0 0.0 1.0; 0.0 1.0 1.0; 1.0 -1.0 0.01]
+    _, corr, said = F.identifiability(J, ["a", "b", "c"])
+    @test F.collinearity(J) > 20 && any(occursin("nearly collinear", t) for t in said) && F.collinearity(J[:, 1:2]) < 2
     dir = mktempdir()
     made_up_log(joinpath(dir, "log.csv"))
     F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
@@ -935,7 +943,7 @@ end
         """)
     @test_throws ErrorException F.fit(file; profile = "BOTTLE.T", quiet = true)                # no such parameter
     r = redirect_stdout(() -> F.main(["fit", file, "--profile", "BOTTLE.T_C", "--profile-n", "3"]), devnull)
-    @test abs(r.values["BOTTLE.T_C"] - 27) < 0.2
+    @test abs(r.values["BOTTLE.T_C"] - 27) < 0.2 && r.collinearity ≈ 1
     # held at 15, 23.5 and 32 °C the score cannot be brought down by the other parameter: the data constrain it.
     # The fitted value is a point of the profile too, and its lowest.
     @test r.profile.values[[1, 2, 4]] == [15.0, 23.5, 32.0] && r.profile.values[3] ≈ r.values["BOTTLE.T_C"] && argmin(r.profile.scores) == 3
@@ -943,8 +951,8 @@ end
     rows = split.(readlines(joinpath(r.dir, "profile_BOTTLE.T_C.csv")), ',')
     @test rows[1] == ["value", "score", "TANK.heater_W"] && length(rows) == 5 && isapprox(parse(Float64, rows[3][2]), r.profile.scores[2]; rtol = 1e-5)
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
-    @test record["profile"]["parameter"] == "BOTTLE.T_C" && record["profile"]["flat"] == false
-    @test occursin("Profile of BOTTLE.T_C", read(joinpath(r.dir, "report.txt"), String))
+    @test record["profile"]["parameter"] == "BOTTLE.T_C" && record["profile"]["flat"] == false && record["collinearity"] ≈ 1
+    @test occursin("Profile of BOTTLE.T_C", read(joinpath(r.dir, "report.txt"), String)) && occursin("Collinearity index", read(joinpath(r.dir, "report.txt"), String))
     @test countlines(joinpath(r.dir, "evals.csv")) == r.evals + 1                              # the profile's runs are not part of the search's log
     # the heater's profile is flat from one bound to the other: the fit says so instead of giving it a value
     r = F.fit(file; profile = "TANK.heater_W", profile_n = 3, quiet = true)

@@ -178,6 +178,16 @@ not the data: look at why they fail.
   - "The data do not determine the combination ...": changing the parameters together in those
     proportions changes no reading at all.
   - "X has no measurable effect": these logs say nothing about X.
+  - **Collinearity index** of the fitted set (Brun, Reichert and Künsch, 2001), always printed.
+    Each parameter's sensitivities are scaled to unit length, so only the pattern counts (which
+    readings it moves, and in what proportion); the index is one over the square root of the
+    smallest eigenvalue of the scaled S'S. It reads as: a change in one parameter can be made up
+    by the others to within 1/index of its effect. 1 means the parameters act in entirely
+    separate ways. **Above about 15 to 20 the set cannot be estimated together**, and the report
+    says so. A correlation catches two parameters that cancel; the index also catches three or
+    more that only cancel as a group, where every pairwise correlation can look harmless. The
+    cure is the same: fix some, and fit fewer. (`collinearity(J)` on chosen columns asks the
+    question of a subset.)
 
 The spread treats each scored number as one independent observation, which is a rough stand-in
 for the real number of independent readings in a time series (and too generous if bins are short:
@@ -190,7 +200,7 @@ confidence interval.
 - `report.txt`.
 - `<date>-<name>.toml`: the **calibration record**. The values, their bounds and spread, the
   datasets, channels, phases, scored numbers and trust they were fitted against, the RMS reached, the commit of the fit file's own
-  folder (`commit`) and of the model that ran it (`model_commit`), the
+  folder (`commit`) and of the model that ran it (`model_commit`), the collinearity index and the
   identifiability statements; with `--holdout`, the held-out dataset's scores under `[holdout]`;
   with `--profile`, the profile and its verdict under `[profile]`. A fitted number without this is a number nobody can check.
 - with `--profile`, `profile_<label>.csv`.
