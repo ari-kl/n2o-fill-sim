@@ -316,7 +316,7 @@ number of threads and with `--resume`.
 
 ### Units
 
-Settings that are levels (`open_above`, `close_below`, `above`) are given in SI, as an absolute
+Settings that are levels (`open_above`, `close_below`, `above`, `lo`, `hi`) are given in SI, as an absolute
 pressure in Pa or a temperature in K, or by their name with `_psig` or `_C` for a gauge pressure or
 a temperature in Celsius, as metric arguments are. Times are in seconds. A noise sigma is a
 difference, so it takes `sigma` (SI), `sigma_psi` or `sigma_K`, never a gauge zero. The scene has
@@ -328,11 +328,13 @@ no display units of its own (those are a window setting), so a study file says i
 |---|---|---|
 | `hysteresis` | opens a valve when a reading goes above one level and shuts it when the reading falls below a lower one, each time only once the valve has been open (or shut) for its minimum | `reading`, `actuator`, `open_above`, `close_below`, `min_open_s`, `min_shut_s` |
 | `pulse_wait` | when a reading is above a level, opens a valve for `pulse_s`, shuts it, and waits `wait_s` before it may open again | `reading`, `actuator`, `above`, `pulse_s`, `wait_s` |
+| `band_watch` | marks the moment a reading has stayed inside a band for `hold_s` (see "Marks") | `reading`, `lo`, `hi`, `hold_s`, `mark` |
 | `heater_hold` | switches a vessel's heater on (`on = 1`, the default) or off. While on, the heater runs as its own `heater_ctl` and `heater_set` say | `heater`, `on` |
 | `julia` | a policy written in Julia (below) | `file`, `reads`, `actuators`, `settings` |
 
 Every policy has a `name` (used in `[vary]` and in its signals) and may start disabled
-(`enabled = false`). A hysteresis or pulse-and-wait policy starts out believing its valve shut. A
+(`enabled = false`). A hysteresis or pulse-and-wait policy starts from where its valve is when the run starts: shut, or
+open for a normally-open valve, which a run starts with de-energised. A
 heater's set-point is a parameter of the vessel (`TANK.heater_set`), so it is varied or set per
 run like any other.
 
@@ -424,7 +426,7 @@ It counts only while it is enabled, starts again from zero whenever the reading 
 and marks once. A mark can end a step (`{ mark = "ready" }`), place a metric's window, align the
 bands, and key a case's actions.
 
-### Results
+### Result columns
 
 A study with a controller adds columns to `results.csv`: `stand_ins`, `escape_hatch`, for each
 step `t_<step>.start`, `t_<step>.end` and `<step>.timed_out` (1 if its timeout ended it), and for
@@ -487,6 +489,57 @@ rest at the first tick at or after it falls due: one keyed to a mark or a step's
 
 A policy or reading named in a case must exist, and a keyed action needs a `[controller]`.
 
+### Metrics for control
+
+These come beside the metrics above, in `[metrics]`, and take the same `from` and `to` (seconds,
+or events as above).
+
+Regulation, on a `signal` with a band `lo`, `hi` (SI, or `_psig`, `_C`):
+
+| `fn` | |
+|---|---|
+| `time_in_band_frac` | the share of the window spent in the band |
+| `max_above`, `max_below` | how far the signal went above `hi` or below `lo` at most (0 if never); in Pa or K, or psi with `unit = "psi"` |
+| `time_to_band` | seconds from the start of the window to first being in the band |
+| `band_exits` | how many times it left the band (counted on the recorded samples) |
+| `peak` | the same as `max` |
+| `cold_exposure` | kelvin-seconds below `below` (or `below_C`): how long, and how far, a temperature sat under it |
+
+Margins and mass, on a part:
+
+| `fn` | |
+|---|---|
+| `vented_kg` | the mass through `part`, flowing a to b, over the window: one vent path |
+| `relief_kg`, `relief_lifts` | the same through a relief valve `part`, and how many times it began to flow |
+| `prv_margin_psi` | the smallest margin between a relief valve's set pressure and `signal`, in psi (negative: it lifted) |
+| `liquid_frac_max` | the highest liquid fraction of `vessel` |
+| `m_at` | `signal` at `at` (seconds, or an event); empty if the run did not get there |
+
+Switching, from the controller's own log of what it commanded (`actuator`, a part): what was sent,
+not where the valve was.
+
+| `fn` | |
+|---|---|
+| `cmds`, `cycles` | commands sent to it; those that opened it (or switched it on) |
+| `cmds_per_hour`, `min_interval_s` | their rate over the window; the shortest time between two |
+| `max_cmds_in` | the most commands in any `window_s` seconds |
+| `recharge_violations` | commands less than `recharge_s` after the one before (a pneumatic actuator's supply that has not recovered) |
+| `n2_used` | `per_cmd` for each command, in whatever unit `per_cmd` is |
+| `open_s`, `duty` | time commanded open, and its share of the window |
+| `longest_open_s`, `longest_shut_s` | the longest stretch commanded open, and shut |
+
+Procedure:
+
+| `fn` | |
+|---|---|
+| `step_s` | how long `step` ran |
+| `t_mark` | when `mark` happened, in seconds after `from` (default the start of the run) |
+| `stalled` | 1 if `signal` was below `below` when `step` ended (it stopped short), else 0 |
+| `m_at_fire` | `signal` where the run ended on its step's edge (`until = { step, edge }`) |
+
+These are numbers to compare candidates by. They are not features of a log, so targets do not
+take the ones on parts or on the controller.
+
 ### A policy written in Julia
 
 When none of the policies above will do, `kind = "julia"` names a file whose last expression is a
@@ -510,6 +563,31 @@ stand-in. The file is code and runs as such, so a study with one runs only with
 `--allow-julia-policy` on the command line, and its rows have `escape_hatch` = 1.
 
 A controller outside the simulator, talking to it over a line protocol, is not supported.
+
+### The HF4 example
+
+`studies/hf4_control.toml` runs the HF4 stand as a procedure: fill to 9 kg (on the true mass, a
+stand-in, since the stand has no load cell), with a vent that opens above 820 psig and shuts below
+790 or 805 psig, then a 600 s hold that starts a 30 s band watch (780 to 830 psig). A second case
+freezes the tank gauge's reading at the mark, so the vent goes on acting on the value it had then.
+
+```
+julia -t 2 --project bin/n2o-fill-sim.jl study studies/hf4_control.toml
+```
+
+| case | shut below | fill_s | vent cycles in hold | in band after the mark | PRV margin, psi | m_fire, kg |
+|---|---:|---:|---:|---:|---:|---:|
+| nominal | 790 | 859.6 | 1 | 1.00 | 182.1 | 8.92 |
+| nominal | 805 | 1056.0 | 2 | 1.00 | 182.1 | 8.92 |
+| frozen_gauge | 790 | 871.4 | 0 | 1.00 | 175.0 | 9.01 |
+| frozen_gauge | 805 | 947.8 | 0 | 0.98 | 169.8 | 9.00 |
+
+Holding the tank near 800 psig makes this a slow fill: the vent keeps the back pressure up and the
+bottle has little left to push with, and the narrower band (shut below 805) costs another three
+minutes. With the gauge frozen the vent never opens in the hold: the pressure creeps up in the sun, out
+of the band in one of the two runs, and the margin to the relief valve shrinks by 7 to 12 psi.
+Nothing in the frozen reading shows it.
+(Each case draws its own noise, so the two fills differ slightly before the fault.)
 
 ## Screening
 

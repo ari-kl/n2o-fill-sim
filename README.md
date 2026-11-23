@@ -231,7 +231,7 @@ worked example.
 A study can also run a controller inside each run: policies that read the instruments at a fixed
 tick and command valves and heaters, such as a vent that holds a pressure band. See "Control
 policies" in [docs/STUDIES.md](docs/STUDIES.md). A policy written in Julia runs only with
-`study file.toml --allow-julia-policy`.
+`study file.toml --allow-julia-policy`. `studies/hf4_control.toml` is a worked example.
 
 A fit adjusts parameters to match one or several logs at once, and reports which of them the
 logs cannot tell apart. That report matters more than the fitted numbers. See

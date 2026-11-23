@@ -83,7 +83,23 @@ const _BANDS_KEYS = ("signals", "percentiles", "grid_s", "align")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
 const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight", "offset")
 const _PHASE_KEYS = ("from", "to", "bin_s", "discrepancy")
-const _METRIC_FNS = ("final", "max", "min", "mean_over", "slope", "time_in_band", "first_crossing")
+const _METRIC_FNS = ("final", "max", "min", "mean_over", "slope", "time_in_band", "first_crossing",
+                     "time_in_band_frac", "max_above", "max_below", "time_to_band", "band_exits", "peak", "cold_exposure")
+# Metrics on a part rather than a signal, and metrics on what the controller did: not features of a
+# log, so not for targets. What each needs besides `fn`:
+const _RUN_METRIC_NEEDS = Dict(
+    "vented_kg" => ("part",), "relief_kg" => ("part",), "relief_lifts" => ("part",), "prv_margin_psi" => ("part", "signal"),
+    "liquid_frac_max" => ("vessel",), "m_at" => ("signal", "at"),
+    "cmds" => ("actuator",), "cycles" => ("actuator",), "cmds_per_hour" => ("actuator",), "min_interval_s" => ("actuator",),
+    "max_cmds_in" => ("actuator", "window_s"), "open_s" => ("actuator",), "duty" => ("actuator",), "longest_open_s" => ("actuator",),
+    "longest_shut_s" => ("actuator",), "n2_used" => ("actuator", "per_cmd"), "recharge_violations" => ("actuator", "recharge_s"),
+    "m_at_fire" => ("signal",), "step_s" => ("step",), "t_mark" => ("mark",), "stalled" => ("step", "signal", "below"))
+const _CTL_METRIC_FNS = ("cmds", "cycles", "cmds_per_hour", "min_interval_s", "max_cmds_in", "open_s", "duty", "longest_open_s", "longest_shut_s",
+                         "n2_used", "recharge_violations", "m_at_fire", "step_s", "t_mark", "stalled")
+const _BAND_METRIC_NEEDS = Dict("time_in_band_frac" => ("lo", "hi"), "max_above" => ("hi",), "max_below" => ("lo",), "time_to_band" => ("lo", "hi"),
+                                "band_exits" => ("lo", "hi"), "cold_exposure" => ("below",))
+# Those whose result is a difference of pressures or temperatures: `unit = "psi"` converts it.
+const _DIFF_METRIC_FNS = ("max_above", "max_below")
 const _TARGET_KEYS = ("fn", "log", "model", "tol", "from", "to", "phase", "lo", "hi", "value")
 
 """
@@ -170,6 +186,24 @@ function _case(c, path)
     (name, actions, set, keyed, String(get(c, "group", "")))
 end
 
+# A metric on a part or on the controller's doings: the keys it needs, and names that exist.
+function _check_run_metric(name, m, scene, ctl, path)
+    fn, w = m["fn"], "$path: metric $name"
+    for k in _RUN_METRIC_NEEDS[fn]
+        any(x -> haskey(m, x), (k, k * "_psig", k * "_C")) || error("$w ($fn) needs `$k`")
+    end
+    fn in _CTL_METRIC_FNS && ctl === nothing && error("$w: $fn is about what the controller did, and needs a [controller]")
+    for k in ("part", "vessel", "actuator")
+        haskey(m, k) && find_part(scene, m[k]) === nothing && error("$w: $(m[k]) is not in the scene")
+    end
+    fn in ("relief_kg", "relief_lifts", "prv_margin_psi") && scene.parts[find_part(scene, m["part"])].kind != "ReliefValve" && error("$w: $(m["part"]) is not a ReliefValve")
+    haskey(m, "vessel") && !(scene.parts[find_part(scene, m["vessel"])].kind in VESSEL_KINDS) && error("$w: $(m["vessel"]) is not a Bottle or Tank")
+    haskey(m, "at") && _check_event(m["at"], ctl, "$w: at")
+    haskey(m, "step") && (m["step"] in ctl.steps || error("$w: there is no step called $(m["step"])"))
+    haskey(m, "mark") && (m["mark"] in ctl.marks || error("$w: there is no mark called $(m["mark"])"))
+    fn == "m_at_fire" && ctl.end_on[1] == "" && error("$w: m_at_fire is the value where the run ends at a step's edge; give `until` as one")
+end
+
 # A time given by an event of the run: `{ mark = "ready", plus_s = 300 }` or `{ step = "fill",
 # edge = "end" }`. NaN if it did not happen. A plain number is itself.
 function _event_time(x, c)
@@ -197,9 +231,9 @@ end
 # A metric with its window's events made times for this run, or nothing if an event it needs did
 # not happen or falls after the run's end (a value read there would be the last one, held).
 function _resolve(m, c, t_end)
-    any(k -> get(m, k, 0.0) isa AbstractDict, ("from", "to")) || return m
+    any(k -> get(m, k, 0.0) isa AbstractDict, ("from", "to", "at")) || return m
     m = copy(m)
-    for k in ("from", "to")
+    for k in ("from", "to", "at")
         haskey(m, k) || continue
         live = m[k] isa AbstractDict
         m[k] = _event_time(m[k], c)
@@ -440,8 +474,16 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
         haskey(m, k) && _check_event(m[k], controller, "$path: metric $name: $k")
     end
     for (name, m) in metrics
-        get(m, "fn", "") in _METRIC_FNS || error("$path: metric $name needs fn, one of $(join(_METRIC_FNS, ", "))")
+        if haskey(_RUN_METRIC_NEEDS, get(m, "fn", ""))
+            _check_run_metric(name, m, scene, controller, path)
+            continue
+        end
+        get(m, "fn", "") in _METRIC_FNS || error("$path: metric $name needs fn, one of $(join(vcat(collect(_METRIC_FNS), sort!(collect(keys(_RUN_METRIC_NEEDS)))), ", "))")
         haskey(m, "signal") || error("$path: metric $name needs a signal")
+        for k in get(_BAND_METRIC_NEEDS, m["fn"], ())
+            any(x -> haskey(m, x), (k, k * "_psig", k * "_C")) || error("$path: metric $name needs $k (or $(k)_psig, $(k)_C)")
+        end
+        m["fn"] in _DIFF_METRIC_FNS && get(m, "unit", "psi") != "psi" && error("$path: metric $name is a difference: its unit can only be \"psi\" (it is in Pa or K without one)")
         m["fn"] == "slope" && haskey(m, "unit") && error("$path: metric $name: a slope is in the signal's SI units per second; `unit` would shift it, not scale it. Remove `unit`")
     end
     b = get(d, "bands", Dict{String,Any}())
@@ -629,10 +671,27 @@ least squares), the time spent in a band, or when it first crosses a value. With
 converts a result that is a pressure or a temperature.
 """
 function metric(sim::Sim, m, p_atm)
+    haskey(_RUN_METRIC_NEEDS, m["fn"]) && return _part_metric(sim, m, p_atm)
     haskey(sim.hist, m["signal"]) || error("no recorded signal named $(m["signal"])")
     v = _metric(sim.t_hist, sim.hist[m["signal"]], m, p_atm)
     unit = get(m, "unit", "")
+    m["fn"] in _DIFF_METRIC_FNS && return unit == "psi" ? v / PSI : v
     unit == "psig" ? (v - p_atm) / PSI : unit == "C" ? v - 273.15 : v
+end
+
+# Metrics on a part: the mass through it (vented_kg, relief_kg; flow a → b only), how many times a
+# relief valve lifted (its flow rising above 1e-6 kg/s), its smallest
+# margin (set point less the pressure, psi), a vessel's highest liquid fraction, a signal's value
+# at a time.
+function _part_metric(sim::Sim, m, p_atm)
+    fn, t = m["fn"], sim.t_hist
+    h(k) = haskey(sim.hist, k) ? sim.hist[k] : error("no recorded signal named $k")
+    fn in ("vented_kg", "relief_kg") && return _metric(t, max.(h(m["part"] * ".mdot"), 0.0), merge(m, Dict("fn" => "integral")), p_atm)
+    fn == "relief_lifts" && return _metric(t, h(m["part"] * ".mdot"), merge(m, Dict("fn" => "rises", "value" => 1e-6)), p_atm)
+    fn == "prv_margin_psi" && return _metric(t, h(m["part"] * ".set") .- h(m["signal"]), merge(m, Dict("fn" => "min")), p_atm) / PSI
+    fn == "liquid_frac_max" && return _metric(t, h(m["vessel"] * ".liquid_frac"), merge(m, Dict("fn" => "max")), p_atm)
+    fn == "m_at" && return (at = Float64(m["at"]); -1e-9 <= at <= t[end] + 1e-6 ? _interp(t, h(m["signal"]), at) : NaN)
+    error("metric $fn needs the run's controller")
 end
 # The same for any series of times and values: a run's history, or a log channel.
 # A run is recorded where the solver's steps fall, which can be seconds apart in a quiet stretch.
@@ -646,8 +705,21 @@ function _metric(t, y, m, p_atm)
         t, y = vcat(a, t[inside], b), vcat(_interp(t, y, a), y[inside], _interp(t, y, b))
     end
     fn == "final" && return y[end]
-    fn == "max" && return maximum(y)
+    fn in ("max", "peak") && return maximum(y)
     fn == "min" && return minimum(y)
+    fn == "max_above" && return max(maximum(y) - _si(m, "hi", p_atm), 0.0)
+    fn == "max_below" && return max(_si(m, "lo", p_atm) - minimum(y), 0.0)
+    fn == "rises" && return count(i -> y[i-1] <= m["value"] < y[i], 2:length(y))
+    if fn in ("time_to_band", "band_exits")
+        lo, hi = _si(m, "lo", p_atm), _si(m, "hi", p_atm)
+        inside = [lo <= x <= hi for x in y]
+        fn == "band_exits" && return count(i -> inside[i-1] && !inside[i], 2:length(y))
+        i = findfirst(inside)
+        i === nothing && return NaN
+        i == 1 && return 0.0
+        edge = y[i-1] < lo ? lo : hi                 # where the line between the samples comes in
+        return t[i-1] + (t[i] - t[i-1]) * (edge - y[i-1]) / (y[i] - y[i-1]) - t[1]
+    end
     length(t) >= 2 || return NaN
     if fn == "mean_over"
         return sum((t[i] - t[i-1]) * (y[i] + y[i-1]) / 2 for i in 2:length(t)) / (t[end] - t[1])
@@ -657,7 +729,7 @@ function _metric(t, y, m, p_atm)
         w = [(t[min(i + 1, end)] - t[max(i - 1, 1)]) / 2 for i in eachindex(t)]
         tm, ym = sum(w .* t) / sum(w), sum(w .* y) / sum(w)
         return sum(w .* (t .- tm) .* (y .- ym)) / sum(w .* (t .- tm) .^ 2)
-    elseif fn == "time_in_band"
+    elseif fn in ("time_in_band", "time_in_band_frac")
         lo, hi = _si(m, "lo", p_atm), _si(m, "hi", p_atm)
         total = 0.0
         for i in 2:length(t)
@@ -669,7 +741,16 @@ function _metric(t, y, m, p_atm)
                 total += (t[i] - t[i-1]) * max(min(f2, 1.0) - max(f1, 0.0), 0.0)
             end
         end
-        return total
+        return fn == "time_in_band" ? total : total / (t[end] - t[1])
+    elseif fn == "integral"
+        return sum((t[i] - t[i-1]) * (y[i] + y[i-1]) / 2 for i in 2:length(t))
+    elseif fn == "cold_exposure"               # kelvin-seconds below a temperature (the part of each line under it)
+        below = _si(m, "below", p_atm)
+        return sum(2:length(t); init = 0.0) do i
+            d0, d1 = below - y[i-1], below - y[i]
+            d0 <= 0 && d1 <= 0 ? 0.0 : d0 >= 0 && d1 >= 0 ? (t[i] - t[i-1]) * (d0 + d1) / 2 :
+                (f = max(d0, d1) / abs(d1 - d0); (t[i] - t[i-1]) * f * max(d0, d1) / 2)
+        end
     else                                       # first_crossing
         v = _si(m, "value", p_atm)
         i = findfirst(i -> (y[i-1] - v) * (y[i] - v) <= 0 && y[i-1] != y[i], 2:length(y))
@@ -739,13 +820,14 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
         if c === nothing
             append!(row, [name => metric(sim, m, p_atm) for (name, m) in st.metrics])
         else                                   # windows may be given by the run's marks and steps
-            append!(row, [name => (r = _resolve(m, c, simtime(sim)); r === nothing ? NaN : metric(sim, r, p_atm)) for (name, m) in st.metrics])
+            append!(row, [name => (r = _resolve(m, c, simtime(sim)); r === nothing ? NaN : r["fn"] in _CTL_METRIC_FNS ? _ctl_metric(sim, c, r, p_atm) : metric(sim, r, p_atm))
+                          for (name, m) in st.metrics])
         end
         r = run_summary(sim)
         append!(row, ["t_end" => r.t_s, "failed" => replace(failed, ',' => ';'), "unconverged" => r.unconverged, "mass_error" => r.mass_error,
                       "energy_error" => r.energy_error, "vented_kg" => r.vented_kg])
         seen === nothing || seen(sim)                          # the caller takes what it wants from the run before it is dropped
-        keep === nothing || write_csv(keep, sim; columns = unique(vcat([_scored_signal(sim, c.model) for c in st.channels], [_scored_signal(sim, g.model) for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
+        keep === nothing || write_csv(keep, sim; columns = unique(vcat([_scored_signal(sim, c.model) for c in st.channels], [_scored_signal(sim, g.model) for g in st.targets], [m["signal"] for (_, m) in st.metrics if haskey(m, "signal")])))
     end
     if st.controller !== nothing
         append!(row, ["stand_ins" => join(st.controller.stand_ins, ";"), "escape_hatch" => st.controller.escape_hatch ? 1 : 0])

@@ -54,7 +54,7 @@ end
 
 @testset "control: hysteresis with minimum dwells, pulse and wait, heater" begin
     s = gauged_rig()
-    sim, c = controller(s, """
+    vent_body = """
         [[policy]]
         name = "vent"
         kind = "hysteresis"
@@ -64,7 +64,8 @@ end
         close_below = 5
         min_open_s = 2
         min_shut_s = 3
-        """)
+        """
+    sim, c = controller(s, vent_body)
     p = c.policies[1]
     cmds() = [(x.t, x.action) for x in c.log]
     at(t, x) = (c.obs["PT.P_read"] = x; F._tick!(p, c, sim, t))
@@ -78,6 +79,11 @@ end
     @test [a for (_, a) in cmds()] == ["open", "close", "open"] && [t for (t, _) in cmds()] == [0.0, 2.0, 5.0]
     @test all(a -> a.part == "VENT" && a.policy == "vent", c.log)
     @test [(a.t, a.action) for a in sim.schedule[sim.next_action:end]] == cmds()     # sent to the run with no delay
+    s.parts[F.find_part(s, "VENT")].p["normally_open"] = 1.0                       # a spring-open vent starts open,
+    sim, c = controller(s, vent_body)
+    c.obs["PT.P_read"] = 4; F._tick!(c.policies[1], c, sim, 0.0)
+    @test [x.action for x in c.log] == ["close"]                                    #   so a low reading shuts it at once
+    s.parts[F.find_part(s, "VENT")].p["normally_open"] = 0.0
 
     sim, c = controller(s, """
         actuation_delay_s = 0.5
@@ -260,6 +266,12 @@ end
     _, c2 = controller(s, vent * "open_above = { a = 2, default = 3 }\n" * steps)
     @test F._at(c2.policies[1].open_above, "a") == 2 && F._at(c2.policies[1].open_above, "b") == 3
     @test_throws ErrorException controller(s, vent * "open_above = { a = 2 }\n" * steps)            # no value for b
+    sim2, c2 = controller(s, vent * "open_above = { a = 2, default = 3 }\n" * steps)
+    p2 = c2.policies[1]
+    c2.obs["PT.P_read"] = 2.5
+    c2.step = "a"; F._tick!(p2, c2, sim2, 0.0)          # above step a's level: opens
+    c2.step = "b"; p2.open = false; F._tick!(p2, c2, sim2, 1.0)   # below step b's: stays shut
+    @test [x.action for x in c2.log] == ["open"]
     @test_throws ErrorException controller(s, vent * "open_above = { a = 2, c = 3, b = 1 }\n" * steps)   # no step c
     @test_throws ErrorException controller(s, vent * "open_above = { a = 2, b = 1 }\n")              # no steps at all
 end
@@ -408,4 +420,103 @@ end
     @test_throws ErrorException F.read_study(file("b4.toml", replace(body, "mark = \"up\", plus_s = 2" => "mark = \"down\", plus_s = 2")))
     @test_throws ErrorException F.read_study(file("b5.toml", body * "[vary]\n\"BOTTLE.T_C\" = [20]\n"))       # set by a case and varied
     @test_throws ErrorException F.read_study(file("b6.toml", replace(body, r"\[controller\][\s\S]*\[metrics\]" => "[metrics]")))   # keyed actions need a controller
+end
+
+@testset "control: metrics on switching, regulation, margins and the procedure" begin
+    s = gauged_rig()
+    sim, c = controller(s, """
+        [[policy]]
+        name = "vent"
+        kind = "hysteresis"
+        reading = "PT.P_read"
+        actuator = "VENT"
+        open_above = 2
+        close_below = 1
+        [[step]]
+        name = "fill"
+        [[step]]
+        name = "hold"
+        """)
+    F.run_until!(sim, 100.0)
+    # a hand-built command list: open 10-20, 30-35, 37-60 (the 50 s close is to the other valve)
+    for (t, part, a) in [(10, "VENT", "open"), (20, "VENT", "close"), (30, "VENT", "open"), (35, "VENT", "close"), (37, "VENT", "open"),
+                         (50, "FILL", "close"), (60, "VENT", "close")]
+        push!(c.log, F.Command(t, "vent", part, a, 0.0))
+    end
+    mm(fn; kw...) = F._ctl_metric(sim, c, Dict{String,Any}("fn" => fn, "actuator" => "VENT", (String(k) => v for (k, v) in kw)...), 101325.0)
+    @test mm("cmds") == 6 && mm("cycles") == 3 && mm("cmds_per_hour") ≈ 6 / (100 / 3600)
+    @test mm("min_interval_s") == 2 && mm("max_cmds_in"; window_s = 10) == 3 && mm("max_cmds_in"; window_s = 1) == 1
+    @test mm("open_s") == 10 + 5 + 23 && mm("duty") ≈ 38 / 100 && mm("longest_open_s") == 23 && mm("longest_shut_s") == 40
+    @test mm("n2_used"; per_cmd = 0.5) == 3 && mm("recharge_violations"; recharge_s = 5) == 1
+    @test mm("cmds"; from = 15, to = 36) == 3 && mm("open_s"; from = 15, to = 36) == 5 + 5     # a window cuts the stretches
+    @test mm("longest_shut_s"; from = 15, to = 36) == 10 && mm("open_s"; from = 61, to = 100) == 0
+    c.t_start["fill"], c.t_end["fill"], c.marks["ready"] = 0.0, 40.0, 70.0
+    @test mm("step_s"; step = "fill") == 40 && isnan(mm("step_s"; step = "hold")) && mm("t_mark"; mark = "ready", from = 40.0) == 30
+    @test mm("stalled"; step = "fill", signal = "TANK.m", below = 1e9) == 1 && mm("stalled"; step = "fill", signal = "TANK.m", below = -1) == 0
+    # regulation, on a made-up signal: in the band 100-200 from 5 s to 15 s and from 25 s on
+    empty!(sim.t_hist); append!(sim.t_hist, [0.0, 10.0, 20.0, 30.0, 40.0]); sim.hist["X"] = [50.0, 150.0, 250.0, 150.0, 150.0]
+    reg(fn; kw...) = F.metric(sim, Dict{String,Any}("fn" => fn, "signal" => "X", "lo" => 100, "hi" => 200, (String(k) => v for (k, v) in kw)...), 0.0)
+    @test reg("time_in_band") ≈ 5 + 5 + 5 + 10 && reg("time_in_band_frac") ≈ 25 / 40
+    @test reg("max_above") ≈ 50 && reg("max_below") ≈ 50 && reg("time_to_band") ≈ 5 && reg("band_exits") == 1 && reg("peak") == 250
+    @test reg("time_to_band"; from = 12) ≈ 0 && isnan(reg("time_to_band"; lo = 300, hi = 400))
+    @test F.metric(sim, Dict{String,Any}("fn" => "cold_exposure", "signal" => "X", "below" => 100), 0.0) ≈ 50 * 5 / 2       # the first 5 s, under 100 by 50 falling to 0
+    @test F.metric(sim, Dict{String,Any}("fn" => "max_above", "signal" => "X", "hi" => 200 - F.PSI, "unit" => "psi"), 0.0) ≈ 50 / F.PSI + 1
+    # margins and mass through a part
+    sim.hist["PRV.mdot"] = [0.0, 0.1, 0.0, 0.2, 0.2]; sim.hist["PRV.set"] = fill(300.0, 5)
+    part(fn; kw...) = F.metric(sim, Dict{String,Any}("fn" => fn, "part" => "PRV", (String(k) => v for (k, v) in kw)...), 0.0)
+    @test part("relief_kg") ≈ 0.5 + 0.5 + 1 + 2 && part("relief_lifts") == 2 && part("prv_margin_psi"; signal = "X") ≈ 50 / F.PSI
+    @test part("vented_kg"; from = 30) ≈ 2
+    sim.hist["TANK.liquid_frac"] = [0.0, 0.5, 0.9, 0.7, 0.7]
+    @test F.metric(sim, Dict{String,Any}("fn" => "liquid_frac_max", "vessel" => "TANK"), 0.0) == 0.9
+    @test F.metric(sim, Dict{String,Any}("fn" => "m_at", "signal" => "X", "at" => 15.0), 0.0) ≈ 200 && isnan(F.metric(sim, Dict{String,Any}("fn" => "m_at", "signal" => "X", "at" => 50.0), 0.0))
+end
+
+@testset "control: metrics in a study, by name, with windows from events" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), gauged_rig())
+    file(name, body) = (p = joinpath(dir, name); write(p, body); p)
+    table(path) = (lines = readlines(path); (split(lines[1], ','), [split(l, ',') for l in lines[2:end]]))
+    body = """
+        scene = "rig.toml"
+        until = { step = "hold", edge = "end", max_s = 100 }
+        [controller]
+        dt = 0.5
+        [[controller.step]]
+        name = "fill"
+        on_enter = [{ part = "FILL", action = "open" }]
+        on_exit = [{ part = "FILL", action = "close" }]
+        duration_s = 15
+        [[controller.step]]
+        name = "hold"
+        duration_s = 30
+        [[controller.policy]]
+        name = "vent"
+        kind = "hysteresis"
+        reading = "PT.P_read"
+        actuator = "VENT"
+        open_above_psig = 300
+        close_below_psig = 250
+        min_shut_s = 2
+        [metrics]
+        cycles = { fn = "cycles", actuator = "VENT" }
+        cycles_hold = { fn = "cycles", actuator = "VENT", from = { step = "hold" } }
+        duty = { fn = "duty", actuator = "VENT" }
+        fill_s = { fn = "step_s", step = "fill" }
+        m_fire = { fn = "m_at_fire", signal = "TANK.m" }
+        m_10 = { fn = "m_at", signal = "TANK.m", at = { step = "fill", plus_s = 10 } }
+        m_late = { fn = "m_at", signal = "TANK.m", at = { step = "hold", edge = "end", plus_s = 10 } }
+        vented = { fn = "vented_kg", part = "VENT" }
+        in_band = { fn = "time_in_band_frac", signal = "TANK.P", lo_psig = 500, hi_psig = 2000, from = { step = "hold" } }
+        relief = { fn = "relief_kg", part = "PRV" }
+        """
+    head, rows = table(F.study(file("m.toml", body); quiet = true, keep_traces = true))
+    @test isfile(joinpath(dir, "m_results", "traces", "1.csv"))               # metrics with no signal leave the traces alone
+    val(name) = (x = rows[1][findfirst(==(name), head)]; isempty(x) ? NaN : parse(Float64, x))
+    @test isempty(rows[1][findfirst(==("failed"), head)]) && val("fill_s") == 15 && val("t_end") == 45
+    @test val("cycles") >= val("cycles_hold") && val("cycles") >= 1 && 0 < val("duty") < 1 && val("vented") > 0 && val("relief") == 0
+    @test val("m_fire") > val("m_10") > 0 && isnan(val("m_late")) && val("in_band") == 1     # the vent cannot bring a full tank down in 30 s
+    @test_throws ErrorException F.read_study(file("b1.toml", body * "bad = { fn = \"cycles\" }\n"))                         # no actuator
+    @test_throws ErrorException F.read_study(file("b2.toml", body * "bad = { fn = \"relief_kg\", part = \"VENT\" }\n"))     # not a relief valve
+    @test_throws ErrorException F.read_study(file("b3.toml", body * "bad = { fn = \"step_s\", step = \"fire\" }\n"))
+    @test_throws ErrorException F.read_study(file("b4.toml", body * "bad = { fn = \"max_above\", signal = \"TANK.P\", hi = 1, unit = \"psig\" }\n"))
 end

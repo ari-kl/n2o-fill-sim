@@ -37,7 +37,7 @@ mutable struct Hysteresis <: Policy
     close_below::PerStep
     min_open_s::PerStep
     min_shut_s::PerStep
-    open::Bool                                # what it last commanded (it starts believing the valve shut)
+    open::Bool                                # what it last commanded (to start with, where the valve is at the start)
     t_last::Float64                           # when it last commanded anything
 end
 
@@ -395,6 +395,13 @@ function _controller(spec, scene::Scene, sim::Sim; seed = "", allow_julia = fals
     for q in policies, a in _actuators(q)
         _check_actuator(q, a, scene, "$where: policy $(q.name)")
     end
+    # A valve policy starts from where its valve is at the start of the run: shut, or open if it
+    # is a normally-open valve (a run starts de-energised). A pulse on an open valve ends at once.
+    for q in policies
+        q isa Union{Hysteresis,PulseWait} || continue
+        open = valve_cmd(sim.net.edges[findfirst(e -> e.name == q.actuator, sim.net.edges)]) > 0
+        q isa Hysteresis ? (q.open = open) : open && (q.phase = :pulse)
+    end
     for s in stand_ins
         s in values(source) || error("$where: stand_ins names $s, which nothing reads")
     end
@@ -693,4 +700,73 @@ function run_controlled!(sim::Sim, c::Controller, until; wall_limit = Inf, work_
         _pad!(c, sim)                          # whatever stopped the run, the ctl.* signals cover it
     end
     sim
+end
+
+# ---------------------------------------------------------------- metrics on what the controller did
+
+# A command's meaning for a valve or heater: open (or on), shut (or off), or neither.
+_opens(a::Command) = a.action in ("open", "on") || (a.action == "set" && a.value > 0)
+_shuts(a::Command) = a.action in ("close", "off", "deenergise") || (a.action == "set" && a.value <= 0)
+
+"""
+The stretches over which an actuator was commanded open and shut within [a, b], from the
+controller's command log: a list of (from, to, open). Before its first command it counts as shut.
+"""
+function _command_states(log, actuator, a, b)
+    out, state, since = Tuple{Float64,Float64,Bool}[], false, a
+    for x in log
+        x.part == actuator || continue
+        want = _opens(x) ? true : _shuts(x) ? false : state
+        x.t <= a && (state = want; continue)
+        x.t >= b && break
+        want == state && continue
+        push!(out, (since, x.t, state))
+        state, since = want, x.t
+    end
+    push!(out, (since, b, state))
+    out
+end
+
+"""
+    _ctl_metric(sim, c, m, p_atm) -> value
+
+A metric on what the controller did over the window [`from`, `to`] (default the whole run), with
+its events already made times. Switching: the commands sent to `actuator` (`cmds`, `cycles`, the
+opening ones, `cmds_per_hour`, `min_interval_s` between two, `max_cmds_in` any `window_s`,
+`recharge_violations`: those less than `recharge_s` after the one before, `n2_used`: `per_cmd`
+for each), and the time it was commanded open (`open_s`, `duty`, `longest_open_s`,
+`longest_shut_s`). Procedure: `step_s` (how long a step ran), `t_mark` (when a mark happened,
+after `from`), `stalled` (1 if `signal` was below `below` when the step ended), `m_at_fire` (the
+signal where the run ended on its step's edge).
+"""
+function _ctl_metric(sim::Sim, c::Controller, m, p_atm)
+    fn = m["fn"]
+    a, b = Float64(get(m, "from", 0.0)), Float64(get(m, "to", simtime(sim)))
+    if fn == "step_s"
+        return get(c.t_end, m["step"], NaN) - get(c.t_start, m["step"], NaN)
+    elseif fn == "t_mark"
+        return get(c.marks, m["mark"], NaN) - Float64(get(m, "from", 0.0))
+    elseif fn == "stalled"
+        t = get(c.t_end, m["step"], NaN)
+        return isnan(t) ? NaN : signal_at(sim, m["signal"], t) < _si(m, "below", p_atm) ? 1.0 : 0.0
+    elseif fn == "m_at_fire"
+        t = c.ended ? get(c.end_on[2] == "start" ? c.t_start : c.t_end, c.end_on[1], NaN) : NaN
+        return isnan(t) ? NaN : signal_at(sim, m["signal"], t)
+    end
+    all_t = [x.t for x in c.log if x.part == m["actuator"]]
+    ts = [t for t in all_t if a - 1e-9 <= t <= b + 1e-9]
+    fn == "cmds" && return length(ts)
+    fn == "cycles" && return count(x -> x.part == m["actuator"] && a - 1e-9 <= x.t <= b + 1e-9 && _opens(x), c.log)
+    fn == "cmds_per_hour" && return length(ts) / ((b - a) / 3600)
+    fn == "min_interval_s" && return length(ts) < 2 ? NaN : minimum(diff(ts))
+    fn == "max_cmds_in" && return maximum((count(u -> t <= u < t + m["window_s"], ts) for t in ts); init = 0)
+    fn == "n2_used" && return length(ts) * Float64(m["per_cmd"])
+    fn == "recharge_violations" && return count(k -> k > 1 && all_t[k] - all_t[k-1] < m["recharge_s"] - 1e-9 && a - 1e-9 <= all_t[k] <= b + 1e-9, eachindex(all_t))
+    states = _command_states(c.log, m["actuator"], a, b)
+    open_s = sum((t1 - t0 for (t0, t1, o) in states if o); init = 0.0)
+    fn == "open_s" && return open_s
+    fn == "duty" && return open_s / (b - a)
+    fn == "longest_open_s" && return maximum((t1 - t0 for (t0, t1, o) in states if o); init = 0.0)
+    fn == "longest_shut_s" && return maximum((t1 - t0 for (t0, t1, o) in states if !o); init = 0.0)
+    error("no controller metric $fn")
 end
