@@ -1,40 +1,51 @@
 # n2o-fill-sim model
 
 What the simulator computes, where each piece comes from, what it leaves out, and how well it
-reproduced the one fill it has been compared with. Read this before trusting a number.
+reproduced the test logs it has been compared with. It is for anyone who wants to trust, check or
+change a number the simulator gives: read it before relying on one.
 
-SI units throughout the code; pressures are absolute. Gauge values in the window and in scene
-files are relative to the `P_atm_kPa` setting.
+Sections 1 to 5 describe the model, section 6 what it leaves out, sections 7 and 8 the comparison
+with test logs, and section 9 gives property numbers for planning a fill. Sources are in
+section 10.
+
+The code uses SI units throughout, and pressures are absolute. Gauge values in the window and in
+scene files are relative to the `P_atm_kPa` setting.
 
 ## 1. Structure
 
 A scene compiles to a graph.
 
-- **Vessels** (Bottle, Tank) hold nitrous and carry all the state.
-- **Flow parts** (Pipe, Valve, Orifice, Regulator, CheckValve, ReliefValve) are edges. Each gives a
-  mass flow from the pressure at each end and the enthalpy of whatever is upstream. They hold no
-  fluid.
-- **Junctions**, where wires meet without a vessel, hold no fluid either. Their pressures are
-  whatever makes inflow equal outflow, solved every time the equations are evaluated, the way a
-  circuit simulator solves node voltages. Streams meeting at a junction mix (enthalpy is carried
-  with the flow), so flashing across a regulator or along a hose appears without special handling.
-- **Atmosphere** is a fixed pressure. Mass and enthalpy sent to it are totalled.
-- **Dead ends** are removed before the junction pressures are solved. A junction with only one
-  open path cannot pass flow, so it simply takes the pressure of what it hangs off and the part
-  leading to it carries exactly zero. With every valve shut there is nothing left to solve.
-  Where the part leading to the dead end shuts on the dead end's own pressure, it stops earlier:
-  behind a shut valve a regulator's outlet rests at min(supply, set-point) (lock-up) and never
-  falls with the supply (it is one-way); a check valve stops one cracking pressure short; a relief
-  valve reseats at its set pressure.
-- **Solving the junctions**: Newton's method on the junction pressures, to a mass imbalance of
-  1e-9 of the largest flow. It also stops once no pressure moves by more than 0.01 Pa, because
-  the flow laws carry round-off of their own (largest with supercritical fluid upstream) and near
-  it that tolerance cannot be met; an imbalance under 1e-6 of the largest flow is then accepted.
-  If Newton does not settle (a check valve cracking, a restriction starting to choke), each
-  junction is balanced in turn with its neighbours held, repeatedly. A solve that still fails is
-  counted, and the window shows the count in amber. A junction that is in balance and that no
-  flow responds to (every part on it at rest) is held where it is while the others are solved;
-  left in, its empty row makes the whole system singular.
+| Element | Role |
+|---|---|
+| Vessels (Bottle, Tank) | Hold nitrous and carry all the state. |
+| Flow parts (Pipe, Valve, Orifice, Regulator, CheckValve, ReliefValve) | Edges. Each gives a mass flow from the pressure at each end and the enthalpy of whatever is upstream. They hold no fluid. |
+| Junctions (where wires meet without a vessel) | Hold no fluid either. Their pressures are whatever makes inflow equal outflow. |
+| Atmosphere | A fixed pressure. Mass and enthalpy sent to it are totalled. |
+
+### Junction pressures
+
+Junction pressures are solved every time the equations are evaluated, the way a circuit simulator
+solves node voltages. Streams meeting at a junction mix (enthalpy is carried with the flow), so
+flashing across a regulator or along a hose appears without special handling.
+
+Dead ends are removed before the solve. A junction with only one open path cannot pass flow, so
+it takes the pressure of what it hangs off and the part leading to it carries exactly zero. With
+every valve shut there is nothing left to solve. Where the part leading to the dead end shuts on
+the dead end's own pressure, it stops earlier: behind a shut valve a regulator's outlet rests at
+min(supply, set-point) (lock-up) and never falls with the supply (it is one-way); a check valve
+stops one cracking pressure short; a relief valve reseats at its set pressure.
+
+The solve is Newton's method on the junction pressures, to a mass imbalance of 1e-9 of the
+largest flow. It also stops once no pressure moves by more than 0.01 Pa, because the flow laws
+carry round-off of their own (largest with supercritical fluid upstream) and near it that
+tolerance cannot be met; an imbalance under 1e-6 of the largest flow is then accepted. If Newton
+does not settle (a check valve cracking, a restriction starting to choke), each junction is
+balanced in turn with its neighbours held, repeatedly. A solve that still fails is counted, and
+the window shows the count in amber. A junction that is in balance and that no flow responds to
+(every part on it at rest) is held where it is while the others are solved; left in, its empty
+row makes the whole system singular.
+
+### Time stepping
 
 The vessel states are integrated with a stiff ODE solver (Rodas5P, adaptive step). Valve strokes,
 schedule actions and switches between vessel modes happen between steps.
@@ -42,8 +53,10 @@ schedule actions and switches between vessel modes happen between steps.
 The solver chooses its own step size (milliseconds as a valve opens, seconds when nothing is
 changing) and is allowed to run ahead of the time being displayed; what is shown and recorded is
 read off its interpolant. When a valve is clicked the solver is wound back to the displayed time
-first, so the click takes effect exactly then. Forcing a step to end on every screen frame, as the
-first version did, cost 60 steps per simulated second and made the window lag.
+first, so the click takes effect exactly then. The alternative, forcing a step to end on every
+screen frame, costs 60 steps per simulated second and makes the window lag.
+
+### Balances and recording
 
 A running total of mass and energy (vessel contents + wall heat + vented − heat taken in) is kept
 and shown; it should stay at zero. In the tests it holds to about 1e-6 (mass) and 1e-5 (energy).
@@ -61,8 +74,8 @@ timestamped log of every action applied. The README lists the exported columns.
   table has 2048 rows and is read as a cubic with fourth-order slopes, which reproduces the
   equation of state to about 1e-11. That accuracy is not for its own sake: where an expansion
   enters the dome the table takes over from the equation of state, and any mismatch is a step in
-  the flux that the junction solve can cycle around (an earlier 512-row table, good to 1e-7
-  inside and 1e-4 at its ends, did exactly that).
+  the flux that the junction solve can cycle around (a 512-row table, good to 1e-7 inside and
+  1e-4 at its ends, does exactly that).
 - States are found from (ρ, u), (P, h) or (P, s) by Newton's method; inside the dome they are
   equilibrium liquid/vapour mixtures.
 - Checked in the tests against CoolProp (saturation line to 1e-5 or better, single-phase states to
@@ -110,7 +123,9 @@ Every flow part is an effective area times one mass-flux function G(P₁, h₁, 
 
 ## 4. Bottles and tanks (`src/vessel.jl`)
 
-**Stratified mode** (the normal one). States: liquid mass and temperature, ullage N2O mass and
+### Stratified mode
+
+The normal mode. States: liquid mass and temperature, ullage N2O mass and
 temperature, wall temperature, air mass. Following Zilliac & Karabeyoglu (2005) as set out in
 Zimmerman et al. (2013):
 
@@ -128,8 +143,8 @@ Zimmerman et al. (2013):
   wetted and dry areas, scaled by `h_in_mult`. Outside: natural convection (0.59·Ra^¼) combined
   with wind over a cylinder (Hilpert), scaled by `h_ext_mult`; absorbed sunlight on the projected
   area; infrared exchange with ambient; heater power.
-- Optional wall model, **off by default** (each is a parameter of the vessel; left off, the
-  equations and results are exactly as before):
+- Optional wall model, off by default. Each part of it is a parameter of the vessel, and with
+  all three left off the equations and results are those of the single wall temperature above:
   - `wall_split = 1`: two wall temperatures instead of one. The tube (a share `wall_tube_frac` of
     the wall mass) exchanges heat with the liquid over its wetted part and with the ullage over
     its dry part, and takes the sun and the heater; the ends take the bottom to the liquid and the
@@ -159,10 +174,12 @@ Zimmerman et al. (2013):
   vapour bubbling up through the liquid heats it; if that leaves it superheated it boils at the
   surface). Inflow through a port in the ullage is flashed at tank pressure and split.
 - Geometry is an upright cylinder of the given volume and diameter.
-- Air is a simplification: it adds partial pressure and leaves with vented ullage gas, but has no
-  mass or heat capacity in the balances.
+- Air in the ullage is a second, ideal gas with its own mass, heat capacity and partial pressure.
+  It leaves with vented ullage gas. Section 6 gives the limits of this.
 
-**Homogeneous mode.** One mixed volume at (m, U) with the full equation of state. A vessel switches
+### Homogeneous mode
+
+One mixed volume at (m, U) with the full equation of state. A vessel switches
 to it when ullage falls below 0.5 % of the volume, or the liquid passes 35.3 °C, and switches back
 when a real ullage reappears. Mass and energy carry over exactly. This is what makes an overfilled
 tank warming up show a steep pressure rise and lift its relief valve instead of failing.
@@ -176,8 +193,8 @@ section 9.
 
 ## 6. What is left out, and numerical compromises
 
-- **The lines hold no fluid.** The first design gave every junction a volume and a fluid state, to
-  show a hose charging and liquid trapped between closed valves. It could not be solved reliably:
+- **The lines hold no fluid.** Giving every junction a volume and a fluid state would show a
+  hose charging and liquid trapped between closed valves, but it could not be solved reliably:
   a few millilitres of nearly incompressible liquid sitting on the edge of boiling make the
   equations so stiff and kinked that every solver tried took microsecond steps or stalled.
   Consequences: no hose-charging transient; the slug of liquid in a pre-charged hose does not
@@ -199,7 +216,8 @@ section 9.
   flow of nearly pure air by about a fifth), and anything that flows back in from the atmosphere
   arrives as N2O. A tank's worth of air is tens of grams, so this matters only until the first
   N2O has displaced it.
-- One wall temperature per vessel; no conduction along the wall or into stands and plumbing.
+- One wall temperature per vessel (two with `wall_split`, section 4); no conduction along the
+  wall beyond that link, or into stands and plumbing.
 - A single liquid temperature: no warm surface layer. Vent rebound comes only from the lag between
   liquid and ullage.
 - No boiling swell. In a real tank, bubbles formed in the liquid while venting raise the level for
@@ -211,11 +229,12 @@ section 9.
   along its length.
 - The relief valve has no pop and reseat hysteresis.
 
-## 7. Calibration against HF4 (2026-07-11)
+## 7. Calibration against HF4
 
-`scenes/hf4.toml` is the fill panel and tank from the Chimera FDR (Fig. 35). The logged valve and
-heater states (`test/data/hf4_fill_10hz.csv`, a 10 Hz slice of the hot-fire log) drive the model
-from device time 9020 s to 10010 s. Values fitted, in the order they were pinned down:
+HF4 was a static hot fire on 2026-07-11. `scenes/hf4.toml` is the fill panel and tank as drawn
+in the motor's final design report (Fig. 35). The logged valve and heater states
+(`test/data/hf4_fill_10hz.csv`, a 10 Hz slice of the hot-fire log) drive the model from device
+time 9020 s to 10010 s. Values fitted, in the order they were pinned down:
 
 | Parameter | Value | Pinned by |
 |---|---|---|
@@ -249,9 +268,9 @@ This is a fit to one fill, with five adjusted numbers. It shows the model has th
 (bottle cooling sets the stall; the vent sets a floor near the liquid's vapour pressure; heat
 through the wall sets the slow drift). It is not a validation.
 
-### Independent check: HF3 (2026-06-07)
+### Independent check: HF3
 
-HF3 was a different procedure on the same hardware: AV-203 open first, then one unvented fill
+HF3 (2026-06-07) was a different procedure on the same hardware: AV-203 open first, then one unvented fill
 through AV-201 for 288 s, bottle at 849 psig. The HF4 scene was run against it with nothing
 re-fitted. Only the bottle's starting pressure (measured) and the ambient temperature (22 °C, a
 guess; the log has no temperature) were changed. `test/data/hf3_fill_10hz.csv`.
@@ -270,15 +289,16 @@ After the fill, HF3's log shows the run heater switched on for 150 s while tank 
 about 5 psi; the model with HF4's 300 W rises 20 psi. The log records that the heater was switched
 on, not what it delivered.
 
-Speed: the 990 s HF4 replay takes about 0.3 s (548 solver steps, about 310,000 equation-of-state
+### Speed
+
+The 990 s HF4 replay takes about 0.3 s (548 solver steps, about 310,000 equation-of-state
 evaluations). In the window at ×1 the solver uses a few hundredths of a millisecond of a typical
 frame and 3.5 ms in the worst single step. `test/stress.jl` drives scenes nobody tuned (a bottle
 heated until supercritical, and random plumbing from default parts); chains of check valves and
 regulators are the remaining weak spot, with junction solves that fail to settle and frames of up
-to about 0.6 s.
-`test/bench.jl` prints these numbers.
+to about 0.6 s. `test/bench.jl` prints these numbers.
 
-### Further checks: HF3 cold flow and LC26 day 4 (2026-11-22)
+### Further checks: HF3 cold flow and LC26 day 4
 
 Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (data in `test/data`).
 
@@ -392,8 +412,8 @@ replace them:
 - The design day at the launch site: maximum ambient temperature and sun, and the expected wait
   between disconnect and fire.
 - What bottle temperature control is available on site (shade, ice, a cooler).
-- Temperatures: none of the logs has one. Thermocouples on the fill and vent lines would show
-  flash and liquid at the vent directly.
+- Temperatures: of the four logs only LC26 day 4 has any (thermistors on the tank). Thermocouples
+  on the fill and vent lines would show flash and liquid at the vent directly.
 
 ## 10. Sources
 
@@ -417,4 +437,4 @@ replace them:
 - Bergman et al., "Fundamentals of Heat and Mass Transfer" (natural convection on a vertical
   surface; Hilpert correlation for a cylinder in cross flow). The constants for these two and for
   air properties were written from the textbook values, not checked against a copy.
-- QRET Chimera Final Design Report (2026) and the Static Fire Procedure, for the plumbing.
+- The motor's final design report (2026) and static fire procedure, for the plumbing.
