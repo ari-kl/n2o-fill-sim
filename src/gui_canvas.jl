@@ -24,12 +24,27 @@ function part_at(app::App, wx, wy)
     nothing
 end
 
+"""
+How near the pointer must be, in grid units, to take a pin or a wire corner: 0.35 of a grid square,
+but never less than 8 pixels on the screen. Zoomed right out, 0.35 of a square is 3 pixels, too
+small a thing to hit.
+"""
+grab_radius(app::App) = max(0.35, px(8) / grid(app))
+
+# The nearest within reach, not the first: zoomed out, the reach of neighbouring pins overlaps.
+# Zoomed out, the reach of a part's own pins also covers nearly all of its body, which would leave
+# nowhere to click to select or drag it. So over a body, beyond the 0.35 a pin always has, a pin
+# is taken only where the pointer is nearer to it than to the middle of the part.
 function pin_at(app::App, wx, wy)
+    best, found = grab_radius(app), nothing
+    over = part_at(app, wx, wy)
+    over === nothing || (best = min(best, max(0.35, hypot(wx - over.x, wy - over.y))))
     for part in app.scene.parts, pin in KINDS[part.kind].pins
         px_, py_ = pin_pos(part, pin)
-        hypot(wx - px_, wy - py_) < 0.35 && return (part.name, pin.name)
+        d = hypot(wx - px_, wy - py_)
+        d < best && ((best, found) = (d, (part.name, pin.name)))
     end
-    nothing
+    found
 end
 
 """
@@ -69,12 +84,14 @@ function wire_at(app::App, wx, wy)
     nothing
 end
 
-"The wire corner under a point, as (wire index, corner index), or `nothing`."
+"The wire corner under a point (the nearest within reach), as (wire index, corner index), or `nothing`."
 function via_at(app::App, wx, wy)
+    best, found = grab_radius(app), nothing
     for (i, w) in enumerate(app.scene.wires), (k, v) in enumerate(w.via)
-        hypot(wx - v[1], wy - v[2]) < 0.35 && return (i, k)
+        d = hypot(wx - v[1], wy - v[2])
+        d < best && ((best, found) = (d, (i, k)))
     end
-    nothing
+    found
 end
 
 "Choose zoom and offset so the whole schematic is visible, with room for the labels."
@@ -389,14 +406,21 @@ function draw_canvas(app::App)
             x += step
         end
     end
-    for w in app.scene.wires
+    # The pin or wire corner a click would take now is drawn lit, so that a target grown to a
+    # usable size is not a surprise. A pin wins over a corner, as it does on the click.
+    aim = hovered && !live && isempty(app.placing) && !ig.IsMouseDown(0)
+    hot_pin = aim ? pin_at(app, wx, wy) : nothing
+    hot_via = aim && hot_pin === nothing ? via_at(app, wx, wy) : nothing
+    for (i, w) in enumerate(app.scene.wires)
         c = live ? something(pin_tint(app, w.a[1], w.a[2]), C_WIRE) : C_WIRE
         t = (live && app.colour_by !== :none ? 3f0 : 2f0) * UI[]
         each_run((x1, y1, x2, y2, _) -> (ig.AddLine(dl, w2s(app, x1, y1), w2s(app, x2, y2), c, t); false), app, w)
         live && continue
-        for v in w.via                                         # corners can be dragged while editing
+        for (k, v) in enumerate(w.via)                         # corners can be dragged while editing
             x, y = w2s(app, v...)
-            ig.AddRectFilled(dl, (x - px(3), y - px(3)), (x + px(3), y + px(3)), C_WIRE)
+            hot = hot_via == (i, k)
+            r = px(hot ? 5 : 3)
+            ig.AddRectFilled(dl, (x - r, y - r), (x + r, y + r), hot ? C_SEL : C_WIRE)
         end
     end
     for part in app.scene.parts
@@ -405,6 +429,7 @@ function draw_canvas(app::App)
     if !live
         for part in app.scene.parts, pin in KINDS[part.kind].pins
             ig.AddCircle(dl, w2s(app, pin_pos(part, pin)...), px(4), app.wire_from == (part.name, pin.name) ? C_SEL : col(120, 200, 140), 0, 1.5f0 * UI[])
+            hot_pin == (part.name, pin.name) && ig.AddCircleFilled(dl, w2s(app, pin_pos(part, pin)...), px(5), C_SEL)
         end
         if app.wire_from !== nothing
             i = find_part(app.scene, app.wire_from[1])

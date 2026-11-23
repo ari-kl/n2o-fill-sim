@@ -1,6 +1,6 @@
 # Drives the real window with injected mouse and key events and checks what happened.
 #   julia --project test/gui_input.jl [screenshot.ppm]
-# Needs a display. Keep the mouse off the window while it runs (about 5 s): real mouse movement
+# Needs a display. Keep the mouse off the window while it runs (about 15 s): real mouse movement
 # is input too and can make a step miss. A failed step is worth re-running before believing it.
 using N2OFillSim
 const F = N2OFillSim
@@ -215,8 +215,17 @@ shift(756, true); ctrl(757, ig.ImGuiKey_Z); shift(762, false)
 check(764, "Ctrl+Shift+Z redoes", () -> part("AV201").p[PARAM] == 317)
 ctrl(766, ig.ImGuiKey_Z)
 
+# --- zoomed right out, a pin is still a target: 0.35 of a grid square is 3 pixels there
+at(772, () -> (app.zoom = 0.35f0; app.origin = (app.canvas[1] + 100f0, app.canvas[2] + 300f0)))
+click(774, 11, 4; dy = -6)                                    # 6 pixels above AV201's pin a
+check(778, "at minimum zoom a click 6 pixels from a pin takes the pin", () -> app.wire_from == ("AV201", "a"))
+key(779, ig.ImGuiKey_Escape)
+click(782, 12, 4; dx = 3)                                     # within reach of both its pins, nearer its middle
+check(786, "and a click near the middle of the part still selects the part", () -> app.wire_from === nothing && app.sel == ["AV201"])
+key(787, ig.ImGuiKey_F)
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "774")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "792")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)
