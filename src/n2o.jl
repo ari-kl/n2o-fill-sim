@@ -44,18 +44,31 @@ function eos(ρ, T)
     TALLY.on && (TALLY.eos += 1)
     δ, τ = ρ / N2O_RHOC, N2O_TC / T
     ar = ar_d = ar_t = ar_dd = ar_dt = ar_tt = 0.0
+    # Every temperature exponent is a multiple of 1/8, so one eighth root and whole-number powers
+    # replace twelve real powers, and the three exp(-δ^l) are worked out once each. This function
+    # is a third of a run's time.
+    τ8 = sqrt(sqrt(sqrt(τ)))
+    a2 = τ8 * τ8; a4 = a2 * a2; a7 = a4 * a2 * τ8; a10 = τ * a2; a12 = τ * a4; a16 = τ * τ
+    a17 = a16 * τ8; a19 = a17 * a2; a28 = a16 * a12; a38 = a28 * a10; a52 = a28 * a16 * τ; a100 = a52 * a38 * a10
+    τp = (a2, a10, a12, a2, a7, a19, a16, a17, a28, a52, a38, a100)         # τ^_T[k]: _T in eighths is 2, 10, 12, 2, 7, 19, 16, 17, 28, 52, 38, 100
+    δ2 = δ * δ; δ3 = δ2 * δ; δ4 = δ2 * δ2
+    δp = (δ, δ, δ, δ3, δ4 * δ3, δ, δ2, δ4 * δ, δ, δ, δ4, δ2)                # δ^_D[k]
+    δls = (0.0, δ, δ2, δ3)
+    es = (1.0, exp(-δ), exp(-δ2), exp(-δ3))
     for k in 1:12
         n, d, t, l = _N[k], _D[k], _T[k], _L[k]
-        δl = l == 0 ? 0.0 : δ^l
-        term = n * δ^d * τ^t * (l == 0 ? 1.0 : exp(-δl))
+        δl = δls[l+1]
+        term = n * δp[k] * τp[k] * es[l+1]
         q = d - l * δl                      # δ·∂/∂δ acting on the term
         ar += term
-        ar_d += term * q / δ
-        ar_dd += term * (q * (q - 1) - l^2 * δl) / δ^2
-        ar_t += term * t / τ
-        ar_tt += term * t * (t - 1) / τ^2
-        ar_dt += term * q * t / (δ * τ)
+        ar_d += term * q
+        ar_dd += term * (q * (q - 1) - l^2 * δl)
+        ar_t += term * t
+        ar_tt += term * (t * (t - 1))
+        ar_dt += term * (q * t)
     end
+    iδ, iτ = 1 / δ, 1 / τ                   # the divisions, once each instead of in every term
+    ar_d *= iδ; ar_dd *= iδ * iδ; ar_t *= iτ; ar_tt *= iτ * iτ; ar_dt *= iδ * iτ
     a0 = log(δ) + _A1 + _A2 * τ + 2.5 * log(τ)
     a0_t = _A2 + 2.5 / τ
     a0_tt = -2.5 / τ^2
