@@ -4,8 +4,22 @@ const PLOT_KINDS = ((:pressure, "Pressure"), (:temperature, "Temperature"), (:fl
                     (:share, "Liquid share"), (:state, "Valves and heaters"))
 const MAX_POINTS = 4000       # per line; longer histories are drawn every k-th sample
 
-# Draw every k-th sample straight from the arrays (stride is in bytes), without copying them.
-strided(k) = (base = ImPlot.ImPlotSpec(); ImPlot.ImPlotSpec(ntuple(i -> fieldname(ImPlot.ImPlotSpec, i) === :Stride ? Int32(8k) : getfield(base, i), fieldcount(ImPlot.ImPlotSpec))...))
+# The default plot style with some fields changed. `Stride` is in bytes: 8k draws every k-th
+# sample straight from the arrays, without copying them.
+function plot_spec(; changes...)
+    base = ImPlot.ImPlotSpec()
+    ImPlot.ImPlotSpec(ntuple(fieldcount(ImPlot.ImPlotSpec)) do i
+        f = fieldname(ImPlot.ImPlotSpec, i)
+        haskey(changes, f) ? convert(fieldtype(ImPlot.ImPlotSpec, i), changes[f]) : getfield(base, i)
+    end...)
+end
+strided(k) = plot_spec(Stride = 8k)
+
+# A legend entry carries the series' value: at the time under the mouse, or now. The number is
+# padded to a fixed width with figure spaces (as wide as a digit), because the legend stands beside
+# the plot and takes its width from the longest entry: unpadded, the plot would change width with
+# every digit, under the mouse that is choosing the time.
+legend_label(key, x) = key * ":  " * lpad(string(round(x, sigdigits = 4)), 8, '\u2007')
 
 function plot_panel(app::App)
     sim = app.sim
@@ -36,6 +50,7 @@ function plot_panel(app::App)
     stride = max(1, cld(n, MAX_POINTS))
     spec = strided(stride)
     cursor = NaN
+    value_w, log_w = ig.CalcTextSize(legend_label("", 0.0)).x, ig.CalcTextSize("log ").x
     k_cursor = isfinite(app.cursor_t) ? clamp(searchsortedfirst(sim.t_hist, app.cursor_t), 1, n) : 0
     for (i, (kind, title, keys_)) in enumerate(active)
         label = isempty(unit(app, kind)) ? title : title * " [" * unit(app, kind) * "]"
@@ -44,15 +59,27 @@ function plot_panel(app::App)
             ImPlot.SetupAxisLinks(ImPlot.ImAxis_X1, app.xlo, app.xhi)
             # 0 = shut or off, 1 = open or on: a little room either side, or the traces sit on the frame
             kind === :state && ImPlot.SetupAxisLimits(ImPlot.ImAxis_Y1, -0.1, 1.1, ImPlot.ImPlotCond_Always)
-            ImPlot.SetupLegend(ImPlot.ImPlotLocation_SouthEast)
+            # The legend stands beside the plot, not on it: inside, it sat on the newest data. Only
+            # when that would leave almost no plot (a narrow window, long names) does it go back
+            # inside, in the corner with the oldest data.
+            legend_w = 0f0
+            for key in keys_
+                legend_w = max(legend_w, ig.CalcTextSize(key).x + value_w)
+            end
+            for (name, okind, _) in app.overlay
+                okind === kind && (legend_w = max(legend_w, ig.CalcTextSize(name).x + log_w))
+            end
+            beside = w - legend_w - px(34) >= px(150)             # 34: the colour patch and the legend's padding
+            ImPlot.SetupLegend(beside ? ImPlot.ImPlotLocation_NorthEast : ImPlot.ImPlotLocation_NorthWest,
+                               beside ? ImPlot.ImPlotLegendFlags_Outside : ImPlot.ImPlotLegendFlags_None)
             for key in keys_
                 c = get!(app.cache, key, Float64[])
                 length(c) > n && empty!(c)
                 for j in length(c)+1:n
                     push!(c, shown(app, kind, sim.hist[key][j]))
                 end
-                # With the mouse over a plot, every legend entry shows its value at that time.
-                name = k_cursor == 0 ? key : key * ":  " * string(round(c[k_cursor], sigdigits = 4))
+                # Inside the plot the value is shown only while the mouse picks a time, to cover less.
+                name = beside || k_cursor != 0 ? legend_label(key, c[k_cursor == 0 ? n : k_cursor]) : key
                 if kind === :state
                     st = get!(() -> Steps(Float64[], Float64[], 0), app.steps, key)
                     st.seen > n && (empty!(st.t); empty!(st.v); st.seen = 0)
@@ -70,10 +97,18 @@ function plot_panel(app::App)
             last = searchsortedlast(app.overlay_t, t_now)       # logged data, up to now
             first_ = searchsortedfirst(app.overlay_t, 0.0)
             if last > first_
+                # Measured lines carry dots, so that they differ from simulated ones by more than
+                # hue: 16 to 32 of them however many samples are drawn. The spacing is a power of
+                # two, so that as a replay adds samples the dots stay on the samples they were on
+                # and every other one drops out at a doubling, rather than all of them creeping.
+                count = last - first_ + 1
+                every = prevpow(2, max(1, count ÷ 16))
+                dots = plot_spec(Stride = 8every, Marker = ImPlot.ImPlotMarker_Circle, MarkerSize = px(2.5), MarkerFillColor = ig.ImVec4(0.08f0, 0.08f0, 0.1f0, 1f0))
                 for (name, okind, ys) in app.overlay
                     okind === kind || continue
                     c = get!(() -> [shown(app, kind, y) for y in ys], app.cache, "log " * name)    # converted once per unit choice
-                    ImPlot.PlotLine("log " * name, view(app.overlay_t, first_:last), view(c, first_:last), last - first_ + 1)
+                    ImPlot.PlotLine("log " * name, view(app.overlay_t, first_:last), view(c, first_:last), count)
+                    ImPlot.PlotScatter("log " * name, view(app.overlay_t, first_:last), view(c, first_:last), cld(count, every), dots)
                 end
             end
             isfinite(app.cursor_t) && ImPlot.PlotInfLines("##cursor", [app.cursor_t])
