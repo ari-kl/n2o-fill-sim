@@ -14,9 +14,9 @@ to 20 rows a second.
 | Column name | Taken as |
 |---|---|
 | contains `[PSI]` or ends `_psig` | a gauge pressure, psi |
-| contains `[kg]` or ends `_kg` | a mass, kg |
-| contains `[C]` or ends `_C` | a temperature, °C |
-| a 0/1 column named for a valve in the scene | that valve's state (`valve_AV-201` and `solenoid_AV201` both match a part called `AV201`) |
+| contains `[kg]` or `[kilograms]`, or ends `_kg` | a mass, kg |
+| contains `[C]` or `[degC]`, or ends `_C` | a temperature, °C |
+| a 0/1 column named for a valve in the scene | that valve's state (`valve_AV-201` and `solenoid_AV201` both match a part called `AV201`; the prefixes `valve_`, `solenoid_`, `relay_` and `kasa_`, punctuation and case are ignored) |
 | contains `heater` | the state of the heated Tank's heater, or the Bottle's if the name also contains `supply` |
 
 Units are matched without regard to case, and valve names without regard to case or punctuation.

@@ -20,7 +20,7 @@ Fit several logs together. A value fitted to one log quietly absorbs whatever th
 unknowns were. Fitting several logs with one set of shared values is what shows whether the model
 can actually satisfy them all, and where it cannot.
 
-Read the last section of the report. A fit will always return a number. Whether the data
+Read the report's section "What these data do and do not determine". A fit will always return a number. Whether the data
 determine that number is a separate question, and the report answers it: it names every pair of
 parameters the data cannot tell apart, and every combination of parameters that could change
 without changing any reading.

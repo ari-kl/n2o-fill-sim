@@ -246,7 +246,7 @@ with a small effect on the score can still be the only one that moves a particul
 and that number is then what pins it. A parameter whose `mu_star` is small on every scored number
 cannot be found from this log, whatever a fit reports: fix it at a measured or published value.
 Screening says what matters, not what the values are, and not which parameters can be told apart
-from each other (two can both matter and still only act together: the last section of the fit
+from each other (two can both matter and still only act together: the "What these data do and do not determine" section of the fit
 report, described in [FITTING.md](FITTING.md), is for that).
 
 ## Reading the result

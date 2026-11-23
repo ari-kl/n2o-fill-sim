@@ -118,7 +118,7 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
 
 `--set` changes a part's parameter or a setting by name and refuses a name that does not exist.
 `--schedule file.csv` adds actions from a file with columns `t_s,part,action,value`, the format
-of the exported `_events.csv`. A replay runs to the end of its log unless `--until` says
+of the exported `_events.csv`. `--sample-dt 0.5` sets the shortest interval between recorded samples (default 0.1 s). A replay runs to the end of its log unless `--until` says
 otherwise. Warnings (for example a heater that nothing switches on) are printed before the run.
 `--help` lists every option. The HF4 fill, 16 minutes of real time, simulates in about a third of
 a second.
