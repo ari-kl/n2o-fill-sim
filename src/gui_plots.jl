@@ -19,7 +19,8 @@ strided(k) = plot_spec(Stride = 8k)
 # padded to a fixed width with figure spaces (as wide as a digit), because the legend stands beside
 # the plot and takes its width from the longest entry: unpadded, the plot would change width with
 # every digit, under the mouse that is choosing the time.
-legend_label(key, x) = key * ":  " * lpad(string(round(x, sigdigits = 4)), 8, '\u2007')
+# Round-off around zero (an empty tank at 4e-15 psig) is shown as zero.
+legend_label(key, x) = key * ":  " * lpad(string(abs(x) < 1e-9 ? 0.0 : round(x, sigdigits = 4)), 8, '\u2007')
 
 """
 The target pressure window from the settings, as a faint band across the pressure plot with its
