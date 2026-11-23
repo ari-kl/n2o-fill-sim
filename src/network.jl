@@ -220,10 +220,20 @@ end
 "Effective flow area of an edge, given the pressures at its a and b ends."
 function flow_area(e::Edge, Pa, Pb)
     e.kind === :valve && return e.area * e.opening
-    e.kind === :regulator && return e.area * clamp((e.set - Pb) / e.band, 0.0, 1.0)
-    e.kind === :check && return e.area * clamp((Pa - Pb - e.set) / e.band, 0.0, 1.0)
-    e.kind === :relief && return e.area * clamp((Pa - e.set) / e.band, 0.0, 1.0)
+    e.kind in (:regulator, :check, :relief) && return e.area * clamp(band_place(e, Pa, Pb), 0.0, 1.0)
     e.area
+end
+
+"""
+Where the pressures put a pressure-operated part in its band: 0 where it has just shut, 1 where it
+is just fully open, and beyond either when it is further shut or has pressure to spare. A regulator
+closes as its outlet rises to the set-point, a check valve opens on the difference across it past
+its cracking pressure, a relief valve on its inlet pressure past its set pressure.
+"""
+function band_place(e::Edge, Pa, Pb)
+    e.kind === :regulator && return (e.set - Pb) / e.band
+    e.kind === :check && return (Pa - Pb - e.set) / e.band
+    (Pa - e.set) / e.band
 end
 
 """
@@ -522,6 +532,8 @@ function _solve_active!(net::Net)
         big = maximum(abs, r)
         isfinite(big) || break
         big > 2e6 && (r .*= 2e6 / big)                 # no pressure moves more than 20 bar at once
+        cut = _band_cut(net, r)
+        cut < 1 && (r .*= cut)
         # Pressures that have stopped moving are converged, whatever the imbalance says: the flow
         # laws carry round-off of their own, and near it the tolerance above cannot be met.
         converged |= big < 1e-2
@@ -536,7 +548,9 @@ function _solve_active!(net::Net)
             w2, scale = _residual!(net)
             # Once converged, take the one extra full step regardless: it brings the result down
             # to round-off, which matters because the ODE solver differentiates through this solve.
-            (converged || w2 < worst || λ == 0.25) && (worst = w2; break)
+            # A step cut short to land inside a part's band is taken as it is, even if the
+            # imbalance rises: it buys the slope that the next step needs (see `_band_cut`).
+            (converged || cut < 1 || w2 < worst || λ == 0.25) && (worst = w2; break)
         end
         converged && return
     end
@@ -558,6 +572,32 @@ function _solve_active!(net::Net)
     end
     net.unconverged += 1
     nothing
+end
+
+"""
+The fraction of the Newton step `step` (per active junction) that can be taken before a
+pressure-operated part is carried from outside its band to beyond the middle of it; 1 if none is.
+
+Outside its band such a part is shut or fully open, and its area does not answer the pressures at
+all: the Jacobian says nothing about the band ahead. A regulator's band is a few bar wide and a
+check valve's a few hundredths, against Newton steps of up to 20 bar. A step from the shut side
+therefore jumps the whole band and lands with the part wide open and several times too much flow,
+and the step back jumps it again. That cycle never ends; it was the commonest way for this solve
+to fail (a regulator at lock-up when the valve after it starts to open). Stopping in the middle
+of the band gives the next step the part's real slope, from which it converges as on any smooth
+law. Circuit simulators limit the voltage step across a diode in the same way, for the same reason.
+"""
+function _band_cut(net::Net, step)
+    nodes, cut = net.nodes, 1.0
+    for (k, e) in enumerate(net.edges)
+        (net.live[k] && e.kind in (:regulator, :check, :relief)) || continue
+        ra, rb = net.row[e.a], net.row[e.b]
+        Pa, Pb = nodes[e.a].P, nodes[e.b].P
+        c0 = band_place(e, Pa, Pb)
+        c1 = band_place(e, Pa + (ra == 0 ? 0.0 : step[ra]), Pb + (rb == 0 ? 0.0 : step[rb]))
+        (c0 <= 0 && c1 > 0.5 || c0 >= 1 && c1 < 0.5) && (cut = min(cut, (0.5 - c0) / (c1 - c0)))
+    end
+    cut
 end
 
 # Mass flowing into junction j minus mass flowing out, at the present pressures. As in `sweep!`,

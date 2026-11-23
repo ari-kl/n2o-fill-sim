@@ -1486,6 +1486,7 @@ function chain(kinds; tank_pin = "bottom")
     s
 end
 part_flow(sim, name) = sim.net.edges[findfirst(e -> e.name == name, sim.net.edges)].mdot
+closure_mass(sim) = F.closure(sim)[1]
 
 @testset "pressure-operated parts in series carry flow (the plan does not flip between them)" begin
     # Two regulators at lock-up feeding a check valve. Shut the fill valve mid-fill and open it
@@ -1497,7 +1498,7 @@ part_flow(sim, name) = sim.net.edges[findfirst(e -> e.name == name, sim.net.edge
     m1 = sim.u[T.i]
     F.act!(sim, "P4", "close"); F.run_until!(sim, 12.0); F.act!(sim, "P4", "open"); F.run_until!(sim, 20.0)
     @test m1 > 1 && sim.u[T.i] > m1 + 2 && part_flow(sim, "P4") > 0.1
-    @test isempty(sim.failed) && sim.net.unconverged <= 2 && closes(sim)
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
     # Two check valves in series into a tank that vents freely: the bottle empties through them
     # for as long as it has a few cracking pressures over the tank.
     s = chain(["CheckValve", "CheckValve"]; tank_pin = "top")
@@ -1511,6 +1512,20 @@ part_flow(sim, name) = sim.net.edges[findfirst(e -> e.name == name, sim.net.edge
         starved += B.P - T.P > 3 * sim.net.edges[1].set && part_flow(sim, "P1") == 0
     end
     @test starved == 0
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+end
+
+@testset "a valve opening after a regulator at lock-up: the solve does not jump the regulator's band" begin
+    # The line rests at the set-point, where the regulator has just shut. As the valve starts to
+    # open, the balance is a few percent into the regulator's band. Newton steps of several bar
+    # used to jump the whole band both ways for all forty iterations, on every evaluation of the
+    # stroke: 543 failed solves and 3.4 million part flows for this first second.
+    sim = F.Sim(chain(["Regulator", "Pipe", "Pipe", "Valve"]))
+    F.run_until!(sim, 2.0); F.act!(sim, "P4", "open"); F.run_until!(sim, 3.0)
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    @test F.work(sim) < 60_000
+    @test abs(closure_mass(sim)) < 1e-9                          # it was 1.1e-6 with the failed solves
+    F.run_until!(sim, 30.0)
     @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
 end
 
