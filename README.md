@@ -68,40 +68,29 @@ the Build tab.
 |---|---|
 | Select | click; shift-click to add or remove; drag a box over empty space; `Ctrl+A` for everything |
 | Move, rotate, delete | drag the selection; `R`; `Delete` |
-| Copy, paste, duplicate | `Ctrl+C`; `Ctrl+V` at the pointer; `Ctrl+D` in place. Wires between the copied parts come too |
+| Copy, paste, duplicate | `Ctrl+C`; `Ctrl+V` at the pointer; `Ctrl+D` in place |
 | Wire corners | click a wire to add a corner and drag it; right-click a corner to remove it, a wire to cut it |
 | Undo, redo | `Ctrl+Z`, `Ctrl+Y` |
 | View | right-drag pans, the wheel zooms, `F` fits the schematic to the window |
-| Files | `Ctrl+O`, `Ctrl+S`. The title bar shows a `*` for unsaved changes; closing or opening asks first |
+| Files | `Ctrl+O`, `Ctrl+S` |
 
 Simulate starts the run paused; press Run or `Space`. Keys `1` to `5` set the speed (×1, ×5, ×20,
-×100, max). The plumbing cannot be changed while running; Stop / edit returns to the editor.
+×100, max). Left-click a valve to open or close it. Right-click any part to stick a valve open or
+closed, switch a heater or change a set-point. Hover any part for its pressures, flow and
+temperature. The plumbing cannot be changed while running; Stop / edit returns to the editor.
 
-- Left-click a valve to open or close it; it strokes over its travel time. Right-click any part,
-  or select it, to stick a valve open or closed, switch a heater or change a set-point.
-  "De-energise all valves" sends every valve to its fail state.
-- A normally-open valve is open until something commands it shut, as on a powered-down panel.
-  The panel says which valves are open for that reason.
-- Hover any part for its numbers: pressures either side, drop, flow, temperature, vapour share.
-- The Tanks tab shows pressure (against the target window and the time spent in it, if the scene
-  sets one), liquid as a share of the tank's volume and of its contents' mass (two different
-  numbers), temperatures, and what the present load would do if the tank were closed and warmed
-  to 30 °C and 35 °C.
-- The Signals tab plots any recorded signal of any part. Plots share a time axis, and moving the
-  mouse over one shows every legend's value at that time. In the View tab, turn off "follow the
-  run" to zoom and pan.
-- The View tab sets units (psig / psia / bar / kPa, °C / K, kg / lb, g/s / kg/s) and colours the
-  plumbing by pressure, temperature or vapour share. Each wire is one colour, because a wire has
-  no pressure drop in this model; the step in colour across a part is the drop it causes. The
-  automatic range leaves out the atmosphere and anything vented down to it, so the few-psi drops
-  in a fill are visible. You can fix the range, or spread it across one selected part. A section
-  shut off on all sides is drawn faded.
+A normally-open valve is open until something commands it shut, as on a powered-down panel. The
+panel says which valves are open for that reason.
 
-On Windows the window draws on the GPU at the screen's refresh rate. On WSL it is
-software-rendered, 10-20 ms a frame. Either way the solver uses well under a millisecond of a
-typical frame; in run mode, hover the "running at" line for the split. If the simulation cannot
-keep up with the speed asked for, it falls behind rather than stuttering, and the panel shows the
-speed achieved. When nothing is happening the window stops redrawing.
+The Tanks tab shows each tank's pressure, liquid share and temperatures, and what the present
+load would do if the tank were closed and warmed to 30 °C and 35 °C. The Signals tab plots any
+recorded signal. The View tab sets units and colours the plumbing by pressure, temperature or
+vapour share. Each wire is one colour, because a wire has no pressure drop in this model; the
+step in colour across a part is the drop it causes.
+
+If the simulation cannot keep up with the speed asked for, it falls behind rather than
+stuttering, and the panel shows the speed achieved. On WSL the window is software-rendered at
+10-20 ms a frame; on Windows it draws on the GPU.
 
 "Export CSV" writes two files next to the scene:
 
