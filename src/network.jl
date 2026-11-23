@@ -639,9 +639,68 @@ end
 """
 Jacobian of `rhs!` by forward differences with a relative step (the library default uses an
 absolute floor that is far too coarse for small states). The bookkeeping states do not feed back.
+
+A column costs a whole `rhs!`, junction solve included, only for a state that can move a flow.
+Three kinds of column cannot, and are worked out from the vessel's own equations with the flows
+left as the unperturbed `rhs!` found them:
+
+- a wall temperature: nothing in `evaluate!`, `outflow!` or `inflow!` reads it, so it changes
+  neither the vessel's pressure nor what its ports deliver;
+- the third and fourth states of a vessel in the homogeneous description, which nothing reads at
+  all (the column is zero);
+- any state of a vessel none of whose connections can carry flow (everything on it shut, or
+  leading only to dead ends): its pressure moves, but there is nothing for it to drive.
+
+`derivative!` reads the state and the vessel's flow totals and nothing else, so these columns need
+no `evaluate!` either.
 """
 function jac!(J, u, net::Net, t)
     TALLY.on && (TALLY.jac += 1)
+    nodes, env = net.nodes, net.env
+    n = length(u)
+    f0, f1 = zeros(n), zeros(n)
+    rhs!(f0, u, net, t)
+    fill!(J, 0.0)
+    # The local columns come first: they need the flow totals the unperturbed `rhs!` left in the
+    # vessels, which the next full `rhs!` overwrites.
+    for (k, v) in enumerate(nodes)
+        v.kind === :vessel || continue
+        sealed = !any(e -> net.live[e], net.adj[k])
+        copyto!(f1, f0)
+        q0 = derivative!(f1, v, u, env)                # this vessel's share of the heat taken in
+        for s in 0:nstates(v)-1
+            wall = s == 4 || s == 6
+            (wall || sealed) || continue
+            (v.strat || wall || !(s == 2 || s == 3)) || continue
+            j = v.i + s
+            uj = u[j]
+            δ = 1e-7 * abs(uj) + 1e-11
+            u[j] = uj + δ
+            q1 = derivative!(f1, v, u, env)
+            u[j] = uj
+            @views J[:, j] .= (f1 .- f0) ./ δ          # f1 differs from f0 only in this vessel's rows
+            J[n, j] = (q1 - q0) / δ
+        end
+    end
+    for (k, v) in enumerate(nodes)
+        v.kind === :vessel || continue
+        any(e -> net.live[e], net.adj[k]) || continue
+        for s in (0, 1, 2, 3, 5)
+            (v.strat || s == 0 || s == 1 || s == 5) || continue
+            j = v.i + s
+            uj = u[j]
+            δ = 1e-7 * abs(uj) + 1e-11
+            u[j] = uj + δ
+            rhs!(f1, u, net, t)
+            u[j] = uj
+            @views J[:, j] .= (f1 .- f0) ./ δ
+        end
+    end
+    nothing
+end
+
+"The Jacobian with every column from a whole `rhs!`: what `jac!` is checked against."
+function jac_fd!(J, u, net::Net, t)
     n = length(u)
     f0, f1 = zeros(n), zeros(n)
     rhs!(f0, u, net, t)

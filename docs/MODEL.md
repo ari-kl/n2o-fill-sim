@@ -56,6 +56,12 @@ read off its interpolant. When a valve is clicked the solver is wound back to th
 first, so the click takes effect exactly then. The alternative, forcing a step to end on every
 screen frame, costs 60 steps per simulated second and makes the window lag.
 
+The solver needs the Jacobian of the right-hand side at every step. It is found by forward
+differences, one column per state. A column for a state that can move a flow costs a whole
+right-hand side, junction solve included. A wall temperature cannot (it changes neither the
+vessel's pressure nor what leaves through its ports), and neither can any state of a vessel whose
+connections are all shut: those columns come from that vessel's own equations with the flows held.
+
 ### Balances and recording
 
 A running total of mass and energy (vessel contents + wall heat + vented − heat taken in) is kept

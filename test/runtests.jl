@@ -1280,6 +1280,37 @@ end
     @test closes(sim)
 end
 
+@testset "the ODE Jacobian agrees with one differenced through the whole right-hand side" begin
+    # Largest difference between entries, each in the solver's error weights and against the
+    # largest entry of its row.
+    function jac_gap(sim)
+        u, net = copy(sim.u), sim.net
+        n = length(u)
+        A, B = zeros(n, n), zeros(n, n)
+        F.jac!(A, u, net, 0.0); F.jac_fd!(B, u, net, 0.0)
+        w = 1e-8 .+ 1e-5 .* abs.(u)
+        maximum(1:n) do i
+            scale = maximum(abs.(B[i, :]) .* w)
+            scale > 0 ? maximum(abs.(A[i, :] .- B[i, :]) .* w) / scale : 0.0
+        end
+    end
+    sim = F.Sim(rig(tank_fill = 2.0, air = 0.0))
+    F.run_until!(sim, 1.0)
+    @test jac_gap(sim) < 1e-6                   # everything shut: no flows, every column is local
+    F.act!(sim, "FILL", "open"); F.run_until!(sim, 1.1)
+    @test jac_gap(sim) < 1e-3                   # fill valve part-way through its stroke
+    F.run_until!(sim, 5.0)
+    @test jac_gap(sim) < 1e-3                   # filling
+    F.act!(sim, "VENT", "open"); F.run_until!(sim, 8.0)
+    @test jac_gap(sim) < 1e-3                   # filling and venting
+    s = rig(tank_fill = 2.0)                    # the same with a two-part tank wall and air in the tank
+    s.parts[F.find_part(s, "TANK")].p["wall_split"] = 1.0
+    sim = F.Sim(s)
+    F.act!(sim, "FILL", "open"); F.act!(sim, "VENT", "open"); F.run_until!(sim, 3.0)
+    @test length(sim.u) == 16
+    @test jac_gap(sim) < 1e-3
+end
+
 @testset "regulator holds the downstream pressure and flashes the liquid" begin
     s = rig(bottle_T = 28.0)
     F.delete_part!(s, "FILL")
