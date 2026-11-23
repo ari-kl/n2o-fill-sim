@@ -209,6 +209,13 @@ log not rule out?". See [docs/STUDIES.md](docs/STUDIES.md).
 julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml
 ```
 
+Where a log leaves parameters undetermined, a prediction is better shown as a **band** than as
+one line. `study keep` lists the parameter sets of a study that its log could not rule out, a
+study with `mode = "sets"` and `[bands]` runs them on the scenario to predict, and the window
+draws the spread behind the live plots ("Load bands..." or `--bands`). See "Prediction bands" in
+[docs/STUDIES.md](docs/STUDIES.md); `studies/hf4_sample.toml` and `studies/hf4_bands.toml` are a
+worked example.
+
 A **fit** adjusts parameters to match one or several logs at once, and reports which of them the
 logs cannot tell apart. That report matters more than the fitted numbers. See
 [docs/FITTING.md](docs/FITTING.md).
@@ -321,7 +328,7 @@ src/study.jl          studies: parameter sets, scoring, metrics
 src/fit.jl            fitting to several logs, identifiability report, calibration records
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
 scenes/               example scenes, each matching a log in test/data, plus a regulated fill
-studies/              an example study file
+studies/              example study files
 assets/               the window icon
 test/                 tests, benchmark, stress cases, and extracts of the fill logs
 docs/MODEL.md         how the model works, what it leaves out, how it compares with the logs

@@ -1,0 +1,29 @@
+# Step 1 of a prediction band (docs/STUDIES.md, "Prediction bands"): 400 parameter sets spread over
+# the ranges that four of the HF4 scene's less certain numbers could plausibly lie in, each scored
+# against the logged tank pressure in four phases.
+#   julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_sample.toml
+#   julia --project bin/n2o-fill-sim.jl study keep studies/hf4_sample_results/results.csv
+scene = "../scenes/hf4.toml"
+replay = "../test/data/hf4_fill_10hz.csv"
+t0 = 9020
+until = 990
+mode = "lhs"
+n = 400
+seed = 1
+
+[vary]
+"VENT_ORIFICE.Cd" = { from = 0.5, to = 1.0 }
+"settings.interphase_E" = { from = 100, to = 2000, log = true }
+"settings.h_in_mult" = { from = 0.1, to = 1.0 }
+"BOTTLE.fill_kg" = { from = 15, to = 29 }
+
+[score]
+channels = [{ log = "PT202_psig", model = "TANK.P" }]
+phases = { stall = [140, 236], vent1 = [236, 310], vent2 = [310, 352], heater = [367, 836] }
+
+[metrics]
+loaded_kg = { fn = "final", signal = "TANK.m" }
+peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
+
+[bands]                                       # the spread over everything sampled, to set beside the kept sets'
+signals = ["TANK.P", "TANK.m"]

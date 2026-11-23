@@ -5,8 +5,9 @@ there is one, and reduces each run to a row of numbers. It is how to ask "which 
 fits this log best", "how sensitive is the loaded mass to the bottle temperature", or, with no log
 at all, "how long does the tank stay above 800 psig for each of these fill plans".
 
-This file covers the study file format, how runs are scored, and screening for the parameters
-that matter. The scoring section also applies to fits ([FITTING.md](FITTING.md)), which minimise
+This file covers the study file format, how runs are scored, screening for the parameters
+that matter, and prediction bands (the spread of a prediction over every parameter set a log
+could not rule out). The scoring section also applies to fits ([FITTING.md](FITTING.md)), which minimise
 the same score.
 
 ```
@@ -35,6 +36,8 @@ mode = "grid"                                 # "grid": every combination
                                               # "oat": the scene as it is, then one parameter at a time
                                               # "lhs": n runs spread over the ranges (needs n; seed optional)
                                               # "morris": screening, n trajectories (see below)
+                                              # "sets": the rows of a file (see "Prediction bands")
+# sets = "kept.csv"                           #   that file, for mode = "sets"
 
 [set]                                         # optional: changes applied to every run
 "settings.T_amb_C" = 28
@@ -69,6 +72,9 @@ hold_end = { fn = "final", log = "PT202_psig", model = "TANK.P", phase = "stall"
 loaded_kg = { fn = "final", signal = "TANK.m" }
 peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
 seconds_above_800_psig = { fn = "time_in_band", signal = "TANK.P", lo_psig = 800, hi_psig = 2000 }
+
+[bands]                                       # optional: the spread of signals over the runs, to bands.csv
+signals = ["TANK.P", "TANK.m"]                #   (see "Prediction bands")
 ```
 
 Parameter names are the same `PART.param` and `settings.key` that `--set` takes, and are checked
@@ -248,6 +254,135 @@ cannot be found from this log, whatever a fit reports: fix it at a measured or p
 Screening says what matters, not what the values are, and not which parameters can be told apart
 from each other (two can both matter and still only act together: the "What these data do and do not determine" section of the fit
 report, described in [FITTING.md](FITTING.md), is for that).
+
+## Prediction bands
+
+A fit returns one value for each parameter. Often the log does not determine that value: the
+parameter can sit anywhere in a wide range, with the others shifted to suit, and the model still
+matches. One run with the fitted values then shows a single line where the honest answer is a
+spread. A prediction band is that spread: the model run once for every parameter set the log could
+not rule out, and each signal's percentiles over those runs at every time.
+
+It takes two studies and one command between them.
+
+**1. Sample.** A study with `mode = "lhs"` over the ranges the parameters could plausibly lie in,
+scored against the log, with any model error you know of stated as a `discrepancy`.
+
+**2. Keep.**
+
+```
+julia --project bin/n2o-fill-sim.jl study keep studies/hf4_sample_results/results.csv [--cutoff 3] [--nth 2]
+```
+
+Every `res.*` column is a difference between model and log divided by how far it is trusted,
+sqrt(sigma² + stated discrepancy²). A run is ruled out when its `--nth` largest |res| is over
+`--cutoff`: by default, when two or more of its scored numbers are more than 3 of those out. One is let through because, among many scored numbers, one will stray without
+the parameters being wrong; with dozens of scored numbers (time bins), raise `--nth` in proportion.
+A run that failed or stopped early is ruled out. The command prints how many runs were kept and,
+for each parameter, the range left among the kept runs beside the range sampled, and writes
+`kept.csv` beside the results: one row per kept run, one column per parameter.
+
+**3. Run the kept sets on the scenario to predict.**
+
+```toml
+scene = "../scenes/hf4.toml"                  # need not be the scene or the log the sets came from
+mode = "sets"
+sets = "hf4_sample_results/kept.csv"          # relative to the study file
+
+[bands]
+signals = ["TANK.P", "TANK.m"]                # the names in an exported run
+percentiles = [5, 50, 95]                     # the default
+grid_s = 1.0                                  # the default: one row per second
+```
+
+`mode = "sets"` takes its parameter sets from the file instead of making them: a header of
+`PART.param` and `settings.key` names, then one set per row, each crossed with every `[[case]]` as
+usual. An empty cell leaves that parameter as the scene has it. The scene and the schedule are
+this study's own, which is the point: sets kept on old logs, run on a fill that has not happened.
+A column that is not a parameter of this scene is an error that names it. Run ids begin `s<row>;`.
+
+`[bands]` works with any mode. The study then also writes
+
+- `bands.csv`: a row per grid time, with `t_s`, `n` and, for every signal and percentile, a column
+  such as `TANK.P.p5`, in SI units like an exported run. Each run's recorded history is
+  interpolated onto the grid. `n` is how many runs reached that time: a run that failed or stopped
+  early counts up to where it stopped and not after, so a falling `n` is worth a look at
+  `results.csv`.
+- `metric_bands.csv`: a row per metric, with `case`, `metric`, `n` and a column per percentile
+  (`p5`, `p50`, `p95`), over the runs that finished.
+
+With several cases there is a `bands_<case>.csv` for each, because cases are different scenarios
+and their runs are not pooled. A study with band signals cannot be resumed (`--resume`): the runs
+already done left no history to take a band from.
+
+**4. Look.** In run mode, "Load bands..." (or `--bands bands.csv` on the command line) draws each
+band on the plot of its kind: shaded between its lowest and highest percentile, with the median as
+a thin line, behind the live lines and in the colour of its signal's line.
+
+### Interpretation
+
+A band is the spread of the model's output over the parameter sets that the stated tolerances
+(each reading's `sigma` and each phase's `discrepancy`) could not rule out, among those that were
+sampled. Read it as: given this model, and given how far I said the log can be trusted, the data
+do not tell these runs apart, and this is how far they disagree about the signal.
+
+It is not a confidence interval. Three things it does not contain:
+
+- **Model error outside the stated allowances.** Every run in the band is the same model. What the
+  model leaves out moves all of them together, and the band does not widen to show it. A real test
+  can land outside a narrow band for that reason alone.
+- **Anything not varied.** A parameter held fixed contributes no width, however poorly it is known.
+- **Probabilities.** The percentiles are over the kept sets, which were spread evenly over the
+  sampled ranges and then cut by a pass/fail rule. Wider ranges, a different cutoff or a different
+  `sigma` give a different band. "5-95 %" says where nine tenths of the kept runs lie, not that
+  the truth is inside with nine chances in ten.
+
+A band is most useful when it is wide: it then shows, in the units of the plot, what the logs have
+not pinned down, and which signal a new measurement would have to be taken on to pin it.
+
+### Example
+
+`studies/hf4_sample.toml` spreads 400 sets over four numbers of the HF4 scene (the vent's discharge
+coefficient, the boiling enhancement, the inner heat-transfer multiplier and the bottle's fill),
+each scored against the logged tank pressure in four phases. `studies/hf4_bands.toml` runs the
+kept sets on the same fill.
+
+```
+julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_sample.toml
+julia --project bin/n2o-fill-sim.jl study keep studies/hf4_sample_results/results.csv
+julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_bands.toml
+julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --replay test/data/hf4_fill_10hz.csv --t0 9020 --run --bands studies/hf4_bands_results/bands.csv
+```
+
+The second command prints (the first takes about 20 s on eight threads):
+
+```
+400 runs, 220 kept (ruled out: failed, or |res| over 3.0 in 2 or more of the 4 scored numbers)
+  parameter                         kept                      sampled
+  BOTTLE.fill_kg                    15.05 to 28.99            15.0 to 28.99
+  VENT_ORIFICE.Cd                   0.5059 to 0.9976          0.5005 to 0.9998
+  settings.h_in_mult                0.1032 to 0.998           0.102 to 0.998
+  settings.interphase_E             100.9 to 1967.0           100.5 to 1994.0
+```
+
+Nearly half of the runs are ruled out, and yet every parameter keeps its whole range: it is
+combinations that the log excludes, and no one of these four numbers can be read off it. The bands
+show what that leaves open. Tank pressure in psig and tank mass in kg, 5th to 95th percentile
+(`hf4_sample.toml` has `[bands]` too, so the spread over everything sampled can be set beside it):
+
+| t [s] | logged psig | all 400 sampled: psig | 220 kept: psig | all 400 sampled: kg | 220 kept: kg |
+|------:|------------:|----------------------:|---------------:|--------------------:|-------------:|
+| 200 | 800.9 | 789.5 to 820.0 (30.5) | 789.5 to 812.9 (23.4) | 7.77 to 8.76 (0.99) | 7.79 to 8.77 (0.98) |
+| 500 | 788.3 | 767.3 to 811.8 (44.5) | 769.9 to 798.2 (28.3) | 8.29 to 10.13 (1.84) | 8.26 to 10.15 (1.89) |
+| 900 | 849.2 | 833.3 to 875.6 (42.2) | 835.3 to 863.2 (27.8) | 8.29 to 10.13 (1.84) | 8.26 to 10.15 (1.89) |
+
+Scoring against the pressure narrows the pressure band by a quarter to a third, to 23 to 28 psi (a
+run passes with an RMS miss of up to 15 psi in all but one phase: 3 times a `sigma` of 5 psi). It
+does not narrow the mass band at all:
+the loaded mass is 8.26 to 10.15 kg with a median of 9.74 (`metric_bands.csv`), as wide as before
+any run was thrown out. This pressure log, scored this way, says almost nothing about how much
+nitrous is in the tank. That is what a single fitted run cannot show, and the reason to draw the
+band.
 
 ## Results
 
