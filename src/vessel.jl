@@ -282,11 +282,11 @@ function boiling_flux(P, ΔT, st)
 end
 
 """
-Wall-to-liquid film coefficient. Natural convection always. With `h_fill` on, the stirring of the
-liquid by the incoming jet is added (Dittus-Boelter on the tank diameter, with the jet's velocity
-decayed over one diameter as 6·d/D, combined as the cube root of the sum of cubes so that it
-takes over smoothly). With `h_boil` on, a wetted wall hotter than saturation boils the liquid on
-it (`boiling_flux`). Both multipliers are there to be fitted.
+Wall-to-liquid film coefficient for convection. Natural convection always. With `h_fill` on, the
+stirring of the liquid by the incoming jet is added (Dittus-Boelter on the tank diameter, with the
+jet's velocity decayed over one diameter as 6·d/D, combined as the cube root of the sum of cubes
+so that it takes over smoothly). The multiplier is there to be fitted. Boiling is separate
+(`q_boiling`): it is a heat flow set by the wall's superheat, not a coefficient on Tw - Tl.
 """
 function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, ss, lvl)
     h = h_wall(s.ρl, cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
@@ -296,13 +296,21 @@ function h_wall_liquid(n::Node, s, cpl, βl, μl, kl, Tw, ss, lvl)
         Re, Pr = s.ρl * v * n.D / μl, cpl * μl / kl
         h = cbrt(h^3 + (n.h_fill * 0.023 * Re^0.8 * Pr^0.4 * kl / n.D)^3)
     end
-    # Boiling moves heat from the wall to saturated liquid at the wall; expressed as a coefficient
-    # on (Tw - Tl) so that it adds to the others. (Below saturation, or with the liquid as warm as
-    # the wall, there is none.)
-    if n.h_boil > 0 && Tw > ss.T && Tw > s.Tl
-        h += n.h_boil * boiling_flux(ss.P, Tw - ss.T, ss) / (Tw - s.Tl)
-    end
     h
+end
+
+# Two heat flows in series (both in the same direction, W): what gets through is less than either.
+_series(a, b) = a + b > 0 ? a * b / (a + b) : 0.0
+
+"""
+Heat flow [W] by boiling from a wall at `Tw` into the liquid over wetted area `A`: zero at or
+below saturation and rising smoothly from there (`boiling_flux`), scaled by the vessel's
+`h_boil`. It depends on how far the wall is above saturation, not on the bulk liquid's
+temperature. With `G` > 0 it is also limited by conduction through the metal behind the surface.
+"""
+function q_boiling(n::Node, ss, Tw, A, G = 0.0)
+    q = n.h_boil * boiling_flux(ss.P, Tw - ss.T, ss) * A
+    G > 0 ? _series(q, G * max(Tw - ss.T, 0.0)) : q
 end
 function derivative!(du, n::Node, u, env::Env)
     n.kind === :vessel || return 0.0
@@ -352,7 +360,7 @@ function derivative!(du, n::Node, u, env::Env)
     end
     # Wall.
     lvl = min(s.level, n.H)
-    extra = n.h_fill > 0 || n.h_boil > 0           # the fill-jet and boiling terms are off unless asked for
+    extra = n.h_fill > 0                           # the fill-jet term is off unless asked for
     dTw_tube = dTw_ends = 0.0
     if n.split
         # Tube: its wetted part to the liquid, its dry part to the ullage, sun and heater on its
@@ -363,6 +371,10 @@ function derivative!(du, n::Node, u, env::Env)
         hv_t = h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01))
         hv_e = h_wall(s.ρv, cpv, βv, μv, kv, Te - s.Tv, max(n.H - lvl, 0.01))
         ql_t, ql_e = wet * c * hl_t * (π * n.D * lvl) * (Tw - s.Tl), _through(wet * c * hl_e * As, n.G_ends) * (Te - s.Tl)
+        if n.h_boil > 0                            # boiling on the wetted tube and on the bottom end
+            ql_t += wet * q_boiling(n, ss, Tw, π * n.D * lvl)
+            ql_e += wet * q_boiling(n, ss, Te, As, n.G_ends)
+        end
         qv_t, qv_e = c * hv_t * (π * n.D * (n.H - lvl)) * (Tw - s.Tv), _through(c * hv_e * As, n.G_ends) * (Te - s.Tv)
         link = n.link * (Te - Tw)
         qxt, qxe = q_outside(n, Tw, env, π * n.D * n.H) + q_sun_heater(n, env), q_outside(n, Te, env, 2As)
@@ -372,6 +384,7 @@ function derivative!(du, n::Node, u, env::Env)
     else
         h_l = extra ? h_wall_liquid(n, s, lp.cpl, βl, μl, kl, Tw, ss, lvl) : h_wall(s.ρl, lp.cpl, βl, μl, kl, Tw - s.Tl, max(lvl, 0.01))
         q_wl = wet * env.h_in_mult * n.h_in * h_l * (π * n.D * lvl + As) * (Tw - s.Tl)
+        n.h_boil > 0 && (q_wl += wet * q_boiling(n, ss, Tw, π * n.D * lvl + As))
         q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
         qx = q_external(n, Tw, env)
     end
