@@ -259,6 +259,7 @@ end
 function open_scene!(app::App, path)
     try
         app.scene = load_scene(path)
+        app.sim, app.step_left = nothing, 0.0          # a run belongs to the scene it was started from
         app.path, app.msg, app.dirty, app.want_fit = path, "Opened " * path, false, true
         empty!(app.sel); empty!(app.undo); empty!(app.redo); empty!(app.probes)
     catch err
