@@ -1309,6 +1309,25 @@ end
     F.act!(sim, "FILL", "open"); F.act!(sim, "VENT", "open"); F.run_until!(sim, 3.0)
     @test length(sim.u) == 16
     @test jac_gap(sim) < 1e-3
+    # Two bottles into one tank through a tee: first both feed the junction, where their streams
+    # mix (its enthalpy then depends on the proportions); later the warm one also fills the cool one.
+    s = F.Scene()
+    F.add_part!(s, "Bottle", 0, 0; name = "WARM").p["T_C"] = 25.0
+    F.add_part!(s, "Bottle", 0, 4; name = "COOL").p["T_C"] = 15.0
+    foreach(i -> F.add_part!(s, "Valve", 4, 4i; name = "V$i"), 1:3)
+    F.add_part!(s, "Tank", 8, 0; name = "TANK")
+    for (a, b) in ((("WARM", "out"), ("V1", "a")), (("COOL", "out"), ("V2", "a")), (("V1", "b"), ("V3", "a")), (("V2", "b"), ("V3", "a")), (("V3", "b"), ("TANK", "bottom")))
+        F.connect!(s, a, b)
+    end
+    sim = F.Sim(s)
+    foreach(v -> F.act!(sim, v, "open"), ("V1", "V2", "V3"))
+    flow(name) = sim.net.edges[findfirst(e -> e.name == name, sim.net.edges)].mdot
+    F.run_until!(sim, 1.0)
+    @test flow("V1") > 0.01 && flow("V2") > 0.01
+    @test jac_gap(sim) < 1e-3
+    F.run_until!(sim, 10.0)
+    @test flow("V1") > 0.01 && flow("V2") < -0.01
+    @test jac_gap(sim) < 1e-3
 end
 
 @testset "regulator holds the downstream pressure and flashes the liquid" begin

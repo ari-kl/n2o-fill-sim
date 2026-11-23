@@ -56,11 +56,22 @@ read off its interpolant. When a valve is clicked the solver is wound back to th
 first, so the click takes effect exactly then. The alternative, forcing a step to end on every
 screen frame, costs 60 steps per simulated second and makes the window lag.
 
-The solver needs the Jacobian of the right-hand side at every step. It is found by forward
-differences, one column per state. A column for a state that can move a flow costs a whole
-right-hand side, junction solve included. A wall temperature cannot (it changes neither the
-vessel's pressure nor what leaves through its ports), and neither can any state of a vessel whose
-connections are all shut: those columns come from that vessel's own equations with the flows held.
+The solver needs the Jacobian of the right-hand side at every step. Each vessel's own equations
+are differenced, one column per state. The junction solve is not solved again for each column.
+A change in a vessel's state reaches the rest of the system only through that vessel's pressure
+and the enthalpy at its ports, and to first order the junctions answer those linearly. So once per
+Jacobian the network is linearised about the solution just found: each part's flow is differenced
+with respect to the pressure at each end and the enthalpy arriving from upstream, and the mass
+balance and mixture enthalpy of every junction are written out to first order and factorised.
+Each column is then one evaluation of the perturbed vessel, a back-substitution for the change in
+every flow and junction enthalpy, and the vessels' derivatives with those flows. A wall
+temperature changes neither the vessel's pressure nor what leaves through its ports, and a vessel
+with every connection shut has no flow to change: those columns need only that vessel's
+derivative. If the junction solve did not converge there is nothing sound to linearise about, and
+every column is differenced through the whole right-hand side instead. On the HF4 replay a
+Jacobian costs 42 to 54 part-flow evaluations this way, against 250 to 520 for the plain
+differences, and the two agree to about 3e-4 of the largest entry in each row (the plain
+differences are themselves no closer than that to a central difference).
 
 ### Balances and recording
 

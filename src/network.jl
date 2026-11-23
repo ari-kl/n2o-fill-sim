@@ -12,7 +12,7 @@
 # near-incompressible liquid sitting on the two-phase boundary. To study trapped liquid, put a
 # small Tank where the trapped volume is.
 
-using LinearAlgebra: lu!, ldiv!
+using LinearAlgebra: lu!, ldiv!, issuccess
 using OrdinaryDiffEqRosenbrock: Rodas5P
 using SciMLBase: ODEFunction, ODEProblem, init, step!, reinit!, add_tstop!, successful_retcode, ReturnCode
 
@@ -614,8 +614,15 @@ function rhs!(du, u, net::Net, t)
         evaluate!(n, u, env)
     end
     solve_junctions!(net)
+    _into_vessels!(du, u, net)
+end
+
+# The second half of `rhs!`: hand each part's flow (`mdot`, as the junction solve left it) to the
+# vessels at its ends, then work out every vessel's derivative.
+function _into_vessels!(du, u, net::Net)
+    nodes, env = net.nodes, net.env
     for n in nodes
-        n.kind === :vessel && (n.dm_l = n.min_l = n.Hin_l = 0.0)
+        n.kind === :vessel && (n.dm_l = n.min_l = n.Hin_l = n.dm_v = n.dE_v = n.dair = 0.0)
     end
     vent_m = vent_h = 0.0
     for e in net.edges
@@ -637,12 +644,21 @@ function rhs!(du, u, net::Net, t)
 end
 
 """
-Jacobian of `rhs!` by forward differences with a relative step (the library default uses an
-absolute floor that is far too coarse for small states). The bookkeeping states do not feed back.
+Jacobian of `rhs!`. The bookkeeping states do not feed back.
 
-A column costs a whole `rhs!`, junction solve included, only for a state that can move a flow.
-Three kinds of column cannot, and are worked out from the vessel's own equations with the flows
-left as the unperturbed `rhs!` found them:
+The vessels' own equations are differenced: forward, with a relative step (the library default
+uses an absolute floor that is far too coarse for small states). The junction solve is not. A
+change in a vessel's state reaches the rest of the system only through that vessel's pressure and
+the enthalpy at its ports, and to first order the junctions answer those linearly. So once per
+Jacobian the network is linearised about the solution the unperturbed `rhs!` found (`_linearise!`),
+and each column then takes one `evaluate!` of the perturbed vessel, a back-substitution for the
+change in every flow and junction enthalpy, and the second half of `rhs!` with those flows. No
+column solves the junctions again. Differencing through the junction solve itself (`jac_fd!`)
+costs a Newton solve a column, and puts whatever that solve leaves unconverged, divided by the
+step, into the Jacobian.
+
+Some columns need no network at all, and are worked out from the vessel's own derivative with the
+flows left as the unperturbed `rhs!` found them:
 
 - a wall temperature: nothing in `evaluate!`, `outflow!` or `inflow!` reads it, so it changes
   neither the vessel's pressure nor what its ports deliver;
@@ -653,16 +669,21 @@ left as the unperturbed `rhs!` found them:
 
 `derivative!` reads the state and the vessel's flow totals and nothing else, so these columns need
 no `evaluate!` either.
+
+If the unperturbed junction solve did not converge, or the linearised network is singular, there
+is nothing sound to linearise about and the whole Jacobian is left to `jac_fd!`.
 """
 function jac!(J, u, net::Net, t)
     TALLY.on && (TALLY.jac += 1)
-    nodes, env = net.nodes, net.env
+    nodes, edges, env = net.nodes, net.edges, net.env
     n = length(u)
     f0, f1 = zeros(n), zeros(n)
+    unconverged = net.unconverged
     rhs!(f0, u, net, t)
+    net.unconverged == unconverged || return jac_fd!(J, u, net, t)
     fill!(J, 0.0)
     # The local columns come first: they need the flow totals the unperturbed `rhs!` left in the
-    # vessels, which the next full `rhs!` overwrites.
+    # vessels, which the other columns overwrite.
     for (k, v) in enumerate(nodes)
         v.kind === :vessel || continue
         sealed = !any(e -> net.live[e], net.adj[k])
@@ -682,19 +703,176 @@ function jac!(J, u, net::Net, t)
             J[n, j] = (q1 - q0) / δ
         end
     end
+    any(net.live) || return nothing
+    lin = _linearise!(net)
+    lin === nothing && return jac_fd!(J, u, net, t)
+    na = length(net.active)
+    mdot0, hl0 = [e.mdot for e in edges], [v.hl for v in nodes]
+    dP, dhj, x = zeros(length(nodes)), zeros(length(nodes)), zeros(2na)
+    ok = true
     for (k, v) in enumerate(nodes)
-        v.kind === :vessel || continue
-        any(e -> net.live[e], net.adj[k]) || continue
+        (v.kind === :vessel && any(e -> net.live[e], net.adj[k])) || continue
+        P0, h0, dport = v.P, copy(v.port_h), zero(v.port_h)
         for s in (0, 1, 2, 3, 5)
             (v.strat || s == 0 || s == 1 || s == 5) || continue
             j = v.i + s
             uj = u[j]
             δ = 1e-7 * abs(uj) + 1e-11
             u[j] = uj + δ
-            rhs!(f1, u, net, t)
-            u[j] = uj
+            evaluate!(v, u, env)
+            # What the rest of the system sees of the step: this vessel's pressure and port
+            # enthalpies. The junctions' answer, by the implicit-function theorem, is the
+            # solution of the linearised balances with those changes on the right-hand side.
+            dP[k] = v.P - P0
+            dport .= v.port_h .- h0
+            _lin_rows!(x, net, lin, dP, dhj, k, dport)
+            x .= .-x
+            ldiv!(lin.lu, x)
+            ok = all(isfinite, x)
+            for (q, i) in enumerate(net.active)
+                dP[i], dhj[i] = x[q], x[na+q]
+            end
+            for (i, e) in enumerate(edges)
+                net.live[i] && (e.mdot = mdot0[i] + _dflow(net, lin, i, dP, dhj, k, dport))
+            end
+            for i in net.active
+                nodes[i].hl = hl0[i] + dhj[i]
+            end
+            _into_vessels!(f1, u, net)
             @views J[:, j] .= (f1 .- f0) ./ δ
+            u[j] = uj
+            for (i, e) in enumerate(edges)
+                e.mdot = mdot0[i]
+            end
+            for i in net.active
+                nodes[i].hl = hl0[i]
+                dP[i] = dhj[i] = 0.0
+            end
+            dP[k] = 0.0
+            ok || break
         end
+        evaluate!(v, u, env)
+        ok || break
+    end
+    ok || return jac_fd!(J, u, net, t)
+    nothing
+end
+
+"""
+Linearise the network about the junction solution just found: how each live part's flow answers
+the pressure at either end and the enthalpy arriving from upstream (by differences, as the
+junction solve's own Jacobian does), and the factorised system that gives the junctions' pressure
+and mixture-enthalpy changes for a change at a vessel. Returns nothing if that system is singular.
+
+Unlike the junction solve's Jacobian this one carries the enthalpies: a vessel's port enthalpy
+travels downstream through every junction, changing flows as it goes, and where streams mix the
+mixture follows the proportions. The factorisation the junction solve keeps (`net.lu`) will not
+do in its place: it is reused for as long as it still contracts, so it can be from a different
+state.
+"""
+function _linearise!(net::Net)
+    nodes, na = net.nodes, length(net.active)
+    ne = length(net.edges)
+    lin = (da = zeros(ne), db = zeros(ne), dh = zeros(ne), forward = falses(ne))
+    for (k, e) in enumerate(net.edges)
+        net.live[k] || continue
+        A, B = nodes[e.a], nodes[e.b]
+        Pa, Pb, ha, hb = A.P, B.P, sent_h(A, e.pa), sent_h(B, e.pb)
+        fwd = lin.forward[k] = Pa >= Pb
+        m0 = edge_flow(e, Pa, Pb, ha, hb)
+        memo = (e.m_P1, e.m_h1, e.m_up, e.m_Pc, e.m_G, e.m_Pu)    # put back below
+        # The slopes with respect to the two ends are nearly equal and opposite (liquid flow
+        # follows the pressure difference), and what a pressure change common to both ends does
+        # is their sum: one part in a thousand of either. So that sum is measured directly, by
+        # moving both ends together, rather than left to the difference of two slopes each good
+        # to one part in a thousand. The downstream slope is a central difference, which costs
+        # nothing extra to speak of: moving the downstream end does not disturb the part's memo
+        # of its upstream state. Its step is the junction solve's (a millionth of the pressure),
+        # shortened when the part is nearly in balance, where the flow law bends over a few
+        # hundred pascals (`DP_REG`).
+        # The atmosphere's pressure and enthalpy are fixed: no slope is needed at that end.
+        up, down = fwd ? (A, B) : (B, A)
+        δ = 1e-6 * max(Pa, Pb) + 1.0
+        d_down = 0.0
+        if down.kind !== :atm
+            δd = min(δ, 1e-3 * hypot(Pa - Pb, DP_REG))
+            d_down = fwd ? (edge_flow(e, Pa, Pb + δd, ha, hb) - edge_flow(e, Pa, Pb - δd, ha, hb)) / 2δd :
+                           (edge_flow(e, Pa + δd, Pb, ha, hb) - edge_flow(e, Pa - δd, Pb, ha, hb)) / 2δd
+        end
+        d_up = d_h = 0.0
+        if up.kind !== :atm
+            # Moving the upstream end makes the part resolve a new upstream state and choking
+            # point. Its memo is put back afterwards, so that the next `rhs!` finds the one it left.
+            δh = DH_STEP * (abs(fwd ? ha : hb) + 1e5)
+            if down.kind === :atm
+                d_up = ((fwd ? edge_flow(e, Pa + δ, Pb, ha, hb) : edge_flow(e, Pa, Pb + δ, ha, hb)) - m0) / δ
+            else
+                d_up = (edge_flow(e, Pa + δ, Pb + δ, ha, hb) - m0) / δ - d_down
+            end
+            d_h = ((fwd ? edge_flow(e, Pa, Pb, ha + δh, hb) : edge_flow(e, Pa, Pb, ha, hb + δh)) - m0) / δh
+        end
+        e.m_P1, e.m_h1, e.m_up, e.m_Pc, e.m_G, e.m_Pu = memo
+        lin.da[k], lin.db[k], lin.dh[k] = fwd ? (d_up, d_down, d_h) : (d_down, d_up, d_h)
+    end
+    # The matrix, a column at a time: the balances' answer to a unit change in each unknown.
+    M, col = zeros(2na, 2na), zeros(2na)
+    dP, dhj, none = zeros(length(nodes)), zeros(length(nodes)), Float64[]
+    for (q, i) in enumerate(net.active)
+        dP[i] = 1.0
+        _lin_rows!(col, net, lin, dP, dhj, 0, none)
+        M[:, q] .= col
+        dP[i] = 0.0
+        dhj[i] = 1.0
+        _lin_rows!(col, net, lin, dP, dhj, 0, none)
+        M[:, na+q] .= col
+        dhj[i] = 0.0
+    end
+    # A junction that no flow responds to has an empty row: hold it where it is, as the junction
+    # solve does.
+    for q in 1:na
+        all(==(0), view(M, q, :)) && (M[q, q] = 1.0)
+    end
+    F = lu!(M; check = false)
+    issuccess(F) ? (; lin..., lu = F) : nothing
+end
+
+const DH_STEP = 1e-6          # relative step in enthalpy for a part's slope (on |h| + 100 kJ/kg, as h passes through zero)
+
+# Change in the enthalpy node `i` sends through its port `port`: a junction's mixture enthalpy, or
+# a port of the vessel being perturbed (`v`, with `dport` the change at each of its ports).
+_dsent(net::Net, i, port, dhj, v, dport) = net.nodes[i].kind === :junction ? dhj[i] : i == v ? dport[port] : 0.0
+
+# First-order change in the flow through part `k` (positive a → b) for pressure changes `dP` at
+# the nodes and the enthalpy changes above.
+function _dflow(net::Net, lin, k, dP, dhj, v, dport)
+    e = net.edges[k]
+    up, port = lin.forward[k] ? (e.a, e.pa) : (e.b, e.pb)
+    lin.da[k] * dP[e.a] + lin.db[k] * dP[e.b] + lin.dh[k] * _dsent(net, up, port, dhj, v, dport)
+end
+
+# The linearised junction equations, for each active junction: the change in its mass imbalance
+# (first half of `out`), and the change in its mixture enthalpy less what the changed inflows make
+# it (second half). Both are zero at the linearised solution. The mixture is Σ flow·h / Σ flow over
+# the parts flowing in, as in `sweep!`.
+function _lin_rows!(out, net::Net, lin, dP, dhj, v, dport)
+    na = length(net.active)
+    for (q, j) in enumerate(net.active)
+        n = net.nodes[j]
+        balance = inflow = mix = 0.0
+        for k in net.adj[j]
+            net.live[k] || continue
+            e = net.edges[k]
+            dm = _dflow(net, lin, k, dP, dhj, v, dport)
+            into = e.b == j ? 1.0 : -1.0               # a → b flow enters the junction at b
+            balance += into * dm
+            lin.forward[k] == (e.b == j) || continue   # the rest is for parts flowing in
+            other, port = e.a == j ? (e.b, e.pb) : (e.a, e.pa)
+            flow = abs(e.mdot)
+            inflow += flow
+            mix += into * dm * (sent_h(net.nodes[other], port) - n.hl) + flow * _dsent(net, other, port, dhj, v, dport)
+        end
+        out[q] = balance
+        out[na+q] = inflow > 0 ? dhj[j] - mix / inflow : dhj[j]
     end
     nothing
 end
