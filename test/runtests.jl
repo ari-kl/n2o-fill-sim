@@ -1374,7 +1374,11 @@ end
     # A bottle left in the sun (62 °C, about 2100 psig) opened through an orifice, hose, valve and
     # hose. The imbalance here settles near 1e-6. If every such evaluation counts as failed and
     # pays for the whole fallback, these 5 s take 94 failures and 14 s of wall time. The solve
-    # accepts it instead; the test allows up to 10 failures.
+    # accepts it instead.
+    # At 4.4 s the line passes the top of the two-phase dome, where the valve's flow has a corner
+    # against its upstream pressure and Newton cycles across it. The junction-by-junction fallback
+    # gets off the corner but ran out of passes a ten-thousandth of the flow short (3 failures);
+    # Newton now finishes from where the fallback stops.
     s = F.Scene()
     F.add_part!(s, "Bottle", 0, 0; name = "B").p["T_C"] = 62.0
     for (i, (kind, name)) in enumerate((("Orifice", "OR"), ("Pipe", "L1"), ("Valve", "V"), ("Pipe", "L2"), ("Tank", "T")))
@@ -1387,7 +1391,7 @@ end
     F.act!(sim, "V", "open")
     F.run_until!(sim, 20.0; wall_limit = 60)
     P(name) = F.node_report(sim.net, sim.net.nodes[findfirst(n -> n.name == name, sim.net.nodes)], sim.u).P
-    @test isempty(sim.failed) && sim.net.unconverged <= 10
+    @test isempty(sim.failed) && sim.net.unconverged == 0
     @test abs(P("B") - P("T")) < 2e5 && P("T") > 60e5              # equalised, both far above the critical pressure
     @test closes(sim)
 end

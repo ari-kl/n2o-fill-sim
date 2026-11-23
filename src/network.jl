@@ -490,85 +490,93 @@ function _solve_active!(net::Net)
             worst > 0.3 * before && break              # not contracting: the Jacobian is stale
         end
     end
-    for iter in 1:40
-        converged = worst < 1e-9 * scale + 1e-10       # kg/s; 1e-10 is a third of a milligram an hour
-        TALLY.on && (TALLY.newton += 1)
-        fill!(J, 0.0)
-        for (k, e) in enumerate(net.edges)
-            net.live[k] || continue
-            ra, rb = net.row[e.a], net.row[e.b]
-            (ra == 0 && rb == 0) && continue
-            Pa, Pb = nodes[e.a].P, nodes[e.b].P
-            ha, hb = sent_h(nodes[e.a], e.pa), sent_h(nodes[e.b], e.pb)
-            δ = 1e-6 * max(Pa, Pb) + 1.0
-            # Only junction ends are unknowns: an end at a vessel or the atmosphere needs no
-            # derivative. The downstream end goes first, because moving it leaves the upstream
-            # state (and with it the remembered flash and choking point) untouched.
-            m0 = edge_flow(e, Pa, Pb, ha, hb)
-            first_b = Pa >= Pb
-            da = db = 0.0
-            for end_b in (first_b, !first_b)
-                if end_b
-                    rb != 0 && (db = (edge_flow(e, Pa, Pb + δ, ha, hb) - m0) / δ)
-                else
-                    ra != 0 && (da = (edge_flow(e, Pa + δ, Pb, ha, hb) - m0) / δ)
+    for attempt in 1:3
+        for iter in 1:40
+            converged = worst < 1e-9 * scale + 1e-10       # kg/s; 1e-10 is a third of a milligram an hour
+            TALLY.on && (TALLY.newton += 1)
+            fill!(J, 0.0)
+            for (k, e) in enumerate(net.edges)
+                net.live[k] || continue
+                ra, rb = net.row[e.a], net.row[e.b]
+                (ra == 0 && rb == 0) && continue
+                Pa, Pb = nodes[e.a].P, nodes[e.b].P
+                ha, hb = sent_h(nodes[e.a], e.pa), sent_h(nodes[e.b], e.pb)
+                δ = 1e-6 * max(Pa, Pb) + 1.0
+                # Only junction ends are unknowns: an end at a vessel or the atmosphere needs no
+                # derivative. The downstream end goes first, because moving it leaves the upstream
+                # state (and with it the remembered flash and choking point) untouched.
+                m0 = edge_flow(e, Pa, Pb, ha, hb)
+                first_b = Pa >= Pb
+                da = db = 0.0
+                for end_b in (first_b, !first_b)
+                    if end_b
+                        rb != 0 && (db = (edge_flow(e, Pa, Pb + δ, ha, hb) - m0) / δ)
+                    else
+                        ra != 0 && (da = (edge_flow(e, Pa + δ, Pb, ha, hb) - m0) / δ)
+                    end
                 end
+                ra != 0 && (J[ra, ra] -= da)
+                rb != 0 && (J[rb, rb] += db)
+                ra != 0 && rb != 0 && (J[ra, rb] -= db; J[rb, ra] += da)
             end
-            ra != 0 && (J[ra, ra] -= da)
-            rb != 0 && (J[rb, rb] += db)
-            ra != 0 && rb != 0 && (J[ra, rb] -= db; J[rb, ra] += da)
-        end
-        # A junction that no flow responds to (every part on it at rest, or carrying a stream so
-        # far outside the property range that the flow law returns nothing) has an empty row. Left
-        # alone that makes the whole system singular and sends every junction to the slow fallback
-        # below, on every call. If that junction is in balance as it stands, hold it where it is
-        # and solve the rest. (If it is not, nothing here can move it: the fallback has to.)
-        for q in 1:na
-            J[q, q] == 0 && abs(r[q]) < 1e-9 * scale + 1e-10 && (J[q, q] = 1.0)
-        end
-        r .= .-r
-        net.lu = lu!(J; check = false)
-        ldiv!(net.lu, r)                               # r now holds the Newton step
-        big = maximum(abs, r)
-        isfinite(big) || break
-        big > 2e6 && (r .*= 2e6 / big)                 # no pressure moves more than 20 bar at once
-        cut = _band_cut(net, r)
-        cut < 1 && (r .*= cut)
-        # Pressures that have stopped moving are converged, whatever the imbalance says: the flow
-        # laws carry round-off of their own, and near it the tolerance above cannot be met.
-        converged |= big < 1e-2
-        for (q, j) in enumerate(net.active)
-            P0[q] = nodes[j].P
-            net.step[q] = r[q]
-        end
-        for λ in (1.0, 0.5, 0.25)
+            # A junction that no flow responds to (every part on it at rest, or carrying a stream so
+            # far outside the property range that the flow law returns nothing) has an empty row. Left
+            # alone that makes the whole system singular and sends every junction to the slow fallback
+            # below, on every call. If that junction is in balance as it stands, hold it where it is
+            # and solve the rest. (If it is not, nothing here can move it: the fallback has to.)
+            for q in 1:na
+                J[q, q] == 0 && abs(r[q]) < 1e-9 * scale + 1e-10 && (J[q, q] = 1.0)
+            end
+            r .= .-r
+            net.lu = lu!(J; check = false)
+            ldiv!(net.lu, r)                               # r now holds the Newton step
+            big = maximum(abs, r)
+            isfinite(big) || break
+            big > 2e6 && (r .*= 2e6 / big)                 # no pressure moves more than 20 bar at once
+            cut = _band_cut(net, r)
+            cut < 1 && (r .*= cut)
+            # Pressures that have stopped moving are converged, whatever the imbalance says: the flow
+            # laws carry round-off of their own, and near it the tolerance above cannot be met.
+            converged |= big < 1e-2
             for (q, j) in enumerate(net.active)
-                nodes[j].P = clamp(P0[q] + λ * net.step[q], Plo, Phi)
+                P0[q] = nodes[j].P
+                net.step[q] = r[q]
             end
-            w2, scale = _residual!(net)
-            # Once converged, take the one extra full step regardless: it brings the result down
-            # to round-off, which matters because the ODE solver differentiates through this solve.
-            # A step cut short to land inside a part's band is taken as it is, even if the
-            # imbalance rises: it buys the slope that the next step needs (see `_band_cut`).
-            (converged || cut < 1 || w2 < worst || λ == 0.25) && (worst = w2; break)
+            for λ in (1.0, 0.5, 0.25)
+                for (q, j) in enumerate(net.active)
+                    nodes[j].P = clamp(P0[q] + λ * net.step[q], Plo, Phi)
+                end
+                w2, scale = _residual!(net)
+                # Once converged, take the one extra full step regardless: it brings the result down
+                # to round-off, which matters because the ODE solver differentiates through this solve.
+                # A step cut short to land inside a part's band is taken as it is, even if the
+                # imbalance rises: it buys the slope that the next step needs (see `_band_cut`).
+                (converged || cut < 1 || w2 < worst || λ == 0.25) && (worst = w2; break)
+            end
+            converged && return
         end
-        converged && return
-    end
-    loose = 1e-6 * scale + 1e-10                       # one part in a million of the largest flow
-    worst < loose && return                            # as good as the flow laws' round-off allows
-    # Newton did not settle (a kink in a flow law: a check valve cracking, a restriction starting
-    # to choke next to a closing valve). Fall back to something that cannot fail: balance each
-    # junction in turn with its neighbours held, and repeat. Each junction's imbalance falls
-    # monotonically as its own pressure rises, so its root can always be bracketed and found.
-    for pass in 1:60
-        moved = 0.0
-        for j in net.active
-            before = nodes[j].P
-            _balance_one!(net, j, Plo, Phi)
-            moved = max(moved, abs(nodes[j].P - before))
+        loose = 1e-6 * scale + 1e-10                       # one part in a million of the largest flow
+        worst < loose && return                            # as good as the flow laws' round-off allows
+        attempt == 3 && break
+        # Newton did not settle (a kink in a flow law: a check valve cracking, a restriction starting
+        # to choke next to a closing valve). Fall back to something that cannot fail: balance each
+        # junction in turn with its neighbours held, and repeat. Each junction's imbalance falls
+        # monotonically as its own pressure rises, so its root can always be bracketed and found.
+        # It closes in slowly, though, where junctions are tied together by parts with little
+        # pressure drop (pipes in series), and sixty passes can end a thousandth of the flow short.
+        # What the passes are good at is getting off the kink: so Newton is tried again from where
+        # they stop, after eight passes and, if that is not enough, after sixty more. Only if it
+        # still has not settled is the solve given up and counted.
+        for pass in 1:(attempt == 1 ? 8 : 60)
+            moved = 0.0
+            for j in net.active
+                before = nodes[j].P
+                _balance_one!(net, j, Plo, Phi)
+                moved = max(moved, abs(nodes[j].P - before))
+            end
+            worst, scale = _residual!(net)                 # also brings the junction enthalpies up to date
+            (worst < 1e-9 * scale + 1e-10 || moved < 1e-3 || pass >= 3 && worst < loose) && return
         end
-        worst, scale = _residual!(net)                 # also brings the junction enthalpies up to date
-        (worst < 1e-9 * scale + 1e-10 || moved < 1e-3 || pass >= 3 && worst < loose) && return
     end
     net.unconverged += 1
     nothing
