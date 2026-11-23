@@ -172,8 +172,14 @@ at(480, () -> (app.sel = ["PT201", "PT202"]; global n_before_delete = nparts()))
 key(481, ig.ImGuiKey_Delete)
 check(486, "Delete removes every selected part", () -> nparts() == n_before_delete - 2 && !has("PT201") && !has("PT202"))
 
+# --- a second run (regulated_fill, less its two gauges): what a click shows while paused
+at(490, () -> F.start_run!(app))
+click(494, 12, 4)                                             # AV201, with time standing still
+check(498, "a valve clicked while paused is marked as told to open before it has moved", () -> app.paused && F.simtime(app.sim) == 0 &&
+      edge("AV201").opening == 0 && F.pending(edge("AV201")) == 1 && F.pending(edge("AV203")) == 0)
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "490")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "500")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)

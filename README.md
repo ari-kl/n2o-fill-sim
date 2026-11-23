@@ -80,7 +80,10 @@ closed, switch a heater or change a set-point. Hover any part for its pressures,
 temperature. The plumbing cannot be changed while running; Stop / edit returns to the editor.
 
 A shut valve is drawn filled, with a bar across it; an open one as an outline only; one part-way
-as an outline with part of the fill. The colours (red, green, amber) say the same again. Check
+as an outline with part of the fill. The colours (red, green, amber) say the same again. The
+body shows where the valve is; from the click until it gets there, which while paused is until
+you run or step, its actuator takes the colour of where it was told to go and carries an arrow
+(outline pointing away from the body: opening; filled pointing at it: closing). Check
 valves, relief valves and regulators are filled while nothing passes and outlines while something
 does.
 

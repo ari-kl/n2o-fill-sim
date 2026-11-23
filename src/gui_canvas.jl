@@ -167,6 +167,9 @@ end
 
 # ---------------------------------------------------------------- drawing
 
+"Which way a valve has been told to go and has not yet got to: +1 opening, -1 closing, 0 if it is where it was told to be."
+pending(e) = Int(sign(valve_target(e) - e.opening))
+
 function draw_part(dl, app::App, part::Part)
     L(dx, dy) = local_pt(app, part, dx, dy)
     z = UI[] * app.zoom
@@ -256,7 +259,19 @@ function draw_part(dl, app::App, part::Part)
             end
             stem = tinted && live ? state : c                  # the actuator shows open / shut when the body shows pressure
             if k == "Valve"
-                line((0, 0), (0, -0.7), stem, tinted ? 3f0 : 2f0); line((-0.3, -0.7), (0.3, -0.7), stem, tinted ? 3f0 : 2f0)
+                # A click changes the command at once, but the body shows where the valve is, and
+                # that only moves with simulated time: paused, a click would seem to do nothing.
+                # So the actuator takes the colour of where the valve has been told to go and carries
+                # an arrow until it gets there: outline pointing away = opening, filled pointing at
+                # the body = closing (the same shapes as open and shut).
+                want = live ? pending(edge_of(app, part.name)) : 0
+                if want != 0
+                    stem = want > 0 ? C_OPEN : C_SHUT
+                    want > 0 ? ig.AddTriangle(dl, L(-0.28, -0.85), L(0.28, -0.85), L(0, -1.3), stem, thin) :
+                               ig.AddTriangleFilled(dl, L(-0.28, -1.3), L(0.28, -1.3), L(0, -0.85), stem)
+                end
+                heavy = tinted || want != 0 ? 3f0 : 2f0
+                line((0, 0), (0, -0.7), stem, heavy); line((-0.3, -0.7), (0.3, -0.7), stem, heavy)
                 part.p["normally_open"] > 0.5 && ig.AddText(dl, L(0.35, -1.0), C_DIM, "NO")
             elseif k == "Regulator"
                 line((0, 0), (0, -0.5), stem); ig.AddCircle(dl, L(0, -0.75), 0.27f0 * grid(app), stem, 0, 2f0 * UI[])
@@ -278,6 +293,8 @@ function draw_part(dl, app::App, part::Part)
     # Label, with live readings when running.
     lx, ly = k in VESSEL_KINDS ? w2s(app, part.x + 1.05, part.y - (k == "Tank" ? 0.4 : 1.2)) :
              k == "Gauge" ? w2s(app, part.x + 0.6, part.y - 0.65) :
+             k == "Valve" && mod(part.rot, 4) == 1 ? w2s(app, part.x + 0.75, part.y + 0.3) :   # its actuator and arrow point this way: keep clear
+             k == "Valve" && mod(part.rot, 4) == 2 ? w2s(app, part.x - 0.9, part.y + 1.4) :    # likewise, pointing down
              isodd(part.rot) ? w2s(app, part.x + 0.75, part.y - 0.3) : w2s(app, part.x - 0.9, part.y + 0.55)
     k == "Junction" || ig.AddText(dl, (lx, ly), selected ? C_SEL : C_DIM, part.name)
     live || return
