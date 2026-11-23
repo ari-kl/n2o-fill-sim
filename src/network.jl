@@ -524,7 +524,12 @@ function _solve_active!(net::Net)
             converged = worst < 1e-9 * scale + 1e-10
             r .= .-r
             ldiv!(net.lu, r)
-            all(isfinite, r) || break
+            if !all(isfinite, r)                       # a factorisation that is no use: put the imbalances back for Newton
+                for (q, j) in enumerate(net.active)
+                    r[q] = nodes[j].dm_l
+                end
+                break
+            end
             for (q, j) in enumerate(net.active)
                 nodes[j].P = clamp(nodes[j].P + r[q], Plo, Phi)
             end
@@ -552,11 +557,21 @@ function _solve_active!(net::Net)
                 m0 = edge_flow(e, Pa, Pb, ha, hb)
                 first_b = Pa >= Pb
                 da = db = 0.0
+                # A pressure-operated part's flow has a corner at each edge of its band and where
+                # the pressures across it are equal. The difference is taken on the side of the
+                # corner the part is on: across it the slope comes out too small by whatever share
+                # of the step fell on the far side, and Newton overshoots by as much.
+                δa = δb = δ
+                if m0 != 0 && e.kind in (:regulator, :check, :relief)
+                    here = _regime(e, Pa, Pb)
+                    _regime(e, Pa + δ, Pb) == here || (δa = -δ)
+                    _regime(e, Pa, Pb + δ) == here || (δb = -δ)
+                end
                 for end_b in (first_b, !first_b)
                     if end_b
-                        rb != 0 && (db = (edge_flow(e, Pa, Pb + δ, ha, hb) - m0) / δ)
+                        rb != 0 && (db = (edge_flow(e, Pa, Pb + δb, ha, hb) - m0) / δb)
                     else
-                        ra != 0 && (da = (edge_flow(e, Pa + δ, Pb, ha, hb) - m0) / δ)
+                        ra != 0 && (da = (edge_flow(e, Pa + δa, Pb, ha, hb) - m0) / δa)
                     end
                 end
                 ra != 0 && (J[ra, ra] -= da)
@@ -627,6 +642,10 @@ function _solve_active!(net::Net)
     nothing
 end
 
+# Which stretch of its flow law a pressure-operated part is on: passing forwards or not, and shut,
+# inside its band or fully open.
+_regime(e::Edge, Pa, Pb) = (c = band_place(e, Pa, Pb); (Pa > Pb, c <= 0 ? 0 : c >= 1 ? 2 : 1))
+
 """
 The fraction of the Newton step `step` (per active junction) that can be taken before a
 pressure-operated part is carried from outside its band to beyond the middle of it; 1 if none is.
@@ -639,6 +658,14 @@ and the step back jumps it again. That cycle never ends; it was the commonest wa
 to fail (a regulator at lock-up when the valve after it starts to open). Stopping in the middle
 of the band gives the next step the part's real slope, from which it converges as on any smooth
 law. Circuit simulators limit the voltage step across a diode in the same way, for the same reason.
+
+A regulator or relief valve has a second such corner: it passes nothing backwards, so once the
+pressure across it is reversed its flow answers nothing either. With a nearly shut valve ahead of
+a regulator the balance sits just on the forward side of that corner (the valve passes little, so
+the regulator needs almost no pressure across it), and a step taken from well forward of it
+overshoots into the reversed side, where every junction between the two parts floats and the
+Jacobian is singular. A step that would reverse such a part is cut to close nine tenths of the
+pressure difference across it instead. (A check valve's band already says this.)
 """
 function _band_cut(net::Net, step)
     nodes, cut = net.nodes, 1.0
@@ -649,6 +676,9 @@ function _band_cut(net::Net, step)
         c0 = band_place(e, Pa, Pb)
         c1 = band_place(e, Pa + (ra == 0 ? 0.0 : step[ra]), Pb + (rb == 0 ? 0.0 : step[rb]))
         (c0 <= 0 && c1 > 0.5 || c0 >= 1 && c1 < 0.5) && (cut = min(cut, (0.5 - c0) / (c1 - c0)))
+        d0 = Pa - Pb
+        d1 = d0 + (ra == 0 ? 0.0 : step[ra]) - (rb == 0 ? 0.0 : step[rb])
+        e.kind !== :check && d0 > 0 && d1 < 0 && (cut = min(cut, 0.9 * d0 / (d0 - d1)))
     end
     cut
 end

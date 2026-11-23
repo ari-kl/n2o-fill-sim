@@ -1818,6 +1818,25 @@ end
     @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
 end
 
+@testset "a regulator reaching lock-up behind a check valve: the solve is differenced on the open side of the band edge" begin
+    # As the tank comes up to the set-point the regulator passes milligrams a second, and the check
+    # valve ahead of it has to pass the same: a ten-thousandth of the way into its band. The
+    # junction Jacobian's step of a millionth of the pressure reached across the band's edge, so
+    # the check valve's slope came out some 25 times too small on one side, and Newton stepped
+    # shut, back to mid-band and round again for every iteration it had: 18 failed solves and a
+    # single solver step of 29,000 part flows.
+    sim = F.Sim(chain(["Orifice", "CheckValve", "Regulator"]))
+    costliest = 0
+    while sim.t < 240 && isempty(sim.failed)
+        before = F.work(sim)
+        F.advance!(sim, 240 - sim.t; max_steps = 1)
+        costliest = max(costliest, F.work(sim) - before)
+    end
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    @test costliest < 3000 && F.work(sim) < 40_000
+    @test F.node_report(sim.net, sim.net.nodes[2], sim.u).P >= sim.net.edges[3].set && part_flow(sim, "P3") == 0   # locked up
+end
+
 # RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
 function log_rms(sim, key, D, col, t0, a, b, p_atm)
     d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]
