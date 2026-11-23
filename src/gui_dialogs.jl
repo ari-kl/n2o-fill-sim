@@ -2,14 +2,14 @@
 
 # ---------------------------------------------------------------- file browser
 
-const BROWSE_TITLE = Dict(:open => "Open a schematic", :save => "Save the schematic as", :log => "Load a test log")
+const BROWSE_TITLE = Dict(:open => "Open a schematic", :save => "Save the schematic as", :log => "Load a test log", :bands => "Load prediction bands")
 
-"Open the file browser for `what` (:open, :save or :log), starting beside the current file."
+"Open the file browser for `what` (:open, :save, :log or :bands), starting beside the current file."
 function browse!(app::App, what::Symbol)
     app.browse = what
     here = isempty(app.path) ? "" : dirname(abspath(app.path))
     isdir(app.browse_dir) || (app.browse_dir = pwd())
-    isdir(here) && what !== :log && (app.browse_dir = here)
+    isdir(here) && what in (:open, :save) && (app.browse_dir = here)
     setbuf!(app.browse_buf, what === :save ? basename(app.path) : "")
     nothing
 end
@@ -24,6 +24,8 @@ function browse_done!(app::App, path)
         save_scene!(app, endswith(lowercase(path), ".toml") ? path : path * ".toml")
     elseif what === :log
         load_log!(app, path)
+    elseif what === :bands
+        load_bands!(app, path)
     end
     nothing
 end
@@ -34,7 +36,7 @@ function browser_popup(app::App)
     ig.OpenPopup(title)
     ig.SetNextWindowSize((px(620), px(460)), ig.ImGuiCond_Appearing)
     ig.BeginPopupModal(title) || return
-    exts = app.browse === :log ? (".csv", ".toml") : (".toml",)       # a log is a CSV, or a manifest that describes one
+    exts = app.browse === :log ? (".csv", ".toml") : app.browse === :bands ? (".csv",) : (".toml",)   # a log is a CSV, or a manifest that describes one
     wrapped(app.browse_dir)
     button("Up") && (app.browse_dir = dirname(rstrip(app.browse_dir, ['/', '\\'])) |> d -> isempty(d) ? app.browse_dir : d)
     dirs, files = String[], String[]
@@ -57,12 +59,12 @@ function browser_popup(app::App)
         mark("file " * f)
         ig.IsItemHovered() && ig.IsMouseDoubleClicked(0) && (chosen = f)
     end
-    isempty(dirs) && isempty(files) && text("no folders or " * ext * " files here")
+    isempty(dirs) && isempty(files) && text("no folders or " * join(exts, " or ") * " files here")
     ig.EndChild()
     ig.SetNextItemWidth(-px(60))
     ig.InputText("file", app.browse_buf, length(app.browse_buf), ig.ImGuiInputTextFlags_EnterReturnsTrue) && (chosen = str(app.browse_buf))
     tip("A name in this folder, or a full path. A folder path jumps there.")
-    button(app.browse === :save ? "Save" : app.browse === :log ? "Load" : "Open", "browser ok") && (chosen = str(app.browse_buf))
+    button(app.browse === :save ? "Save" : app.browse === :open ? "Open" : "Load", "browser ok") && (chosen = str(app.browse_buf))
     ig.SameLine()
     button("Cancel", "browser cancel") && (app.browse = :none)
     if !isempty(chosen)
@@ -78,6 +80,50 @@ function browser_popup(app::App)
     end
     app.browse === :none && ig.CloseCurrentPopup()
     ig.EndPopup()
+end
+
+# ---------------------------------------------------------------- prediction bands
+
+"""
+    read_bands(path) -> (t, bands)
+
+Read a study's `bands.csv` (docs/STUDIES.md): a time column, then columns named `<signal>.p<percentile>`.
+Each signal becomes one `Band` from its lowest to its highest percentile, with the 50th, if there
+is one, as its middle. Values are SI, as in an exported run.
+"""
+function read_bands(path)
+    names, cols = read_csv(path)
+    found = Dict{String,Vector{Tuple{Float64,String}}}()        # signal => its (percentile, column)s
+    for name in names
+        m = match(r"^(.+)\.p([0-9.]+)$", name)
+        p = m === nothing ? nothing : tryparse(Float64, m[2])
+        p === nothing || push!(get!(found, m[1], Tuple{Float64,String}[]), (p, name))
+    end
+    isempty(found) && error("no columns named like TANK.P.p5 and TANK.P.p95: not a study's bands.csv")
+    grey = ig.ImVec4(0.7f0, 0.7f0, 0.7f0, 1f0)                  # until its signal's line has been drawn, and if it never is
+    pct(p) = isinteger(p) ? string(Int(p)) : string(p)
+    stride = max(1, cld(length(cols[names[1]]), MAX_POINTS))
+    bands = map(sort!(collect(keys(found)))) do signal
+        ps = sort!(found[signal])
+        mid = findfirst(p -> p[1] == 50, ps)
+        b = Band(signal, signal_kind(signal), "band $signal $(pct(ps[1][1]))-$(pct(ps[end][1])) %", cols[ps[1][2]], mid === nothing ? Float64[] : cols[ps[mid][2]], cols[ps[end][2]],
+                 ("band lo " * signal, "band mid " * signal, "band hi " * signal), grey, plot_spec(), plot_spec())
+        band_style!(b, grey, stride)
+    end
+    cols[names[1]], bands
+end
+
+"Show the bands in `path` behind the plotted signals, in place of any shown before."
+function load_bands!(app::App, path)
+    try
+        t, bands = read_bands(path)
+        foreach(k -> startswith(k, "band ") && delete!(app.cache, k), collect(keys(app.cache)))
+        app.bands_t, app.bands = t, bands
+        app.msg = "Prediction bands from $(basename(path)) are drawn behind the plots: " * join((b.label for b in bands), ", ") * "."
+    catch err
+        app.msg = "Could not read the bands: " * first(sprint(showerror, err), 200)
+    end
+    nothing
 end
 
 # ---------------------------------------------------------------- loading a test log

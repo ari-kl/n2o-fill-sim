@@ -208,6 +208,8 @@ function tanks_tab(app::App)
         app.msg = "Wrote " * out * " (signals, SI units) and " * basename(events_path(out)) * " (valve and heater actions)"
     end
     ig.SameLine(); button("Load test log...") && browse!(app, :log)
+    ig.SameLine(); button("Load bands...") && browse!(app, :bands)
+    tip("Show a study's bands.csv behind the plotted signals: the spread of each signal over the parameter sets a log could not rule out.")
     if button("Keep my clicks as the schedule")
         app.scene.schedule = copy(sim.log)
         app.dirty = true

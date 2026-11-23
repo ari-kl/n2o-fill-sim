@@ -21,6 +21,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   --manifest log.toml     the same, for a log described by a manifest (see docs/LOGS.md)
   --t0 SECONDS            log time that corresponds to simulation time zero (default: first row)
   --set NAME=VALUE        change a parameter for this run: PART.param=value or settings.key=value (repeatable)
+  --bands bands.csv       show a study's prediction bands behind the plotted signals (docs/STUDIES.md)
   --schedule file.csv     add scripted actions from a file with columns t_s,part,action,value
   --headless              no window: run the schedule / replay and print a summary
   --until SECONDS         how long to run headless (default: the end of the log when replaying,
@@ -48,7 +49,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   writes the log as its manifest describes it: one clock, an even grid, valve columns as 1 = open
 """
 
-const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout", "--profile", "--profile-n", "--cutoff", "--nth")
+const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout", "--profile", "--profile-n", "--cutoff", "--nth", "--bands")
 const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
@@ -160,6 +161,7 @@ function main(args = ARGS)
     end
     app = App(scene, path)
     overlay === nothing || set_overlay!(app, overlay...)
+    opt("--bands") === nothing || ((app.bands_t, app.bands) = read_bands(opt("--bands")))
     flag("--run") && start_run!(app)
     gui(app; shot = opt("--shot", ""), frames = parse(Int, opt("--frames", "0")))
 end

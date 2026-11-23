@@ -44,6 +44,36 @@ function target_band(app::App)
     nothing
 end
 
+# A band's colour and, from it, its two styles: a faint fill and a thin line for the median. Every
+# `stride`-th row of the file is drawn, as for a long history.
+function band_style!(b::Band, colour, stride)
+    b.colour = colour
+    b.fill = plot_spec(FillColor = colour, FillAlpha = 0.3, Stride = 8stride)
+    b.line = plot_spec(LineColor = ig.ImVec4(colour.x, colour.y, colour.z, 0.6f0), LineWeight = px(1), Stride = 8stride)
+    b
+end
+
+# One of a band's three series (1 lowest, 2 middle, 3 highest) in display units, converted once per unit choice.
+function band_shown(app::App, b::Band, i)
+    c = get(app.cache, b.keys[i], nothing)
+    c === nothing || return c
+    app.cache[b.keys[i]] = [shown(app, b.kind, y) for y in (b.lo, b.mid, b.hi)[i]]
+end
+
+"""
+A prediction band on the current plot: shaded between its lowest and highest percentile, with the
+median as a thin line, under one legend entry. All of it is drawn, whatever the run has reached: it
+is a prediction, and may be shorter or longer than the run. It is drawn before the live lines, so
+they lie on top of it.
+"""
+function draw_band(app::App, b::Band)
+    n = length(app.bands_t)
+    count = cld(n, max(1, cld(n, MAX_POINTS)))
+    ImPlot.PlotShaded(b.label, app.bands_t, band_shown(app, b, 1), band_shown(app, b, 3), count, b.fill)
+    isempty(b.mid) || ImPlot.PlotLine(b.label, app.bands_t, band_shown(app, b, 2), count, b.line)
+    nothing
+end
+
 function plot_panel(app::App)
     sim = app.sim
     n = length(sim.t_hist)
@@ -53,7 +83,7 @@ function plot_panel(app::App)
     active = Tuple{Symbol,String,Vector{String}}[]
     for (kind, title) in PLOT_KINDS
         keys_ = sort!([k for k in app.probes if haskey(sim.hist, k) && signal_kind(k) === kind])
-        has_overlay = any(o -> o[2] === kind, app.overlay)
+        has_overlay = any(o -> o[2] === kind, app.overlay) || any(b -> b.kind === kind, app.bands)
         (isempty(keys_) && !has_overlay) || push!(active, (kind, title, keys_))
     end
     if isempty(active)
@@ -92,10 +122,16 @@ function plot_panel(app::App)
             for (name, okind, _) in app.overlay
                 okind === kind && (legend_w = max(legend_w, ig.CalcTextSize(name).x + log_w))
             end
+            for b in app.bands
+                b.kind === kind && (legend_w = max(legend_w, ig.CalcTextSize(b.label).x))
+            end
             beside = w - legend_w - px(34) >= px(150)             # 34: the colour patch and the legend's padding
             ImPlot.SetupLegend(beside ? ImPlot.ImPlotLocation_NorthEast : ImPlot.ImPlotLocation_NorthWest,
                                beside ? ImPlot.ImPlotLegendFlags_Outside : ImPlot.ImPlotLegendFlags_None)
             kind === :pressure && target_band(app)
+            for b in app.bands
+                b.kind === kind && draw_band(app, b)
+            end
             for key in keys_
                 c = get!(app.cache, key, Float64[])
                 length(c) > n && empty!(c)
@@ -116,6 +152,9 @@ function plot_panel(app::App)
                     pop!(st.t); pop!(st.v)
                 else
                     ImPlot.PlotLine(name * "###" * key, sim.t_hist, c, cld(n, stride), spec)
+                end
+                for b in app.bands                               # a band takes the colour of its signal's line
+                    b.signal == key && (colour = ImPlot.GetLastItemColor(); colour == b.colour || band_style!(b, colour, max(1, cld(length(app.bands_t), MAX_POINTS))))
                 end
             end
             last = searchsortedlast(app.overlay_t, t_now)       # logged data, up to now

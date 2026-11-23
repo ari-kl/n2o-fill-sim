@@ -58,6 +58,22 @@ mutable struct Steps
     seen::Int                 # samples of the history already looked at
 end
 
+# A prediction band from a study's bands.csv (docs/STUDIES.md): one signal's lowest, middle and
+# highest percentile over the study's runs, in SI, against the band file's own times. The colour
+# is the live line's once that has been drawn, and the two plot styles are rebuilt only when it changes.
+mutable struct Band
+    signal::String
+    kind::Symbol
+    label::String             # the legend entry: "band TANK.P 5-95 %"
+    lo::Vector{Float64}
+    mid::Vector{Float64}      # empty if the file has no 50th percentile
+    hi::Vector{Float64}
+    keys::NTuple{3,String}    # where `cache` holds the three in display units
+    colour::ig.ImVec4
+    fill::ImPlot.ImPlotSpec
+    line::ImPlot.ImPlotSpec
+end
+
 Base.@kwdef mutable struct App
     scene::Scene
     path::String = ""
@@ -95,6 +111,8 @@ Base.@kwdef mutable struct App
     log_sat::Bool = false                     # also overlay the saturation temperature / pressure the log's readings imply
     overlay_t::Vector{Float64} = Float64[]    # a test log shown next to the run: its time base,
     overlay::Vector{Tuple{String,Symbol,Vector{Float64}}} = Tuple{String,Symbol,Vector{Float64}}[]   # and (label, kind, SI values) per reading
+    bands_t::Vector{Float64} = Float64[]      # prediction bands shown behind the run: their time base,
+    bands::Vector{Band} = Band[]              # and one per signal
     name_buf::Vector{UInt8} = zeros(UInt8, 128)
     filter_buf::Vector{UInt8} = zeros(UInt8, 128)
     setpoint::Base.RefValue{Cdouble} = Ref(700.0)
@@ -109,7 +127,7 @@ Base.@kwdef mutable struct App
     cursor_t::Float64 = NaN                   # time under the mouse in a plot (NaN if none)
     plot_frac::Float32 = 0.42f0               # share of the window height given to the plots in run mode
     # file browser
-    browse::Symbol = :none                    # :none, :open, :save or :log
+    browse::Symbol = :none                    # :none, :open, :save, :log or :bands
     browse_dir::String = pwd()
     browse_buf::Vector{UInt8} = zeros(UInt8, 512)
     # a test log being mapped onto the scene (see logs.jl)
