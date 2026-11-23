@@ -291,7 +291,7 @@ on, not what it delivered.
 
 ### Speed
 
-The 990 s HF4 replay takes about 0.3 s (548 solver steps, about 310,000 equation-of-state
+The 990 s HF4 replay takes about 0.3 s (559 solver steps, about 230,000 equation-of-state
 evaluations). In the window at ×1 the solver uses a few hundredths of a millisecond of a typical
 frame and 3.5 ms in the worst single step. `test/stress.jl` drives scenes nobody tuned (a bottle
 heated until supercritical, and random plumbing from default parts); chains of check valves and
@@ -303,7 +303,7 @@ to about 0.6 s. `test/bench.jl` prints these numbers.
 Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (data in `test/data`).
 
 - **HF3 cold flow (nitrous, unvented fill, 4.3 kg).** HF4 fit unchanged: tank pressure through the
-  100 s sealed period within 2.5 psi RMS, bottle recovery within 3.2 psi, load 4.6 kg against 4.3 kg on
+  100 s sealed period within 5.1 psi RMS, bottle recovery within about 4 psi, load 4.6 kg against 4.3 kg on
   the stand load cell. Post-fill warming is 0.08 psi/s in the model against 0.13 logged (ambient is a
   guess). Open: the model empties the tank through the injector, while the load cell shows ~2.3 kg
   left at 0 psig.
@@ -320,6 +320,30 @@ Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (
   bottle contents trade off; the scene uses vent `Cd` 1.0 and a 28 kg bottle, and follows the tank
   through the hold within 5 psi RMS but the vented fill only within about 33 psi. The hold
   needs 2-4x the model's outside heat input, but ambient, sun and `h_ext_mult` are degenerate.
+
+### Open findings
+
+- **Measured inputs.** The HF4 and HF3 cold flow scenes carry the test days' weather from a
+  historical archive (air temperature good to about 2 °C, sun, wind reduced from 10 m to stand
+  height by estimate), the tank wall mass from the vehicle mass budget (9.06 kg: tube 7.18 kg,
+  bulkheads 0.88 and 1.00 kg) and bottle start temperatures from the bottle-side pressure before
+  the fill. Tank start temperature on the stand was not measured and is set to ambient.
+- **The fill line is probably tighter than the scenes say.** The load cell's fill rate against the
+  logged line pressures puts the restriction between bottle and panel at about 2.2-2.4 mm bore
+  (at `Cd` 0.7) on HF3, its cold flow and HF4; the scenes use 2.5 mm. With 2.3 mm the cold flow
+  loads 4.0 kg and its sealed pressure comes out 36 psi low. Raising wall and outside heat
+  transfer about tenfold and fourfold restores the three stand logs but makes LC26 day 4, held
+  out, worse (9.2 against 4.8 in the scoring of `docs/STUDIES.md`). So the published 2.5 mm and
+  wall coefficient 0.3 agree with the stand logs partly by compensating each other, and the
+  scenes keep them until the tank's heat balance during a fill is understood.
+- **What the logs do not determine.** With measured inputs fixed, sampling 4,000 parameter sets
+  per log leaves the boiling factor `interphase_E`, the wall coefficient, the outside heat
+  multiplier and the vent `Cd` free across nearly their whole plausible ranges on every log; the
+  bottle wall coefficient has no visible effect at all. They are published values, not
+  calibrated ones. What moves the result most is what was not recorded: how full the bottle was.
+- **LC26 day 4 is not reproduced by any setting tried**: the bottle-side pressure in the first
+  20 s of the fill, tank pressure and wall temperature through the fill, and tank pressure late in
+  the 1000 s hold each miss by more than their tolerance whatever the parameters.
 
 ## 8. Reading the two logs
 

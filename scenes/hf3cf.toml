@@ -6,9 +6,9 @@
 # Everything else is the HF4 fit unchanged; this file is an independent check of it.
 
 [settings]
-T_amb_C          = 20.0       # [guess] June morning; the log has no temperature
-solar_W_m2       = 300.0      # [guess]
-wind_m_s         = 1.0        # [guess]
+T_amb_C          = 19.0       # [measured] 16-21 °C that morning (weather archive for the test day, good to about 2 °C)
+solar_W_m2       = 350.0      # [measured] 120-590 that morning (same archive), overcast
+wind_m_s         = 3.5        # [estimate] 4.4-5.8 m/s at 10 m in the archive; less at stand height
 P_atm_kPa        = 101.325
 meop_psig        = 1000.0
 interphase_E     = 700.0      # literature mid-range; HF4 does not pin it down
@@ -40,7 +40,7 @@ name = "BOTTLE_VALVE"
 x = 2
 y = 7
 rot = 3
-d_mm = 2.5                    # [fit] everything between bottle and panel: bottle valve, CGA 326 nipple, 1/4" hose, MV201
+d_mm = 2.5                    # [fit] stands for everything between bottle and panel. The load cell puts it nearer 2.2-2.4 mm; see docs/MODEL.md, "Open findings"
 Cd = 0.7
 
 [[part]]
@@ -147,9 +147,9 @@ rot = 0
 volume_L = 19.16
 diameter_mm = 143.0           # from the 24.9 in² bulkhead area [FDR]
 fill_kg = 0.0
-T_C = 20.0          # [guess] = ambient
+T_C = 19.0                    # [guess] = ambient; no tank sensor on this stand
 air = 1.0
-wall_kg = 10.0                # [guess] 6061 tube + bulkheads
+wall_kg = 9.06                # [measured] tube 7.18 kg, bulkheads 0.88 and 1.00 kg (mass budget)
 wall_cp_J_kgK = 900.0
 absorptivity = 0.4
 emissivity = 0.8
