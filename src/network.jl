@@ -1303,7 +1303,7 @@ function sample!(sim::Sim)
         put(g * ".P", r.P); put(g * ".T", r.T)
     end
     for s in net.sensors                       # after the true signals: each reading is made from one of them
-        put(s.key, read!(s, net, sim.hist[s.source][end], t - sim.last_sample))
+        put(s.key, sense!(s, net, sim.hist[s.source][end], t - sim.last_sample))
     end
     put("vented.m", u[end-2])
     sim.last_sample = t
@@ -1311,7 +1311,7 @@ function sample!(sim::Sim)
 end
 
 """
-    read!(sensor, net, v, h) -> reading
+    sense!(sensor, net, v, h) -> reading
 
 What the instrument reports now, given the true value `v` and the `h` seconds since the last
 recorded sample. In order: gain and offset (and a load cell's hose step), lag, dead band, range.
@@ -1322,7 +1322,7 @@ to this one. That is how the history is read everywhere else (`signal_at`), so t
 exact lag of the recorded history: it has no step-size error of its own, and differs between two
 recording intervals only as far as their straight-line histories of the true value differ.
 """
-function read!(s::Sensor, net::Net, v, h)
+function sense!(s::Sensor, net::Net, v, h)
     x = s.gain * (v - s.ref) + s.offset
     s.valve != 0 && net.edges[s.valve].opening > 0 && (x += s.step)
     y = x

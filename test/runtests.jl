@@ -1513,8 +1513,10 @@ gauged_run(; sample_dt = 0.1, kw...) = (sim = F.Sim(gauged_rig(; kw...); sample_
     @test maximum(P) > 600 * F.PSI && maximum(read) ≈ 300 * F.PSI + P_atm          # the tank went well past the top of the range
     @test sim.hist["PT.T_read"] ≈ sim.hist["PT.T"] .- 2
     @test minimum(gauged_run(min_psig = 50.0).hist["PT.P_read"]) ≈ 50 * F.PSI + P_atm
+    steps = abs.(diff(gauged_run(deadband_psi = 40.0).hist["PT.P_read"]))                  # with a dead band it moves in jumps bigger than the band, or not at all
+    @test all(d -> d == 0 || d > 40 * F.PSI, steps) && count(>(0), steps) > 5 && count(==(0), steps) > 5
     # the pieces one at a time, on numbers: `ref` comes off before gain and offset and goes back on after
-    reads(s, vs, h = 1.0) = [F.read!(s, plain.net, v, h) for v in vs]
+    reads(s, vs, h = 1.0) = [F.sense!(s, plain.net, v, h) for v in vs]
     @test reads(F.Sensor("a", "b"; ref = 100.0, gain = 2.0, offset = 1.0, lo = -5.0, hi = 30.0), [110.0, 90.0, 120.0]) == [121.0, 95.0, 130.0]
     # a dead band holds the reading until the input has moved by more than the band
     @test reads(F.Sensor("a", "b"; band = 2.0), [0.0, 1.0, 1.9, 2.1, 1.0, 0.0]) == [0.0, 0.0, 0.0, 2.1, 2.1, 0.0]
