@@ -75,19 +75,28 @@ the commonest way to fit nonsense.
 
 ## How it searches
 
-Optionally a Latin hypercube over the bounds (`explore`), then the Nelder-Mead simplex method from
-the best point, run twice (the second pass restarts from where the first stopped, with a smaller
-simplex). It uses no derivatives, which suits a model whose output carries solver noise. Values
-are kept inside their bounds.
+Optionally a Latin hypercube over the bounds (`explore`) to find a good place to start. Then, by
+default, the **Levenberg-Marquardt** method (`method = "lm"`): at each iteration it takes the
+sensitivity of every residual to every parameter (one extra evaluation per parameter, differences
+over 2 % of each range, well above solver noise), solves for a step, and tries four step lengths
+at once. All of those evaluations are independent, so they run side by side: start Julia with as
+many threads as there are cores (`-t 8`). Values are kept inside their bounds, and a parameter the
+data push against a bound is held there.
 
-Start Julia with as many threads as there are cores (`-t 8`). Each evaluation runs its datasets
-side by side; the exploratory runs and the sensitivity runs go several at a time; and when there
-are more threads than datasets the search looks ahead, evaluating together the four points its
-next step could need. That takes the same path to the same answer as doing them one at a time.
+`method = "nelder-mead"` is the simplex search instead: it uses no sensitivities at all, which
+makes it the fallback if a model is too rough for them, but it needs ten or more times as many
+evaluations and can use spare cores only to look one step ahead.
 
-Nelder-Mead finds a nearby minimum, not necessarily the best one, and slows down beyond a dozen or
-so parameters. `evals.csv` records every evaluation; if the exploratory runs show several separate
-good regions, the fit is telling you the problem has more than one answer.
+Either finds a nearby minimum, not necessarily the best one. `evals.csv` records every evaluation;
+if the exploratory runs show several separate good regions, the fit is telling you the problem has
+more than one answer.
+
+**Runs that fail.** A parameter set for which a dataset cannot be simulated to the end (the
+solver fails, or it takes more than `step_limit` solver steps) is not scored as a bad fit: the
+search simply does not step there, and it is listed in `evals.csv` with the reason. The step
+limit counts solver steps, not seconds, so the result does not depend on how busy the machine is.
+If the best points sit next to failed ones, the model's ability to run is deciding the answer,
+not the data: look at why they fail.
 
 ## The report
 

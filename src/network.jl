@@ -856,7 +856,9 @@ function advance!(sim::Sim, dt; max_steps = 2000)
 end
 
 """
-Run until simulation time `t`, or until the solver fails or `wall_limit` seconds have passed.
+Run until simulation time `t`, or until the solver fails, `wall_limit` seconds have passed, or
+the solver has taken `step_limit` steps. The step limit is the one to use for giving up on a run
+that has stalled: unlike the clock it gives the same answer on any machine, however busy.
 
 The history is recorded where the solver's steps fall (no closer together than `sample_dt`), so it
 is dense through a transient and sparse through a quiet hold. Reading the run at other times means
@@ -864,10 +866,12 @@ interpolating the history. Stopping at fixed times instead is not free: every st
 junctions at that instant, which on the HF4 replay tripled the run time and moved the end state by
 0.16 psi through the pressures that shut-off sections hold.
 """
-function run_until!(sim::Sim, t; wall_limit = Inf)
+function run_until!(sim::Sim, t; wall_limit = Inf, step_limit = typemax(Int))
     start = Base.time()
-    while simtime(sim) < t - 1e-9 && isempty(sim.failed) && Base.time() - start < wall_limit
-        advance!(sim, t - simtime(sim))
+    steps() = sim.integ.stats.naccept + sim.integ.stats.nreject
+    first = steps()
+    while simtime(sim) < t - 1e-9 && isempty(sim.failed) && Base.time() - start < wall_limit && steps() - first < step_limit
+        advance!(sim, t - simtime(sim); max_steps = min(2000, step_limit - (steps() - first)))
     end
     sim
 end

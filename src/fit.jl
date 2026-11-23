@@ -7,7 +7,7 @@
 # cannot tell apart is what stops a fit from handing back a confident number for something it never
 # measured.
 
-using LinearAlgebra: svd, pinv, diag
+using LinearAlgebra: svd, pinv, diag, Diagonal
 
 "One fitted quantity: a scene parameter, its bounds, and the datasets whose scenes it applies to."
 struct FitParam
@@ -31,12 +31,13 @@ struct Fit
     explore::Int                  # runs spread over the bounds before the search starts
     seed::Int
     max_evals::Int
+    method::String                # "lm" (Levenberg-Marquardt) or "nelder-mead"
     jac_reltol::Float64           # solver tolerance for the sensitivity runs
     jac_step::Float64             # their step, as a fraction of each parameter's range
 end
 
-const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "jacobian_reltol", "jacobian_step")
-const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "score", "set")
+const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "method", "jacobian_reltol", "jacobian_step")
+const _DATASET_KEYS = ("name", "weight", "scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "step_limit", "score", "set")
 const _PARAM_KEYS = ("name", "from", "to", "start", "log", "datasets")
 
 # Position of a value within its bounds, 0..1 (on a ratio scale for `log` parameters), and back.
@@ -96,6 +97,7 @@ function read_fit(path)
     end
     Fit(String(get(d, "name", splitext(basename(path))[1])), dir, datasets, names, Float64[Float64(get(ds, "weight", 1.0)) for ds in d["dataset"]],
         params, Int(get(d, "explore", 0)), Int(get(d, "seed", 1)), Int(get(d, "max_evals", 60 * length(params))),
+        (m = String(get(d, "method", "lm")); m in ("lm", "nelder-mead") || error("$path: method must be \"lm\" or \"nelder-mead\""); m),
         Float64(get(d, "jacobian_reltol", 1e-7)), Float64(get(d, "jacobian_step", 0.01)))
 end
 
@@ -199,6 +201,69 @@ function nelder_mead(f, x0; step = 0.1, max_evals = 500, xtol = 2e-3, ftol = 1e-
 end
 
 """
+    levenberg_marquardt(batch, x0; step, max_evals, xtol, ftol) -> (x, S, evals)
+
+Minimise the sum of squares S of a residual vector over the unit cube from `x0`, by the
+Levenberg-Marquardt method. `batch(points)` returns the residual vector at each point (or `nothing`
+where the model failed).
+
+This is the method for fitting a model to data, and it suits several processor cores: one
+iteration needs the residuals at one nearby point per parameter (for the sensitivities), all
+independent, then a few trial steps of different lengths, also independent. A simplex search asks
+for one point at a time and needs ten or more times as many of them.
+
+The sensitivities are plain differences over `step` of each parameter's range (taken inwards at a
+bound): large enough to sit well above the solver's own noise. A parameter at a bound that the
+data push further out is held there for that iteration. Four dampings are tried at once, from
+nearly a Gauss-Newton step to a short step downhill; the best is taken if it lowers S, and if none
+does the damping is raised. It stops when a step gains less than `ftol` of S and moves less than
+`xtol`, twice running, or when no damping helps.
+"""
+function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e-3, ftol = 1e-4, report = (args...) -> nothing)
+    n = length(x0)
+    x = clamp.(x0, 0.0, 1.0)
+    r = batch([x])[1]
+    r === nothing && error("the model fails at the starting point of the fit")
+    S, evals, λ, quiet_steps = sum(abs2, r), 1, 1e-2, 0
+    ok(v) = v !== nothing && length(v) == length(r)
+    while evals + n + 4 <= max_evals
+        hs = [x[k] + step <= 1 ? step : -step for k in 1:n]
+        cols = batch([(y = copy(x); y[k] += hs[k]; y) for k in 1:n])
+        evals += n
+        J = zeros(length(r), n)
+        for k in 1:n
+            ok(cols[k]) && (J[:, k] .= (cols[k] .- r) ./ hs[k])
+        end
+        g, A = J' * r, J' * J
+        free = [!((x[k] <= 0 && g[k] > 0) || (x[k] >= 1 && g[k] < 0)) for k in 1:n]
+        idx = findall(free)
+        isempty(idx) && break
+        scale = max.(diag(A)[idx], 1e-12 * maximum(diag(A)) + 1e-300)
+        dampings = λ .* (0.1, 1.0, 10.0, 100.0)
+        trials = map(dampings) do l
+            δ = zeros(n)
+            δ[idx] = -((A[idx, idx] + l * Diagonal(scale)) \ g[idx])
+            clamp.(x .+ δ, 0.0, 1.0)
+        end |> collect
+        rs = batch(trials)
+        evals += length(trials)
+        Ss = [ok(v) ? sum(abs2, v) : Inf for v in rs]
+        b = argmin(Ss)
+        if Ss[b] < S
+            gain, moved = (S - Ss[b]) / S, maximum(abs.(trials[b] .- x))
+            x, r, S, λ = trials[b], rs[b], Ss[b], max(dampings[b] / 3, 1e-10)
+            report(evals, S)
+            quiet_steps = moved < xtol && (gain < ftol || S < 1e-18) ? quiet_steps + 1 : 0
+            (quiet_steps >= 2 || S == 0) && break
+        else
+            λ *= 1000                                          # none of them helped: shorter steps
+            λ > 1e9 && break                                   # not even the shortest: as low as the noise allows
+        end
+    end
+    x, S, evals
+end
+
+"""
     identifiability(J, labels) -> (std, corr, statements)
 
 What a set of data can and cannot say about fitted parameters, from the sensitivity `J` of the
@@ -262,19 +327,20 @@ function fit(path; write_scenes = false, quiet = false)
         end
         out
     end
-    function objectives(xs)
-        scores = Float64[]
+    function scored(xs)                                        # (score, residual vector or nothing if a dataset failed) for each
+        out = Tuple{Float64,Union{Nothing,Vector{Float64}}}[]
         for (x, (residuals, _, failed)) in zip(xs, several(xs))
             s = fit_score(ft, residuals)
             evals[] += 1
             s < best[][1] && (best[] = (s, copy(x)))
             println(log_io, evals[], ",", round(s, sigdigits = 7), ",", join((round(_value(p, x[j]), sigdigits = 7) for (j, p) in enumerate(ft.params)), ","), ",",
                     join((round(v, sigdigits = 5) for v in _dataset_scores(ft, residuals)), ","), ",", join(filter(!isempty, failed), " | "))
-            push!(scores, s)
+            push!(out, (s, all(isempty, failed) ? residuals : nothing))
         end
         flush(log_io)
-        scores
+        out
     end
+    objectives(xs) = first.(scored(xs))
     objective(x) = objectives([x])[1]
     # With more threads than datasets there are cores to spare: use them to look ahead in the search.
     spare = Threads.nthreads() > length(ft.datasets)
@@ -291,10 +357,16 @@ function fit(path; write_scenes = false, quiet = false)
         say("after ", ft.explore, " exploratory runs: best ", round(best[][1], digits = 3))
     end
     x, fx = best[][2], best[][1]
-    for (round_, step) in enumerate((0.1, 0.03))               # a second, tighter pass from where the first stopped
-        budget = ft.max_evals ÷ 2
-        x, fx, used = nelder_mead(objective, x; step, max_evals = budget, batch = spare ? objectives : nothing)
-        say("search ", round_, ": score ", round(fx, digits = 4), " after ", used, " evaluations")
+    if ft.method == "lm"
+        x, _, used = levenberg_marquardt(xs -> last.(scored(xs)), x; max_evals = ft.max_evals,
+                                         report = (n, S) -> say("  after ", n, " evaluations: score ", round(best[][1], digits = 4)))
+        say("search (Levenberg-Marquardt): score ", round(best[][1], digits = 4), " after ", used, " evaluations")
+    else
+        for (round_, step) in enumerate((0.1, 0.03))           # a second, tighter pass from where the first stopped
+            budget = ft.max_evals ÷ 2
+            x, fx, used = nelder_mead(objective, x; step, max_evals = budget, batch = spare ? objectives : nothing)
+            say("search ", round_, " (Nelder-Mead): score ", round(fx, digits = 4), " after ", used, " evaluations")
+        end
     end
     close(log_io)
     x, fx = best[][2], best[][1]

@@ -22,6 +22,7 @@ struct Study
     sample_dt::Float64
     reltol::Float64
     wall_limit::Float64
+    step_limit::Int                           # give up on a run after this many solver steps
     runs::Vector{StudyRun}
     varied::Vector{String}
     channels::Vector{Tuple{String,String,Float64,Float64}}   # (log column, model signal, sigma in the log's units, weight)
@@ -52,7 +53,7 @@ function _values(spec)
 end
 _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict && get(spec, "log", false)))
 
-const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "mode", "n", "seed",
+const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "step_limit", "mode", "n", "seed",
                      "vary", "case", "score", "metrics", "set")
 const _METRIC_FNS = ("final", "max", "min", "mean_over", "time_in_band", "first_crossing")
 
@@ -158,7 +159,7 @@ function _study(d, base, path, dir, allowed)
         haskey(m, "signal") || error("$path: metric $name needs a signal")
     end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
-          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 120.0)), runs, names_v, channels, phases, metrics)
+          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "step_limit", 20_000)), runs, names_v, channels, phases, metrics)
 end
 
 "A recorded signal at time `t`, by straight-line interpolation of the history."
@@ -291,8 +292,10 @@ function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
         apply_overrides!(scene, ["$k=$v" for (k, v) in overrides])
         scene.schedule = sort(vcat(scene.schedule, st.schedule, actions); by = a -> a.t)
         sim = Sim(scene; sample_dt = st.sample_dt, reltol)
-        run_until!(sim, st.until; wall_limit = st.wall_limit)
-        return sim, !isempty(sim.failed) ? sim.failed : simtime(sim) < st.until - 1e-6 ? "stopped at the wall-time limit" : ""
+        run_until!(sim, st.until; wall_limit = st.wall_limit, step_limit = st.step_limit)
+        steps = sim.integ.stats.naccept + sim.integ.stats.nreject
+        return sim, !isempty(sim.failed) ? sim.failed : simtime(sim) >= st.until - 1e-6 ? "" :
+                    steps >= st.step_limit ? "stopped at the step limit ($(st.step_limit) solver steps)" : "stopped at the wall-time limit"
     catch err
         return nothing, first(replace(sprint(showerror, err), '\n' => ' ', ',' => ';'), 200)
     end

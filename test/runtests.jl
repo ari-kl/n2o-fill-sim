@@ -365,6 +365,10 @@ end
     head, rows = table(out)
     failed = [r[findfirst(==("failed"), head)] for r in rows]
     @test length(rows) == 2 && count(isempty, failed) == 1 && any(occursin("must be positive", f) for f in failed)
+    # a run that would take too many solver steps is given up on, by count and not by the clock
+    out = F.study(study(top * "step_limit = 25\n" * rest); quiet = true)
+    head, rows = table(out)
+    @test occursin("step limit", rows[1][findfirst(==("failed"), head)]) && parse(Float64, rows[1][findfirst(==("t_end"), head)]) < 20
     @test_throws ErrorException F.read_study(study(top * rest * "[vary]\n\"TANK.volume\" = [1, 2]\n"))      # no such parameter
     @test_throws ErrorException F.read_study(study(top * "sample = 1\n" * rest))                                # no such key
     @test_throws ErrorException F.read_study(study(top * replace(rest, "\"final\"" => "\"last\"")))             # no such metric
@@ -422,6 +426,16 @@ end
     asked = Ref(0)
     xb, fb, nb = F.nelder_mead(q, [0.5, 0.5, 0.5]; max_evals = 600, batch = pts -> (asked[] += length(pts); q.(pts)))
     @test xb == x && fb == fx && nb == n && asked[] > n
+    # Levenberg-Marquardt on a curve fit with known answer (a, b) = (0.3, 0.7) for y = exp(-4 a t) + b t, and a bound in the way
+    ts = 0:0.1:2
+    resid(v) = [exp(-4 * v[1] * t) + v[2] * t - (exp(-4 * 0.3 * t) + 0.7 * t) for t in ts]
+    calls = Ref(0)
+    xl, Sl, nl = F.levenberg_marquardt(pts -> (calls[] += length(pts); resid.(pts)), [0.9, 0.1])
+    @test abs(xl[1] - 0.3) < 1e-3 && abs(xl[2] - 0.7) < 1e-3 && Sl < 1e-8 && nl == calls[] && nl < 120
+    xl, = F.levenberg_marquardt(pts -> [vcat(resid(p), 30 * (p[2] - 1.4)) for p in pts], [0.9, 0.1])    # a strong extra pull on b beyond its range
+    @test xl[2] == 1.0 && abs(xl[1] - 0.636) < 0.01                                    # held at the bound; the other at its best value given that (0.636 by grid search)
+    xl, = F.levenberg_marquardt(pts -> [p[1] > 0.6 ? nothing : resid(p) for p in pts], [0.5, 0.1])       # the model "fails" in part of the range
+    @test abs(xl[1] - 0.3) < 1e-2
     J = [1.0 2.0 0.0; 2.0 4.0 0.0; 0.5 1.0 0.0; 0.0 0.0 0.0]                         # column 2 is twice column 1; column 3 does nothing
     _, _, said = F.identifiability(J .+ [0 0 0; 0 0 0; 0 0 0; 1e-9 0 0], ["a", "b", "c"])
     @test any(occursin("c has no measurable effect", t) for t in said) && any(occursin("a", t) && occursin("b", t) for t in said)
@@ -465,6 +479,10 @@ end
     write(joinpath(dir, "fit.toml"), head)
     r = F.fit(joinpath(dir, "fit.toml"); write_scenes = true, quiet = true)
     @test abs(r.values["FILL.d_mm"] - 4) < 0.2 && abs(r.values["BOTTLE.T_C"] - 27) < 0.5
+    write(joinpath(dir, "fit_nm.toml"), "method = \"nelder-mead\"\n" * head)
+    rn = F.fit(joinpath(dir, "fit_nm.toml"); quiet = true)
+    @test abs(rn.values["FILL.d_mm"] - r.values["FILL.d_mm"]) < 0.1 && abs(rn.score - r.score) < 0.05      # the two methods agree
+    @test r.evals < rn.evals                                      # and the default needs fewer runs
     @test r.score < 1.5 < r.start_score                           # down to about the noise put in
     @test !any(occursin("do not determine", t) for t in r.statements)   # correlated (both set the fill rate) but both recovered
     record = F.TOML.parsefile(only(filter(f -> endswith(f, "made-up.toml"), readdir(r.dir; join = true))))
