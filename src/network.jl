@@ -93,6 +93,11 @@ mutable struct Net
     row::Vector{Int}              # node index → row in the junction system (0 if not a junction)
     lu::Any                       # factorised junction Jacobian from the last full Newton step
     unconverged::Int              # evaluations in which the junction solve did not converge
+    allowance::Int                # part-flow evaluations a solve may spend for each part carrying flow (see `solve_junctions!`)
+    limit::Int                    # the part-flow count at which the solve under way must stop
+    best::Float64                 # smallest imbalance the solve under way has seen, and the pressures that gave it
+    pbest::Vector{Float64}
+    h0::Vector{Float64}           # junction enthalpies as the solve under way found them
     # which parts can carry flow and which junctions need solving right now (see plan!)
     live::Vector{Bool}
     opened::Vector{Bool}          # parts a round of `solve_junctions!` found open after planning them shut
@@ -231,6 +236,7 @@ function compile(s::Scene)
     net = Net(nodes, edges, env, i - 1, junctions, adj, gauges, sensors, pin_node, collect(eachindex(nodes)),
               zeros(length(junctions)), zeros(length(junctions)), zeros(length(junctions)),
               zeros(length(junctions), length(junctions)), row, nothing, 0,
+              FLOWS_PER_PART, 0, Inf, zeros(length(junctions)), zeros(length(junctions)),
               falses(length(edges)) |> collect, falses(length(edges)) |> collect, Int[], Int[], zeros(Int, length(nodes)), zeros(Int, length(nodes)), Int[], UInt(1))
 
     u0 = zeros(i + 2)
@@ -453,6 +459,12 @@ function _residual!(net::Net)
         net.res[q] = net.nodes[j].dm_l
         worst = max(worst, abs(net.res[q]))
     end
+    if worst < net.best                                 # the best so far: what a solve that gives up is left at
+        net.best = worst
+        for (q, j) in enumerate(net.active)
+            net.pbest[q] = net.nodes[j].P
+        end
+    end
     worst, scale
 end
 
@@ -475,13 +487,24 @@ in turn: two check valves in series, or a regulator feeding a check valve, alter
 rounds ran out and were left carrying no flow at all with the full supply pressure across them.
 Since the set of parts kept in only grows, the rounds end after at most one per pressure-operated
 part, with every such part either at rest or in the solve.
+
+The whole solve, rounds and all, has an allowance of `FLOWS_PER_PART` part-flow evaluations for
+each part carrying flow (`net.allowance`, which only a test has reason to change). When that is
+spent the solve stops where its imbalance was smallest and is counted as failed. Without the
+allowance a solve that cannot succeed (the ODE solver trying a state far outside anything
+physical, on its way to rejecting a step) runs every method here to its end: about a hundred times
+the cost of a solve that works, on every stage of every attempt.
 """
 function solve_junctions!(net::Net)
     fill!(net.opened, false)
+    start = _calls(net)
+    net.limit = start
     for round in 0:count(e -> e.kind in (:regulator, :check, :relief), net.edges)
         plan!(net) && (net.lu = nothing)                # a different set of unknowns: old factorisation is useless
-        _solve_active!(net)
+        net.limit = max(net.limit, start + net.allowance * count(net.live))
+        ok = _solve_active!(net)
         settle_dead_ends!(net)
+        ok || return                                    # given up, and counted
         # Did the solve open anything that was planned as shut? Then its flow was left out: go
         # again. (The other way round needs nothing: a part that the solved pressures shut, such
         # as a regulator reaching lock-up, was given its flow at those pressures, which is zero.)
@@ -497,12 +520,21 @@ function solve_junctions!(net::Net)
     nothing
 end
 
+# Measured on 450 random plumbings (`test/stress.jl`): half of all solves take 4 evaluations a
+# part, one in ten thousand more than 225, and the costliest that still converged 428. A solve
+# that fails outright used to take 650 to 7,000.
+const FLOWS_PER_PART = 600
+
+_calls(net::Net) = sum(e -> e.calls, net.edges; init = 0)
+_spent(net::Net) = _calls(net) >= net.limit
+
 # Is edge k one that plan! switched off as the feeder of a dead end (rather than because it is shut)?
 _hangs_dead(net::Net, k) = any(j -> net.feeder[j] == k, net.pruned)
 
+# Solve the active junctions. Returns false if it had to give up (see `_give_up!`).
 function _solve_active!(net::Net)
     na = length(net.active)
-    na == 0 && return sweep!(net)
+    na == 0 && (sweep!(net); return true)
     nodes, r, P0 = net.nodes, view(net.res, 1:na), net.p0
     J = view(net.jac, 1:na, 1:na)
     # Flow runs downhill, so no junction can end up outside the range spanned by the vessels, the
@@ -512,10 +544,13 @@ function _solve_active!(net::Net)
         p = n.kind === :junction ? n.P_hold : n.P
         Plo, Phi = min(Plo, p), max(Phi, p)
     end
-    for j in net.active
-        nodes[j].P = clamp(nodes[j].P, Plo, Phi)
+    net.best = Inf
+    for (q, j) in enumerate(net.active)
+        nodes[j].P = net.pbest[q] = clamp(nodes[j].P, Plo, Phi)
+        net.h0[q] = nodes[j].hl
     end
     worst, scale = _residual!(net)
+    isfinite(worst) || return _give_up!(net)            # no flow can be worked out here at all
     # First reuse the Jacobian factorised last time. Successive evaluations (the ODE solver's
     # stages, its finite-difference columns) differ only slightly, so this usually converges in
     # two or three sweeps without rebuilding the Jacobian, which is the expensive part.
@@ -535,12 +570,13 @@ function _solve_active!(net::Net)
             end
             before = worst
             worst, scale = _residual!(net)
-            converged && return                        # that was the extra step past the tolerance
+            converged && return true                   # that was the extra step past the tolerance
             worst > 0.3 * before && break              # not contracting: the Jacobian is stale
         end
     end
     for attempt in 1:3
         for iter in 1:40
+            _spent(net) && return _give_up!(net)
             converged = worst < 1e-9 * scale + 1e-10       # kg/s; 1e-10 is a third of a milligram an hour
             TALLY.on && (TALLY.newton += 1)
             fill!(J, 0.0)
@@ -612,10 +648,10 @@ function _solve_active!(net::Net)
                 # imbalance rises: it buys the slope that the next step needs (see `_band_cut`).
                 (converged || cut < 1 || w2 < worst || λ == 0.25) && (worst = w2; break)
             end
-            converged && return
+            converged && return true
         end
         loose = 1e-6 * scale + 1e-10                       # one part in a million of the largest flow
-        worst < loose && return                            # as good as the flow laws' round-off allows
+        worst < loose && return true                       # as good as the flow laws' round-off allows
         attempt == 3 && break
         # Newton did not settle (a kink in a flow law: a check valve cracking, a restriction starting
         # to choke next to a closing valve). Fall back to something that cannot fail: balance each
@@ -629,17 +665,34 @@ function _solve_active!(net::Net)
         for pass in 1:(attempt == 1 ? 8 : 60)
             moved = 0.0
             for j in net.active
+                _spent(net) && return _give_up!(net)
                 before = nodes[j].P
                 _balance_one!(net, j, Plo, Phi)
                 moved = max(moved, abs(nodes[j].P - before))
             end
             worst, scale = _residual!(net)                 # also brings the junction enthalpies up to date
-            (worst < 1e-9 * scale + 1e-10 || pass >= 3 && worst < loose) && return
+            (worst < 1e-9 * scale + 1e-10 || pass >= 3 && worst < loose) && return true
             moved < 1e-3 && break                          # stalled short of balance: Newton's turn, not a result
         end
     end
+    _give_up!(net)
+end
+
+# The solve has run out of methods or of its allowance. Leave the junctions at the pressures that
+# came closest to balance, with the flows that go with them, and count the failure. Nothing the
+# solve remembers from one call to the next may be left holding what a hopeless state put there (a
+# junction enthalpy or a factorisation that is not a number fails every later solve too, however
+# ordinary its state): the enthalpies go back to what the solve started with and the factorisation
+# is dropped.
+function _give_up!(net::Net)
+    for (q, j) in enumerate(net.active)
+        net.nodes[j].P, net.nodes[j].hl = net.pbest[q], net.h0[q]
+    end
+    net.lu = nothing
+    worst, scale = _residual!(net)
+    worst < 1e-6 * scale + 1e-10 && return true         # the best was good enough after all
     net.unconverged += 1
-    nothing
+    false
 end
 
 # Which stretch of its flow law a pressure-operated part is on: passing forwards or not, and shut,
@@ -716,6 +769,7 @@ function _balance_one!(net::Net, j, Plo, Phi)
     b, fb, stride = a, fa, 1e3
     while (fb > 0) == (fa > 0)
         (b >= Phi && fb > 0 || b <= Plo && fb < 0) && return        # balanced nowhere in range: rest at the limit
+        _spent(net) && return
         a, fa = b, fb
         b = n.P = clamp(b + (fb > 0 ? stride : -stride), Plo, Phi)
         stride *= 4
@@ -724,7 +778,7 @@ function _balance_one!(net::Net, j, Plo, Phi)
     end
     side = 0
     for it in 1:60
-        abs(b - a) < 0.01 && break
+        (abs(b - a) < 0.01 || _spent(net)) && break
         c = it % 3 == 0 ? (a + b) / 2 : (a * fb - b * fa) / (fb - fa)
         min(a, b) < c < max(a, b) || (c = (a + b) / 2)
         n.P = c
@@ -751,6 +805,10 @@ function rhs!(du, u, net::Net, t)
     for n in nodes
         evaluate!(n, u, env)
     end
+    # A stage of a step that has gone wrong can hand over a state that is not a number. There are
+    # no flows to find for it, and the answer that makes the ODE solver throw the step away is the
+    # same whatever is done here.
+    all(n -> isfinite(n.P), nodes) || (fill!(du, NaN); return nothing)
     solve_junctions!(net)
     _into_vessels!(du, u, net)
 end
@@ -808,17 +866,20 @@ flows left as the unperturbed `rhs!` found them:
 `derivative!` reads the state and the vessel's flow totals and nothing else, so these columns need
 no `evaluate!` either.
 
-If the unperturbed junction solve did not converge, or the linearised network is singular, there
-is nothing sound to linearise about and the whole Jacobian is left to `jac_fd!`.
+If the unperturbed junction solve gave up, the network is linearised all the same, about the
+pressures the solve stopped at (those of its smallest imbalance). The slopes of the flow laws
+exist there whatever the imbalance, and the Jacobian built from them is that of the balanced
+network to first order in how far the solve stopped short. Differencing through the solve instead
+would run a solve that is known to fail once for every column, and each column would be the
+difference of two unconverged results divided by a step of 1e-7: noise. Only if the linearised
+network is singular is the whole Jacobian left to `jac_fd!`.
 """
 function jac!(J, u, net::Net, t)
     TALLY.on && (TALLY.jac += 1)
     nodes, edges, env = net.nodes, net.edges, net.env
     n = length(u)
     f0, f1 = zeros(n), zeros(n)
-    unconverged = net.unconverged
     rhs!(f0, u, net, t)
-    net.unconverged == unconverged || return jac_fd!(J, u, net, t)
     fill!(J, 0.0)
     # The local columns come first: they need the flow totals the unperturbed `rhs!` left in the
     # vessels, which the other columns overwrite.

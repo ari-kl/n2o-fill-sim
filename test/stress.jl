@@ -7,27 +7,29 @@
 # Because a frame ends on the clock, two runs of the same code do not take the same steps, and the
 # count of failed solves moves by a fifth from run to run. To compare two versions of the solver,
 # use -d: a frame then ends after 40 solver steps instead, and the failed solves, the time reached and
-# the work counts repeat exactly (the times, and "flagged", which counts slow frames, still do not).
+# the work counts (the costliest step among them) repeat exactly (the times, and "flagged", which
+# counts slow frames, still do not).
 using N2OFillSim, Random
 const F = N2OFillSim
 const DETERMINISTIC = "-d" in ARGS
 
-"Run `n` window frames at `speed`; returns (wall ms, worst frame ms, frames over 50 ms)."
+"Run `n` window frames at `speed`; returns (wall ms, worst frame ms, frames over 50 ms, part flows in the costliest solver step)."
 function frames!(sim, n; speed = 20.0, each = i -> nothing, until = Inf)
     wall = worst = 0.0
-    slow = 0
+    slow = costliest = 0
     for i in 1:n
         (isempty(sim.failed) && sim.t < until) || break
         each(i)
         t0 = time_ns(); done = 0.0; want = speed / 60; steps = 0
         while done < want - 1e-9 && (DETERMINISTIC ? steps < 40 : (time_ns() - t0) < 12e6) && isempty(sim.failed)
+            before = F.work(sim)
             done += F.advance!(sim, want - done; max_steps = 1)
-            steps += 1
+            steps += 1; costliest = max(costliest, F.work(sim) - before)
         end
         dt = (time_ns() - t0) / 1e6
         wall += dt; worst = max(worst, dt); dt > 50 && (slow += 1)
     end
-    wall, worst, slow
+    wall, worst, slow, costliest
 end
 
 function hot_bottle()
@@ -71,12 +73,12 @@ end
 
 frames!(F.Sim(hot_bottle()), 5)                                 # compile before timing
 sim = F.Sim(hot_bottle()); F.act!(sim, "V", "open"); F.reset_tally!()
-wall, worst, slow = frames!(sim, 300; speed = 1e6)
+wall, worst, slow, costliest = frames!(sim, 300; speed = 1e6)
 println("hot bottle, 300 frames at max:  wall ", round(Int, wall), " ms  worst frame ", round(Int, worst), " ms  frames over 50 ms ", slow, "  failed solves ", sim.net.unconverged,
-        "  reached t=", round(Int, sim.t), " s  (eos ", F.TALLY.eos, ", choke searches ", F.TALLY.choke, ")")
+        "  costliest step ", costliest, " part flows  reached t=", round(Int, sim.t), " s  (eos ", F.TALLY.eos, ", choke searches ", F.TALLY.choke, ")")
 
 function search(first_seed, last_seed; verbose = false)
-    flagged = over_1s = failed_solves = 0
+    flagged = over_1s = failed_solves = costliest_all = 0
     worst_all = total = 0.0
     for seed in first_seed:last_seed
         rng = MersenneTwister(seed)
@@ -84,16 +86,16 @@ function search(first_seed, last_seed; verbose = false)
         isempty(F.check(s)[1]) || continue
         sim = F.Sim(s)
         valves = [e.name for e in sim.net.edges if e.kind === :valve]
-        wall, worst, slow = frames!(sim, 2000; each = i -> begin
+        wall, worst, slow, costliest = frames!(sim, 2000; each = i -> begin
             i == 30 && foreach(v -> F.act!(sim, v, "open"), valves)
             i % 600 == 60 && !isempty(valves) && F.act!(sim, rand(rng, valves), "toggle")
         end, until = 240.0)
         bad = slow > 2 || worst > 400 || !isempty(sim.failed) || sim.t < 240
         flagged += bad; over_1s += worst > 1000; failed_solves += sim.net.unconverged
-        worst_all = max(worst_all, worst); total += wall
+        worst_all = max(worst_all, worst); total += wall; costliest_all = max(costliest_all, costliest)
         bad && verbose && println("seed ", seed, "  t=", round(sim.t, digits = 1), "  worst ", round(Int, worst), " ms  slow frames ", slow, "  failed solves ", sim.net.unconverged, "  ", join([p.kind for p in s.parts], " "))
     end
-    println("random scenes ", first_seed, "-", last_seed, ":  flagged ", flagged, "  with a frame over 1 s ", over_1s, "  worst frame ", round(Int, worst_all), " ms  failed solves ", failed_solves, "  total wall ", round(total / 1e3, digits = 1), " s")
+    println("random scenes ", first_seed, "-", last_seed, ":  flagged ", flagged, "  with a frame over 1 s ", over_1s, "  worst frame ", round(Int, worst_all), " ms  failed solves ", failed_solves, "  costliest step ", costliest_all, " part flows  total wall ", round(total / 1e3, digits = 1), " s")
 end
 seeds = filter(a -> !startswith(a, "-"), ARGS)
 search((length(seeds) == 2 ? parse.(Int, seeds) : (1, 150))...; verbose = "-v" in ARGS)

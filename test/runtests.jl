@@ -1837,6 +1837,50 @@ end
     @test F.node_report(sim.net, sim.net.nodes[2], sim.u).P >= sim.net.edges[3].set && part_flow(sim, "P3") == 0   # locked up
 end
 
+@testset "a junction solve stops at its allowance and leaves nothing behind for the next" begin
+    # A filling line with the tank's pressure set to 1e17 Pa: the kind of state the ODE solver
+    # passes through in a step it is about to throw away. Nothing balances it. The solve used to
+    # run every method it has to the end (17,500 part flows here) on each of the eight stages of
+    # each attempt. It now stops at its allowance, and what it remembers for the next solve (the
+    # starting pressures, the junction enthalpies, the factorised Jacobian) is fit to start from.
+    sim = F.Sim(chain(["Orifice", "Pipe", "Valve", "Pipe"]))
+    F.act!(sim, "P3", "open"); F.run_until!(sim, 2.0)
+    net, u, du = sim.net, copy(sim.u), similar(sim.u)
+    foreach(n -> F.evaluate!(n, u, net.env), net.nodes)
+    net.nodes[2].P = 1e17
+    before = F.work(sim)
+    F.solve_junctions!(net)
+    @test net.unconverged == 1
+    @test F.work(sim) - before <= (F.FLOWS_PER_PART + 10) * length(net.edges)
+    @test all(n -> isfinite(n.P) && isfinite(n.hl), net.nodes) && net.lu === nothing
+    before = F.work(sim)
+    F.rhs!(du, u, net, 0.0)                                      # the real state again: an ordinary solve
+    @test net.unconverged == 1 && all(isfinite, du) && F.work(sim) - before < 50 * length(net.edges)
+    # A state that is not a number is not solved at all, and the derivative says so.
+    u[net.nodes[2].i] = NaN
+    before = F.work(sim)
+    F.rhs!(du, u, net, 0.0)
+    @test all(isnan, du) && F.work(sim) == before && net.unconverged == 1
+    # With the base solve given up, the ODE Jacobian is still the linearised network's, taken about
+    # where the solve stopped: one linearisation, close to the converged Jacobian, where a
+    # difference through the solve costs a failing solve for every state and returns noise.
+    u .= sim.u
+    n = length(u)
+    Jref, J, Jfd = zeros(n, n), zeros(n, n), zeros(n, n)
+    F.jac!(Jref, u, net, 0.0)
+    off(A) = maximum(maximum(abs, A[i, :] .- Jref[i, :]) / maximum(abs, Jref[i, :]) for i in 1:net.nfluid if any(!=(0), Jref[i, :]))
+    spoil() = (foreach(j -> net.nodes[j].P += 1e4, net.junctions); net.lu = nothing)   # a poor start, so a cut solve stops short
+    net.allowance = 3
+    spoil(); before, fails = F.work(sim), net.unconverged
+    F.jac!(J, u, net, 0.0)
+    cost = F.work(sim) - before
+    @test net.unconverged == fails + 1 && cost < 20 * length(net.edges)
+    @test off(J) < 0.02
+    spoil(); F.jac_fd!(Jfd, u, net, 0.0)
+    @test off(Jfd) > 100
+    net.allowance = F.FLOWS_PER_PART
+end
+
 # RMS difference, in psi, between a recorded pressure signal and a logged gauge column over [a, b] s of run time.
 function log_rms(sim, key, D, col, t0, a, b, p_atm)
     d = [(sim.hist[key][clamp(searchsortedfirst(sim.t_hist, t - t0), 1, length(sim.t_hist))] - p_atm) / F.PSI - D[col][i]
