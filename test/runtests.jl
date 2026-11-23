@@ -894,6 +894,42 @@ end
     @test "rms.PT_psig.venting" in head && "target.level.model" in head
 end
 
+@testset "fitting against a reading: the physics comes back right where a fit against the truth bends it" begin
+    dir = mktempdir()
+    instrument_log(joinpath(dir, "log.csv"))                 # recorded five times finer than the fit's own runs will be
+    F.save_scene(joinpath(dir, "rig.toml"), instrumented())  # the instruments are known; bottle temperature and vent orifice are not
+    fit(model) = (p = joinpath(dir, "f$(hash(model)).toml"); write(p, """
+        max_evals = 40
+        jacobian_reltol = 1e-5
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        set = { "FILL.d_mm" = 4 }
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "$model", sigma = 1 }]
+        phases = { venting = [1, 14.9], closed = [15, 30] }
+        bin_s = 5
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 22
+        [[parameter]]
+        name = "VENT_OR.d_mm"
+        from = 1
+        to = 4
+        start = 3
+        """); F.fit(p; quiet = true))
+    # Against the gauge's reading the fit finds the 27 °C bottle and the 2 mm vent it was made with.
+    read = fit("PT.P_read")
+    @test abs(read.values["BOTTLE.T_C"] - 27) < 0.05 && abs(read.values["VENT_OR.d_mm"] - 2) < 0.02 && read.score < 0.2
+    # Against the true pressure at the same point it cannot match the log, and warms the bottle
+    # and opens up the vent to soak up a 10 psi offset and a 3 s lag that are the gauge's.
+    truth = fit("PT.P")
+    @test truth.values["BOTTLE.T_C"] - 27 > 0.3 && truth.values["VENT_OR.d_mm"] - 2 > 0.2 && truth.score > 3
+end
+
 @testset "screening: which parameters matter (elementary effects)" begin
     dir = mktempdir()
     F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
@@ -1884,6 +1920,44 @@ end
     @test closes(sim)
 end
 
+
+@testset "sensor models: inert at their defaults, and no part of the solve when set" begin
+    _, D = F.read_csv(joinpath(@__DIR__, "data", "hf4_fill_10hz.csv"))
+    s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf4.toml"))
+    s.schedule = F.schedule_from_log(D["t_s"], D, Dict("AV201" => ("AV201", "open", "close"), "AV202" => ("AV202", "open", "close"),
+        "AV203" => ("AV203", "open", "close"), "AV204" => ("AV204", "open", "close"), "heater" => ("TANK", "on", "off")); t0 = 9020.0)
+    function replay(scene)
+        F.reset_tally!()
+        run = F.run_until!(F.Sim(scene), 990.0)
+        c = F.TALLY
+        run, (c.rhs, c.jac, c.newton, c.edge_flow, c.choke, c.eos)
+    end
+    plain, w_plain = replay(s)
+    # The HF4 scene's gauges are at their defaults: the columns it exports are the ones it always
+    # had, with no reading among them.
+    @test sort!(filter(startswith("PT20"), collect(keys(plain.hist)))) == ["PT201.P", "PT201.T", "PT202.P", "PT202.T"]
+    @test !any(endswith("_read"), keys(plain.hist))
+    path = joinpath(mktempdir(), "hf4.toml")                     # a scene saved with the new parameters written out is the same scene
+    F.save_scene(path, s)
+    @test keys(F.Sim(F.load_scene(path)).hist) == keys(plain.hist)
+    # With sensor models on both gauges and a load cell under the tank, the replay is the same
+    # replay: the same recorded times, every true signal equal to the last bit, the same work.
+    q = deepcopy(s)
+    F.apply_overrides!(q, ["PT201.offset_psi=4", "PT202.offset_psi=-3", "PT202.tau_s=1.5", "PT202.max_psig=800", "PT202.T_tau_s=5"])
+    lc = F.add_part!(q, "LoadCell", 40, 20; name = "LC")
+    lc.p["line_step_kg"], lc.p["tau_s"] = 0.8, 1.0
+    F.connect!(q, ("LC", "a"), ("TANK", "top")); F.connect!(q, ("LC", "valve"), ("AV201", "a"))
+    sim, w = replay(q)
+    F.reset_tally!(false)
+    @test w == w_plain && sim.t_hist == plain.t_hist && all(sim.hist[k] == plain.hist[k] for k in keys(plain.hist))
+    @test sort!(collect(setdiff(keys(sim.hist), keys(plain.hist)))) == ["LC.m_read", "PT201.P_read", "PT201.T_read", "PT202.P_read", "PT202.T_read"]
+    # and the readings are what was asked for: 4 psi up; stopped at the top of the range; the hose step while AV201 is open
+    @test sim.hist["PT201.P_read"] ≈ sim.hist["PT201.P"] .+ 4 * F.PSI
+    @test maximum(sim.hist["PT202.P"]) > 850 * F.PSI && maximum(sim.hist["PT202.P_read"]) ≈ 800 * F.PSI + 101325
+    hose = sim.hist["AV201.position"] .> 0
+    @test any(hose) && !all(hose) && maximum(sim.hist["LC.m_read"] .- sim.hist["TANK.m"]) > 0.75
+    @test sim.hist["LC.m_read"][end] ≈ sim.hist["TANK.m"][end] atol = 0.01
+end
 
 @testset "window icon files load at their sizes" begin
     icons = N2OFillSim.window_icons()
