@@ -79,6 +79,11 @@ Simulate starts the run paused; press Run or `Space`. Keys `1` to `5` set the sp
 closed, switch a heater or change a set-point. Hover any part for its pressures, flow and
 temperature. The plumbing cannot be changed while running; Stop / edit returns to the editor.
 
+A shut valve is drawn filled, with a bar across it; an open one as an outline only; one part-way
+as an outline with part of the fill. The colours (red, green, amber) say the same again. Check
+valves, relief valves and regulators are filled while nothing passes and outlines while something
+does.
+
 A normally-open valve is open until something commands it shut, as on a powered-down panel. The
 panel says which valves are open for that reason.
 

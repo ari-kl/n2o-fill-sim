@@ -212,13 +212,18 @@ function draw_part(dl, app::App, part::Part)
         tinted = ca !== nothing && cb !== nothing
         la, lb = something(ca, c), something(cb, c)
         thick = tinted ? 3f0 : 2f0
-        state = C_DIM                                          # open / shut / moving, for valves
+        # Valves show their position; check valves, relief valves and regulators whether anything
+        # is passing. `shut` is how far closed the part is drawn, 0 to 1 (nothing has a position
+        # while editing: drawn filled, in grey).
+        state, shut = C_DIM, 1f0
         if live && k == "Valve"
             e = edge_of(app, part.name)
-            state = e.opening > 0.99 ? C_OPEN : e.opening < 0.01 ? C_SHUT : col(230, 180, 60)
+            shut = e.opening > 0.99 ? 0f0 : e.opening < 0.01 ? 1f0 : 1f0 - Float32(e.opening)
+            state = shut == 0 ? C_OPEN : shut == 1 ? C_SHUT : col(230, 180, 60)
             e.stuck != 0 && ig.AddText(dl, L(-0.5, 0.75), C_WARN, "STUCK")
         elseif live && k != "Pipe" && k != "Orifice"
-            state = abs(edge_of(app, part.name).mdot) > 1e-6 ? C_OPEN : C_SHUT
+            shut = abs(edge_of(app, part.name).mdot) > 1e-6 ? 0f0 : 1f0
+            state = shut == 0 ? C_OPEN : C_SHUT
         end
         fa, fb = tinted ? (la, lb) : (state, state)
         if k == "Pipe"
@@ -233,12 +238,21 @@ function draw_part(dl, app::App, part::Part)
             line((0, -0.5), (0, -0.12), c, 3f0); line((0, 0.12), (0, 0.5), c, 3f0)
         else
             line((-1, 0), (-0.6, 0), la, thick); line((0.6, 0), (1, 0), lb, thick)
+            # Open and shut differ by shape as well as colour, so the state reads without telling
+            # red from green: shut is filled with a bar across the flow path, open is an outline
+            # only, part-way is an outline with the fill closing in on the throat. The outline thins
+            # when zoomed out so that the smallest open symbol still has a hole in it.
+            thin = clamp(2f0 * z, 1f0, thick * UI[])
             if k == "CheckValve"
-                ig.AddTriangleFilled(dl, L(-0.6, -0.45), L(-0.6, 0.45), L(0.5, 0), fa)
+                ig.AddTriangle(dl, L(-0.6, -0.45), L(-0.6, 0.45), L(0.5, 0), fa, thin)
+                shut > 0 && ig.AddTriangleFilled(dl, L(-0.6, -0.45), L(-0.6, 0.45), L(0.5, 0), fa)
                 line((0.55, -0.45), (0.55, 0.45), tinted ? lb : c)
             else
-                ig.AddTriangleFilled(dl, L(-0.6, -0.4), L(-0.6, 0.4), L(0, 0), fa)
-                ig.AddTriangleFilled(dl, L(0.6, -0.4), L(0.6, 0.4), L(0, 0), fb)
+                for (side, f) in ((-1, fa), (1, fb))
+                    ig.AddTriangle(dl, L(0.6side, -0.4), L(0.6side, 0.4), L(0, 0), f, thin)
+                    shut > 0 && ig.AddTriangleFilled(dl, L(0.6side * shut, -0.4shut), L(0.6side * shut, 0.4shut), L(0, 0), f)
+                end
+                live && shut == 1 && line((0, -0.58), (0, 0.58), c, 2f0)
             end
             stem = tinted && live ? state : c                  # the actuator shows open / shut when the body shows pressure
             if k == "Valve"
