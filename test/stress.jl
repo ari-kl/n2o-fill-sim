@@ -1,12 +1,17 @@
-# Robustness and worst-case speed on scenes nobody tuned.   julia --project test/stress.jl [first last]
+# Robustness and worst-case speed on scenes nobody tuned.   julia --project test/stress.jl [first last] [-v] [-d]
 #
 # 1. The scene reported from the window: a bottle left in the sun until it is supercritical, opened
 #    into an empty tank.
 # 2. Random plumbing built from default parts, with valves opened and toggled.
 # Both are driven the way the window drives the solver (one step at a time inside a 12 ms budget),
 # so "worst frame" is how long the window would have frozen.
+# Because a frame ends on the clock, two runs of the same code do not take the same steps, and the
+# count of failed solves moves by a fifth from run to run. To compare two versions of the solver,
+# use -d: a frame then ends after 40 solver steps instead, and the failed solves, the time reached and
+# the work counts repeat exactly (the times, and "flagged", which counts slow frames, still do not).
 using N2OFillSim, Random
 const F = N2OFillSim
+const DETERMINISTIC = "-d" in ARGS
 
 "Run `n` window frames at `speed`; returns (wall ms, worst frame ms, frames over 50 ms)."
 function frames!(sim, n; speed = 20.0, each = i -> nothing, until = Inf)
@@ -15,9 +20,10 @@ function frames!(sim, n; speed = 20.0, each = i -> nothing, until = Inf)
     for i in 1:n
         (isempty(sim.failed) && sim.t < until) || break
         each(i)
-        t0 = time_ns(); done = 0.0; want = speed / 60
-        while done < want - 1e-9 && (time_ns() - t0) < 12e6 && isempty(sim.failed)
+        t0 = time_ns(); done = 0.0; want = speed / 60; steps = 0
+        while done < want - 1e-9 && (DETERMINISTIC ? steps < 40 : (time_ns() - t0) < 12e6) && isempty(sim.failed)
             done += F.advance!(sim, want - done; max_steps = 1)
+            steps += 1
         end
         dt = (time_ns() - t0) / 1e6
         wall += dt; worst = max(worst, dt); dt > 50 && (slow += 1)
