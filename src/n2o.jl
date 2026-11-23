@@ -199,13 +199,26 @@ end
 
 z_of_T(T) = cbrt(max(1 - T / N2O_TC, 0.0))
 
+"""
+A place on the saturation line. Its properties (`T`, `P`, `ρl`, `ρv`, `ul`, `uv`, `hl`, `hv`, `sl`,
+`sv`, `cpl`, `cpv`) are read from the table when asked for, so a caller that wants two of the
+twelve pays for two.
+"""
+struct SatPoint
+    z::Float64
+    i::Int
+    t::Float64
+end
+const _SAT_FIELD = (T = 1, P = 2, ρl = 3, ρv = 4, ul = 5, uv = 6, hl = 7, hv = 8, sl = 9, sv = 10, cpl = 11, cpv = 12)
+@inline Base.getproperty(s::SatPoint, f::Symbol) =
+    f === :z ? getfield(s, :z) : _val(getfield(_SAT_FIELD, f), getfield(s, :i), getfield(s, :t))
+Base.propertynames(::SatPoint) = (:z, keys(_SAT_FIELD)...)
+
 "All saturation properties at z (see `sat_T`, `sat_P`)."
 function sat_z(z)
     z = clamp(z, _ZMIN, _ZMAX)
     i, t = _locate(z)
-    v(j) = _val(j, i, t)
-    (; z, T = v(1), P = v(2), ρl = v(3), ρv = v(4), ul = v(5), uv = v(6), hl = v(7), hv = v(8),
-     sl = v(9), sv = v(10), cpl = v(11), cpv = v(12))
+    SatPoint(z, i, t)
 end
 sat_T(T) = sat_z(z_of_T(T))
 
