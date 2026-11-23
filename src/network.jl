@@ -7,10 +7,10 @@
 # exactly as a circuit simulator finds node voltages. Fluid crossing a junction keeps its enthalpy
 # (streams mix), so flashing through a regulator or a long hose needs no special treatment.
 #
-# Junctions were first given their own volume and fluid state, which would also show a hose
-# charging and liquid trapped between closed valves. That made the equations unsolvable in
-# practice: millilitres of near-incompressible liquid sitting on the two-phase boundary. To study
-# trapped liquid, put a small Tank where the trapped volume is.
+# Giving junctions their own volume and fluid state would also show a hose charging and liquid
+# trapped between closed valves, but it makes the equations unsolvable in practice: millilitres of
+# near-incompressible liquid sitting on the two-phase boundary. To study trapped liquid, put a
+# small Tank where the trapped volume is.
 
 using LinearAlgebra: lu!, ldiv!
 using OrdinaryDiffEqRosenbrock: Rodas5P
@@ -246,7 +246,7 @@ function edge_flow(e::Edge, Pa, Pb, ha, hb)
         # Friction as a discharge coefficient: ΔP = (1 + K + f·L/D)·G²/2ρ, so cd = (1 + K + f·L/D)^-½
         # with f depending on the Reynolds number cd·G·D/μ. Substituting back converges by only a
         # factor of ten a time for a long hose, so after two substitutions the secant rule takes
-        # over: four evaluations of f reach 1e-12, where eight substitutions reached 1e-8.
+        # over: four evaluations of f reach 1e-12, where eight substitutions reach 1e-8.
         R0 = G * e.D / visc_mix(up)
         φ(c) = 1 / sqrt(1 + e.K + friction_factor(c * R0, e.relrough) * e.L / e.D)
         c0 = 1 / sqrt(1 + e.K + 0.02 * e.L / e.D)
@@ -665,7 +665,7 @@ A running simulation: the network, the integrator, the remaining schedule and th
 `t` and `u` are "now": the time and state the caller has advanced to. The integrator is allowed to
 run ahead of now (it takes whatever step size the physics allows, up to seconds when nothing is
 happening) and `u` is read off its interpolant. Forcing a solver step to end at every screen frame
-instead cost 60 steps per simulated second and made the window lag. Anything that changes the
+instead costs 60 steps per simulated second and makes the window lag. Anything that changes the
 equations (a valve command, a heater, a scheduled action) first winds the integrator back to now.
 """
 mutable struct Sim
@@ -805,8 +805,8 @@ end
 Move now forward by up to `dt` seconds: run scheduled actions when they fall due, stroke valves,
 step the equations as far as needed, switch vessel modes, and record samples. It returns early if
 it uses `max_steps` solver steps (so a caller drawing frames never hangs) or the simulation's
-`work` reaches `max_work`, and if the solver fails
-`sim.failed` says why and the simulation stops advancing.
+`work` reaches `max_work`. If the solver fails, `sim.failed` says why and the simulation stops
+advancing.
 """
 function advance!(sim::Sim, dt; max_steps = 2000, max_work = typemax(Int))
     isempty(sim.failed) || return 0.0

@@ -14,11 +14,10 @@
 
 const DP_REG = 300.0          # Pa. Scale of the smoothing of √ΔP around zero (see `massflux`).
 
-# ρ·√(2Δh) after an isentropic expansion from `up` to pressure P. This is the innermost loop of
-# the whole simulator, so the two-phase case reads only the six saturation columns it needs
-# instead of building a full state.
-# The same flux at a point inside the dome given by its place on the saturation table, or NaN if
-# the isentrope is not inside the dome there. Six columns are read at one place.
+# ρ·√(2Δh) after an isentropic expansion from `up` to the point at place `z` on the saturation
+# table, or NaN if the isentrope is not inside the dome there. This is the innermost loop of the
+# whole simulator, so it reads only the six saturation columns it needs instead of building a
+# full state.
 function _g_dome(up::Fluid, z, inside = false)
     i, t = _locate(z)
     sl, sv = _val(9, i, t), _val(10, i, t)
@@ -136,8 +135,8 @@ function hem_flux(up::Fluid, P2, memo = nothing)
     # Not choked if the flux is still rising as the throat pressure falls towards P2. The test
     # point sits close to P2 on purpose: with P2 just below the choking pressure this test still
     # says "rising", and the flux returned is short of the maximum by about (gap / pressure)².
-    # A gap of 1e-3 of the span left steps of 1e-6 in the flux, which a junction solve working to
-    # 1e-9 cannot get past.
+    # A gap of 1e-3 of the span leaves steps of 1e-6 in the flux, which a junction solve working
+    # to 1e-9 cannot get past.
     # Coming from single phase the flux can also peak where the expansion enters the dome (see
     # below), and a flux still rising at a P2 just beyond that peak is not the maximum.
     ze = up.twophase ? NaN : _dome_entry(up)
