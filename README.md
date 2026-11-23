@@ -58,7 +58,7 @@ Nothing is fetched at run time. To use it somewhere without a network, first run
 ## The window
 
 In the editor, pick a part from the palette and click to place it, then click one pin and another
-to wire them. Select a part to edit its parameters; hovering a parameter, or a part on the
+to wire them. An empty schematic offers the example scenes in `scenes/` to open instead. Select a part to edit its parameters; hovering a parameter, or a part on the
 schematic, says what it means. The Settings tab has ambient conditions, an optional target
 pressure window and the model's tuning coefficients. The Schedule tab is a table of scripted
 actions (time, part, action). Problems that would stop a run are listed in red at the bottom of

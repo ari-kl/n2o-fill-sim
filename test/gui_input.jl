@@ -224,8 +224,13 @@ click(782, 12, 4; dx = 3)                                     # within reach of 
 check(786, "and a click near the middle of the part still selects the part", () -> app.wire_from === nothing && app.sel == ["AV201"])
 key(787, ig.ImGuiKey_F)
 
+# --- an empty schematic offers the examples
+at(790, () -> F.new_scene!(app))
+press(794, "example hf4.toml")
+check(800, "an example opens from the empty schematic's hint", () -> endswith(app.path, "hf4.toml") && has("TANK") && !app.dirty && app.box_from === nothing)
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "792")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "804")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)

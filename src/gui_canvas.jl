@@ -380,12 +380,45 @@ function describe(app::App, part::Part)
     join(lines, "\n")
 end
 
+# The scenes that come with the package, looked up once (the hint below is drawn every frame).
+const EXAMPLES = Ref{Union{Nothing,Vector{String}}}(nothing)
+function examples()
+    if EXAMPLES[] === nothing
+        dir = joinpath(pkgdir(@__MODULE__), "scenes")
+        EXAMPLES[] = isdir(dir) ? [joinpath(dir, f) for f in readdir(dir) if endswith(f, ".toml")] : String[]
+    end
+    EXAMPLES[]
+end
+
+"An empty schematic says what to do first, and offers the example scenes."
+function empty_hint(dl, app::App)
+    x, y, w, h = app.canvas
+    bw, row = px(220), px(28)
+    top = y + h / 2 - (px(50) + row * length(examples())) / 2
+    centred(dy, color, s) = ig.AddText(dl, (x + w / 2 - ig.CalcTextSize(s).x / 2, top + dy), color, s)
+    centred(0, C_LINE, "Nothing here yet.")
+    centred(px(20), C_DIM, isempty(examples()) ? "Pick a part from the palette on the right, then click here to place it." :
+                                                 "Pick a part from the palette on the right, then click here to place it. Or open an example:")
+    for (i, path) in enumerate(examples())
+        ig.SetCursorScreenPos((x + w / 2 - bw / 2, top + px(50) + row * (i - 1)))
+        if ig.Button(basename(path), (bw, 0f0))
+            # Emptied by hand, the schematic may still have unsaved settings or a schedule: then
+            # go the long way, which asks first and opens the browser on the examples.
+            app.dirty ? (app.browse_dir = dirname(path); request!(app, :open)) : open_scene!(app, path)
+        end
+        mark("example " * basename(path))
+    end
+    nothing
+end
+
 function draw_canvas(app::App)
     dl = ig.GetWindowDrawList()
     p0 = ig.GetCursorScreenPos()
     avail = ig.GetContentRegionAvail()
     app.canvas = (p0.x, p0.y, max(avail.x, px(50)), max(avail.y, px(50)))
     app.want_fit && zoom_fit!(app)
+    blank = !running(app) && isempty(app.scene.parts) && isempty(app.placing)
+    blank && ig.SetNextItemAllowOverlap()                      # the hint's buttons lie on the canvas and must get their clicks
     ig.InvisibleButton("canvas", (app.canvas[3], app.canvas[4]), ig.ImGuiButtonFlags_MouseButtonLeft | ig.ImGuiButtonFlags_MouseButtonRight)
     hovered = ig.IsItemHovered()
     io = ig.GetIO()
@@ -448,6 +481,7 @@ function draw_canvas(app::App)
         colour_bar(dl, app)
     end
     ig.PopClipRect(dl)
+    blank && empty_hint(dl, app)
 
     hovered || return
     wheel = unsafe_load(io.MouseWheel)
