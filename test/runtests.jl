@@ -827,6 +827,73 @@ end
     @test Set(t["name"] for t in record["targets"]) == Set(["rise", "end_psig"]) && abs(record["target"]["rise.model"] - record["target"]["rise.log"]) < 0.05
 end
 
+# The scoring rig with a gauge and a load cell on the tank. `sensors` gives both the quirks of
+# real instruments: a gauge 10 psi high and 3 s late, a load cell 0.4 kg off its tare that
+# gains 0.8 kg while the fill valve is open.
+function instrumented(; sensors = true, kw...)
+    s = scoring_rig(; kw...)
+    g = F.add_part!(s, "Gauge", 8, -5; name = "PT")
+    lc = F.add_part!(s, "LoadCell", 8, 6; name = "LC")
+    F.connect!(s, ("PT", "a"), ("TANK", "top")); F.connect!(s, ("LC", "a"), ("TANK", "top")); F.connect!(s, ("LC", "valve"), ("FILL", "a"))
+    sensors && ((g.p["offset_psi"], g.p["tau_s"], lc.p["offset_kg"], lc.p["line_step_kg"]) = (10.0, 3.0, 0.4, 0.8))
+    s
+end
+# A log of what those instruments read on the made-up test of `made_up_log` (27 °C bottle, 4 mm
+# fill valve, vent open from 1 to 15 s).
+function instrument_log(path; sample_dt = 0.1)
+    truth = instrumented(bottle_T = 27.0)
+    F.apply_overrides!(truth, ["FILL.d_mm=4"])
+    truth.schedule = [F.Action(1.0, "FILL", "open", 0.0), F.Action(1.0, "VENT", "open", 0.0), F.Action(15.0, "VENT", "close", 0.0)]
+    sim = F.Sim(truth; sample_dt)
+    F.run_until!(sim, 30.0)
+    open(path, "w") do io
+        println(io, "t_s,PT_psig,fill_kg,FILL,VENT")
+        for t in 0:0.5:30
+            println(io, join((t, round((F.signal_at(sim, "PT.P_read", t) - 101325) / F.PSI, digits = 3), round(F.signal_at(sim, "LC.m_read", t), digits = 4), t >= 1 ? 1 : 0, 1 <= t < 15 ? 1 : 0), ","))
+        end
+    end
+end
+
+@testset "scoring against a reading: a gauge's P_read and a load cell's m_read, in channels and targets" begin
+    dir = mktempdir()
+    instrument_log(joinpath(dir, "log.csv"); sample_dt = 0.5)           # recorded as a study records, so the right model matches to rounding
+    F.save_scene(joinpath(dir, "rig.toml"), instrumented())
+    F.save_scene(joinpath(dir, "bare.toml"), instrumented(sensors = false))
+    study(P, m; scene = "rig.toml") = (p = joinpath(dir, "s$(hash((P, m, scene))).toml"); write(p, """
+        scene = "$scene"
+        replay = "log.csv"
+        [set]
+        "BOTTLE.T_C" = 27
+        "FILL.d_mm" = 4
+        [score]
+        channels = [{ log = "PT_psig", model = "$P" }, { log = "fill_kg", model = "$m" }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        [targets]
+        level = { fn = "max", log = "PT_psig", model = "$P", phase = "closed", tol = 5 }
+        """); F.read_study(p))
+    scored(st) = (run = first(F.simulate(st, [])); (run, F.score_run(st, run)))
+    sim, s = scored(study("PT.P_read", "LC.m_read"))
+    # the readings are recorded signals like any other, and the model that has the instruments' quirks matches the log
+    @test maximum(last.(s.rms)) < 0.01 && F.study_score(s) < 0.01
+    @test Dict(s.targets)["target.level.model"] ≈ Dict(s.targets)["target.level.log"] atol = 0.01
+    # scored against the truth, the same run is out by the quirks: the 10 psi and the lag, the 0.4 kg and the hose
+    _, t = scored(study("PT.P", "TANK.m"))
+    rms = Dict(t.rms)
+    @test rms["rms.PT_psig.closed"] > 9 && rms["rms.PT_psig.venting"] > 9
+    @test rms["rms.fill_kg.closed"] ≈ 1.2 atol = 0.01                     # the fill valve stays open, so the hose step is there throughout
+    @test Dict(t.targets)["target.level.model"] < Dict(t.targets)["target.level.log"] - 5
+    # A gauge with no sensor parameter set records no reading, and its reading is then the truth:
+    # a study or a fit can name P_read and start the sensor's parameters from their defaults.
+    bare, b = scored(study("PT.P_read", "LC.m_read"; scene = "bare.toml"))
+    _, b0 = scored(study("PT.P", "TANK.m"; scene = "bare.toml"))
+    @test !haskey(bare.hist, "PT.P_read") && b.residuals == b0.residuals && b.targets == b0.targets
+    @test_throws ErrorException scored(study("TANK.P_read", "LC.m_read"; scene = "bare.toml"))      # only a gauge has one
+    @test_throws ErrorException scored(study("PT.m_read", "LC.m_read"; scene = "bare.toml"))
+    # the results file of a study takes them the same way
+    head = split(readline(F.study(joinpath(dir, "s$(hash(("PT.P_read", "LC.m_read", "bare.toml"))).toml"); quiet = true)), ',')
+    @test "rms.PT_psig.venting" in head && "target.level.model" in head
+end
+
 @testset "screening: which parameters matter (elementary effects)" begin
     dir = mktempdir()
     F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())

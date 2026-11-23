@@ -334,6 +334,16 @@ function _target(name, spec, path, cols, columns, t_log, until, phases, sched)
        role = columns[findfirst(c -> c.name == m["log"], columns)].role)
 end
 
+# The recorded signal a channel or target is scored against. A gauge with no sensor parameter set
+# reads the truth and records no reading, so its `P_read` and `T_read` are its `P` and `T`: a
+# fit can then start a sensor parameter from its default.
+function _scored_signal(sim::Sim, key)
+    haskey(sim.hist, key) && return key
+    m = match(r"^(.+)\.([PT])_read$", key)
+    m !== nothing && get(sim.net.gauges, m[1], 0) != 0 && return m[1] * "." * m[2]
+    error("no recorded signal named $key. Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
+end
+
 "A recorded signal at time `t`, by straight-line interpolation of the history."
 signal_at(sim::Sim, key, t) = _interp(sim.t_hist, sim.hist[key], t)
 function _interp(th, y, t)
@@ -381,11 +391,11 @@ function score_run(st::Study, sim::Sim)
     e2, n = zeros(length(st.channels), length(st.phases)), zeros(Int, length(st.channels), length(st.phases))
     z, residuals, offsets = Pair{String,Float64}[], Float64[], Pair{String,Float64}[]
     for (ci, c) in enumerate(st.channels)
-        haskey(sim.hist, c.model) || error("no recorded signal named $(c.model). Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
+        model = _scored_signal(sim, c.model)
         role = st.columns[findfirst(col -> col.name == c.log, st.columns)].role
         d = fill(NaN, length(st.t_log))                       # model − log at each scored sample the run reached
         for g in st.scored, i in g.idx
-            g.channel == ci && st.t_log[i] <= t_end && (d[i] = _as_logged(role, signal_at(sim, c.model, st.t_log[i]), p_atm) - c.y[i])
+            g.channel == ci && st.t_log[i] <= t_end && (d[i] = _as_logged(role, signal_at(sim, model, st.t_log[i]), p_atm) - c.y[i])
         end
         # the mean of d over the samples of these phases (all of them, or one), or nothing to take out
         mean_d(phases) = (v = [d[i] for g in st.scored if g.channel == ci && g.phase in phases for i in g.idx if isfinite(d[i])]; isempty(v) ? NaN : sum(v) / length(v))
@@ -413,10 +423,10 @@ function score_run(st::Study, sim::Sim)
     rms = ["rms.$(c.log).$phase" => (n[ci, pi] == 0 ? NaN : sqrt(e2[ci, pi] / n[ci, pi])) for (ci, c) in enumerate(st.channels) for (pi, (phase, _)) in enumerate(st.phases)]
     targets = Pair{String,Float64}[]
     for g in st.targets
-        haskey(sim.hist, g.model) || error("no recorded signal named $(g.model). Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
+        model = _scored_signal(sim, g.model)
         v = r = NaN
         if t_end >= st.until - 1e-6                            # a run that stopped early has no features to compare
-            v = _metric(g.t, [_as_logged(g.role, signal_at(sim, g.model, t), p_atm) for t in g.t], g.m, 0.0)
+            v = _metric(g.t, [_as_logged(g.role, signal_at(sim, model, t), p_atm) for t in g.t], g.m, 0.0)
             r = isnan(v) ? 100.0 : (v - g.value) / g.tol
             push!(residuals, r)
         end
@@ -546,7 +556,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
         append!(row, ["t_end" => r.t_s, "failed" => replace(failed, ',' => ';'), "unconverged" => r.unconverged, "mass_error" => r.mass_error,
                       "energy_error" => r.energy_error, "vented_kg" => r.vented_kg])
         seen === nothing || seen(sim)                          # the caller takes what it wants from the run before it is dropped
-        keep === nothing || write_csv(keep, sim; columns = unique(vcat([c.model for c in st.channels], [g.model for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
+        keep === nothing || write_csv(keep, sim; columns = unique(vcat([_scored_signal(sim, c.model) for c in st.channels], [_scored_signal(sim, g.model) for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
     end
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
