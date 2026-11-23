@@ -1012,7 +1012,7 @@ uuid = "46d2c3a1-f734-5fdb-9937-b9b9aeba4221"
 version = "0.2.7"
 
 [[deps.N2OFillSim]]
-deps = ["CImGui", "GLFW", "ImPlot", "LinearAlgebra", "ModernGL", "OrdinaryDiffEqRosenbrock", "PrecompileTools", "SciMLBase", "TOML"]
+deps = ["CImGui", "GLFW", "ImPlot", "LinearAlgebra", "ModernGL", "OrdinaryDiffEqRosenbrock", "PrecompileTools", "SciMLBase", "TOML", "Zlib_jll"]
 path = ".."
 uuid = "d5caaa26-7931-4520-b6c2-4aa41725a868"
 version = "0.1.0"

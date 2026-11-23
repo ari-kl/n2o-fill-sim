@@ -15,6 +15,7 @@ import CImGui as ig
 import ImPlot
 import GLFW
 import ModernGL as GL
+using Zlib_jll: libz
 
 "Monitor scale factor (1.5 on a 150 % display). Every pixel size goes through `px`."
 const UI = Ref(1f0)
@@ -95,6 +96,8 @@ Base.@kwdef mutable struct App
     origin::Tuple{Float32,Float32} = (60f0, 190f0)
     zoom::Float32 = 1f0
     canvas::NTuple{4,Float32} = (0f0, 0f0, 800f0, 500f0)   # where the schematic was drawn last frame: x, y, width, height
+    plots::NTuple{4,Float32} = (0f0, 0f0, 0f0, 0f0)         # the same for the plots; zero size while editing
+    save_pics::Bool = false                   # write the pictures once this frame is drawn
     want_fit::Bool = true                     # zoom to fit on the next frame
     edit_fresh::Bool = false                  # a number box was clicked into and has not changed anything yet
     undo::Vector{Scene} = Scene[]
@@ -431,6 +434,7 @@ function frame(app::App)
     side_panel(app)
     isempty(app.msg) || (ig.Separator(); wrapped(app.msg))
     ig.End()
+    app.plots = (0f0, size.y - bottom, size.x - side, bottom)
     if running(app)
         ig.SetNextWindowPos((0f0, size.y - bottom)); ig.SetNextWindowSize((size.x - side, bottom))
         ig.Begin("Plots", C_NULL, fixed | ig.ImGuiWindowFlags_NoScrollbar)
@@ -445,13 +449,60 @@ end
 
 # ---------------------------------------------------------------- the window
 
-# Read the frame just drawn (before it is swapped to the screen) and save it as a binary PPM.
-function screenshot(window, path)
+# Read the frame just drawn (before it is swapped to the screen): width, height and RGB bytes,
+# bottom row first as OpenGL gives them.
+function grab(window)
     w, h = GLFW.GetFramebufferSize(window)
     buf = Vector{UInt8}(undef, 3w * h)
     GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
     GL.glReadBuffer(GL.GL_BACK)
     GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, buf)
+    w, h, buf
+end
+
+"""
+Write the rectangle (x, y, width, height), in pixels from the top left, of a grabbed frame as a
+PNG. The rectangle is cut to the frame. Returns whether anything was written (an empty rectangle
+writes nothing).
+"""
+function write_png(path, (W, H, buf), (x, y, w, h))
+    x0, y0 = clamp(floor(Int, x), 0, W), clamp(floor(Int, y), 0, H)
+    x1, y1 = clamp(ceil(Int, x + w), x0, W), clamp(ceil(Int, y + h), y0, H)
+    (x1 > x0 && y1 > y0) || return false
+    raw = UInt8[]                                              # each row: filter byte 0, then its pixels
+    for r in y0:y1-1
+        push!(raw, 0x00)
+        append!(raw, @view buf[3W*(H-1-r)+3x0+1:3W*(H-1-r)+3x1])
+    end
+    packed = Vector{UInt8}(undef, ccall((:compressBound, libz), Culong, (Culong,), length(raw)))
+    n = Ref{Culong}(length(packed))
+    ccall((:compress, libz), Cint, (Ptr{UInt8}, Ref{Culong}, Ptr{UInt8}, Culong), packed, n, raw, length(raw)) == 0 || error("could not compress the picture")
+    open(path, "w") do f
+        write(f, UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        for (kind, data) in (("IHDR", vcat(reinterpret(UInt8, [hton(UInt32(x1 - x0)), hton(UInt32(y1 - y0))]), UInt8[8, 2, 0, 0, 0])),
+                             ("IDAT", @view packed[1:n[]]), ("IEND", UInt8[]))
+            body = vcat(codeunits(kind), data)
+            write(f, hton(UInt32(length(data))), body, hton(UInt32(ccall((:crc32, libz), Culong, (Culong, Ptr{UInt8}, Cuint), 0, body, length(body)))))
+        end
+    end
+    true
+end
+
+"""
+Save the schematic, and the plots when a run is showing them, as PNG files next to the scene:
+`<scene>_schematic.png` and `<scene>_plots.png`. They are cut from the frame as drawn, so they
+show what the window shows, at the window's size.
+"""
+function save_pictures!(app::App, window)
+    frame = grab(window)
+    k = frame[1] / unsafe_load(ig.GetIO().DisplaySize).x       # framebuffer pixels per window unit
+    base = isempty(app.path) ? "n2o-fill-sim" : splitext(app.path)[1]
+    wrote = [basename(base * "_" * name * ".png") for (name, r) in (("schematic", app.canvas), ("plots", app.plots)) if write_png(base * "_" * name * ".png", frame, k .* r)]
+    app.msg = "Wrote " * join(wrote, " and ") * " next to the scene"
+end
+
+function screenshot(window, path)
+    w, h, buf = grab(window)
     open(path, "w") do f
         print(f, "P6\n$w $h\n255\n")
         for r in h-1:-1:0
@@ -565,6 +616,10 @@ function gui(app::App; shot = "", frames = 0, script = nothing)
             GL.glClearColor(0.08, 0.08, 0.1, 1)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT)
             ig.lib.ImGui_ImplOpenGL3_RenderDrawData(Ptr{Cint}(ig.GetDrawData()))
+            if app.save_pics
+                app.save_pics = false
+                try save_pictures!(app, window) catch err; app.msg = "Could not save the pictures: " * sprint(showerror, err) end
+            end
             if !isempty(shot) && count >= frames
                 screenshot(window, shot)
                 app.quit = true

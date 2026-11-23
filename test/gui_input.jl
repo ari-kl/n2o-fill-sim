@@ -250,7 +250,19 @@ check(842, "the plots draw the bands in display units, in their lines' colours",
       all(b -> b.colour != ig.ImVec4(0.7f0, 0.7f0, 0.7f0, 1f0) && b.fill.FillColor == b.colour, app.bands) && app.bands[1].colour != app.bands[2].colour)
 at(844, () -> F.load_bands!(app, joinpath(ROOT, "test", "data", "hf4_fill_10hz.csv")))
 check(846, "a file that is not a bands file is refused and the bands stay", () -> startswith(app.msg, "Could not read the bands") && length(app.bands) == 2)
-click(848, 12, 4); click(854, 21, 4)                          # AV201, AV203: something for the bands to lie behind
+
+# --- pictures: the schematic and the plots, each cut from the frame as drawn
+const PIC_BASE = joinpath(BANDS_DIR, "pic")
+png_size(path) = (b = read(path); b[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] ? Int.(ntoh.(reinterpret(UInt32, b[17:24]))) : [0, 0])
+at(847, () -> (global pic_path = app.path; app.path = PIC_BASE * ".toml"))
+press(848, "Save pictures")
+check(853, "'Save pictures' writes the schematic and the plots as two PNG files the size they were drawn", () -> begin
+    k = F.GLFW.GetFramebufferSize(F.GLFW.GetCurrentContext())[1] / unsafe_load(ig.GetIO().DisplaySize).x
+    a, b = png_size(PIC_BASE * "_schematic.png"), png_size(PIC_BASE * "_plots.png")
+    app.path = pic_path
+    all(abs.(a .- k .* app.canvas[3:4]) .<= 1) && all(abs.(b .- k .* app.plots[3:4]) .<= 1) && filesize(PIC_BASE * "_plots.png") > 5000
+end)
+click(856, 12, 4); click(862, 21, 4)                          # AV201, AV203: something for the bands to lie behind
 
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
 F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "900")), script)

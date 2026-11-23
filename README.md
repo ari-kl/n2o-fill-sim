@@ -132,7 +132,7 @@ The View tab sets units and colours the plumbing by pressure, temperature or vap
 wire is one colour, because a wire has no pressure drop in this model; the step in colour across
 a part is the drop that part causes.
 
-### Tabs and CSV export
+### Tabs, CSV and picture export
 
 The Tanks tab shows each tank's pressure, liquid share and temperatures, and the warm-soak
 figures described above. The Signals tab plots any recorded signal.
@@ -148,6 +148,11 @@ figures described above. The Signals tab plots any recorded signal.
   same without leaving the window.
 
 On WSL the window is software-rendered at 10-20 ms a frame; on Windows it draws on the GPU.
+
+"Save pictures" writes the schematic and the plots as two PNG files next to the scene,
+`NAME_schematic.png` and `NAME_plots.png`. Each is cut from the window as drawn, so zoom, colours,
+units and plotted signals are whatever the window shows, at the window's size. While editing,
+"Save picture" in the File section writes the schematic alone.
 
 ## Command line
 
