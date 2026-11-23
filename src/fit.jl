@@ -216,8 +216,9 @@ The sensitivities are plain differences over `step` of each parameter's range (t
 bound): large enough to sit well above the solver's own noise. A parameter at a bound that the
 data push further out is held there for that iteration. Four dampings are tried at once, from
 nearly a Gauss-Newton step to a short step downhill; the best is taken if it lowers S, and if none
-does the damping is raised. It stops when a step gains less than `ftol` of S and moves less than
-`xtol`, twice running, or when no damping helps.
+does the damping is raised. If one of the sensitivity runs is itself better than every trial, that
+point is taken instead. It stops when a lightly damped step gains less than `ftol` of S and moves
+less than `xtol`, twice running, or when no damping helps.
 """
 function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e-3, ftol = 1e-4, report = (args...) -> nothing)
     n = length(x0)
@@ -227,14 +228,20 @@ function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e
     S, evals, λ, quiet_steps = sum(abs2, r), 1, 1e-2, 0
     ok(v) = v !== nothing && length(v) == length(r)
     J, moved_since = zeros(length(r), n), true
+    nudge, r_nudge, S_nudge = x, r, Inf                        # the best of the sensitivity runs: a point like any other
     while evals + (moved_since ? n : 0) + 4 <= max_evals
         if moved_since                                         # after a step that was not taken, the sensitivities still stand
             hs = [x[k] + step <= 1 ? step : -step for k in 1:n]
-            cols = batch([(y = copy(x); y[k] += hs[k]; y) for k in 1:n])
+            points = [(y = copy(x); y[k] += hs[k]; y) for k in 1:n]
+            cols = batch(points)
             evals += n
             fill!(J, 0.0)
+            S_nudge = Inf
             for k in 1:n
-                ok(cols[k]) && (J[:, k] .= (cols[k] .- r) ./ hs[k])
+                ok(cols[k]) || continue
+                J[:, k] .= (cols[k] .- r) ./ hs[k]
+                Sk = sum(abs2, cols[k])
+                Sk < S_nudge && ((nudge, r_nudge, S_nudge) = (points[k], cols[k], Sk))
             end
             moved_since = false
         end
@@ -253,11 +260,19 @@ function levenberg_marquardt(batch, x0; step = 0.02, max_evals = 1000, xtol = 1e
         evals += length(trials)
         Ss = [ok(v) ? sum(abs2, v) : Inf for v in rs]
         b = argmin(Ss)
-        if Ss[b] < S
+        if S_nudge < min(Ss[b], S)
+            # Moving one parameter by its sensitivity step did better than any step worked out from
+            # the sensitivities: the model is not close to linear over that distance. Take it.
+            x, r, S, moved_since, quiet_steps = nudge, r_nudge, S_nudge, true, 0
+            report(evals, S)
+        elseif Ss[b] < S
             gain, moved = (S - Ss[b]) / S, maximum(abs.(trials[b] .- x))
+            # A short step means the minimum is near only if the step was a nearly free one. A
+            # heavily damped step is short because it was held back.
+            free_step = dampings[b] <= 1
             x, r, S, λ, moved_since = trials[b], rs[b], Ss[b], max(dampings[b] / 3, 1e-10), true
             report(evals, S)
-            quiet_steps = moved < xtol && (gain < ftol || S < 1e-18) ? quiet_steps + 1 : 0
+            quiet_steps = free_step && moved < xtol && (gain < ftol || S < 1e-18) ? quiet_steps + 1 : 0
             (quiet_steps >= 2 || S == 0) && break
         else
             λ *= 1000                                          # none of them helped: shorter steps
