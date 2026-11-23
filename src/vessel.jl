@@ -183,18 +183,19 @@ function outflow!(n::Node, k, mdot, u)
     n.kind === :vessel || return
     if n.strat
         # The gas part of the stream is ullage gas: N2O and air in the proportion present.
-        # Once in the lines the stream is all counted as N2O (the lines carry one
-        # fluid), and what comes back in from the atmosphere is N2O too. Fine for a tank's worth
-        # of air (tens of grams); carry a second species through the network if nitrogen
-        # pressurisation is ever added.
+        # Simplification: once in the lines the stream is all counted as N2O (the lines carry one
+        # fluid), and what comes back in from the atmosphere is N2O too. That is adequate for a
+        # tank's worth of air (tens of grams). Modelling nitrogen pressurisation would need a
+        # second species carried through the network.
         fl, yn = n.port_fl[k], _n2o_share(u[n.i+2], u[n.i+5])
         n.dm_l -= fl * mdot
         n.dm_v -= (1 - fl) * mdot * yn
         n.dE_v -= (1 - fl) * mdot * n.hv
         n.dair -= (1 - fl) * mdot * (1 - yn)
     else
-        # In this mode (liquid-full or supercritical) the air has no heat capacity of
-        # its own; it leaves in proportion and takes its flow work from the N2O.
+        # Simplification: in this mode (liquid-full or supercritical) the air has no heat capacity
+        # of its own; it leaves in proportion and takes its flow work from the N2O. Lifting this
+        # would mean giving the air its own energy term here, as the stratified mode has.
         y = _n2o_share(u[n.i], u[n.i+5])
         n.dm_l -= y * mdot
         n.dE_v -= y * mdot * n.hl + (1 - y) * mdot * R_AIR * n.T
@@ -340,8 +341,9 @@ function derivative!(du, n::Node, u, env::Env)
     if !n.strat
         f = homog(n, u)
         Tw = u[i+4]
-        # One fixed film coefficient while liquid-full / supercritical. Good enough to
-        # get the warm-soak pressure rise; use the correlations if this regime ever matters more.
+        # Simplification: one fixed film coefficient (`h_mixed`) while liquid-full or
+        # supercritical. It is enough to get the warm-soak pressure rise. A closer result in this
+        # regime would need the convection correlations used in the stratified mode.
         if n.split
             Te, At, Ae = u[i+6], π * n.D * n.H, π * n.D^2 / 2
             hm = env.h_in_mult * n.h_in * n.h_mixed
