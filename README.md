@@ -244,7 +244,7 @@ T_amb_C = 28.0            # also solar_W_m2, wind_m_s, P_atm_kPa, target_lo_psig
 
 [[part]]
 kind = "Valve"            # Bottle, Tank, Pipe, Valve, Orifice, Regulator, CheckValve, ReliefValve,
-name = "AV203"            #   Atmosphere, Junction, Gauge
+name = "AV203"            #   Atmosphere, Junction, Gauge, LoadCell
 x = 21                    # position on the grid, and quarter turns clockwise
 y = 4
 rot = 0
@@ -254,6 +254,7 @@ Cd = 0.5
 [[wire]]
 from = "AV203.b"          # part.pin; pins are a/b on two-ended parts, out on a Bottle,
 to = "TANK.bottom"        #   top/vent/bottom on a Tank, a on Atmosphere, Junction and Gauge
+                          #   a/valve on a LoadCell
 via = [[24, 7]]           # optional: corners the drawn wire passes through (drawing only)
 
 [[schedule]]              # optional scripted actions
