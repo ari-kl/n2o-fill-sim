@@ -93,6 +93,9 @@ end
 
 # ---------------------------------------------------------------- run mode
 
+# What a heater's controller is set to hold, for display.
+heater_holds(app::App, n::Node) = "holds " * (n.heater_ctl == 1 ? fmt(app, :pressure, n.heater_set) : "wall at " * fmt(app, :temperature, n.heater_set))
+
 "Action buttons for a part. `ctx` distinguishes the right-click menu's copies from the side panel's."
 function part_actions(app::App, part::Part, ctx = "")
     sim = app.sim
@@ -106,6 +109,8 @@ function part_actions(app::App, part::Part, ctx = "")
     elseif part.kind in VESSEL_KINDS && part.p["heater_W"] > 0
         on = node_of(app, part.name).heater_on
         b(on ? "Heater off" : "Heater on") && act!(sim, part.name, on ? "off" : "on")
+        n = node_of(app, part.name)
+        n.heater_ctl > 0 && (ig.SameLine(); text(heater_holds(app, n)))
     elseif part.kind in ("Regulator", "ReliefValve")
         ig.SetNextItemWidth(px(110))
         ig.InputDouble("set_psig", app.setpoint, 0.0, 0.0, "%.1f")
@@ -166,6 +171,9 @@ function tanks_tab(app::App)
         text("  liquid $(fmt(app, :temperature, r.T))  ullage $(fmt(app, :temperature, r.Tv))  wall " *
              (n.split ? "$(fmt(app, :temperature, sim.u[n.i+4])) tube, $(fmt(app, :temperature, sim.u[n.i+6])) ends" : fmt(app, :temperature, r.Tw)))
         isnan(r.Psat) || text("  liquid's vapour pressure $(fmt(app, :pressure, r.Psat))")
+        # A switched-on heater is not necessarily heating: show what it delivers, and to what end.
+        n.heater_W > 0 && text("  heater " * (n.heater_on ? "$(round(Int, heater_power(n, r.P, sim.u[n.i+4]))) of $(round(Int, n.heater_W)) W" : "off") *
+                               (n.heater_ctl > 0 ? ", " * heater_holds(app, n) : ""))
         soaks = [Ts for Ts in (30.0, 35.0) if r.m > 0.05 && Ts + 273.15 > r.T]   # nothing to say about an empty tank, or one already hotter
         isempty(soaks) || text("  if closed and left to warm:")
         for Ts in soaks

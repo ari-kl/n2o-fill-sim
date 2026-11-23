@@ -332,6 +332,39 @@ through a long hold, and falling 28 K within seconds of a fill starting, where a
 temperature sits several kelvin above the liquid. Section 7 says what the test logs do and do not
 determine about them.
 
+### Heater control
+
+A heater delivers `heater_W` to the wall (to the tube, with `wall_split`) while it is switched
+on. `heater_ctl` says what, if anything, runs it in that time:
+
+| `heater_ctl` | Behaviour |
+|---|---|
+| 0 (default) | Full power while switched on. The equations and results are exactly those without a controller. |
+| 1 | Holds the vessel's pressure at `heater_set` psig. |
+| 2 | Holds the wall temperature at `heater_set` °C (the tube's, with `wall_split`). |
+
+The controller is proportional. With $x$ the pressure or wall temperature, $x_s$ the set-point and
+$b$ the band `heater_band` (psi or K):
+
+$$Q = Q_{max}\,\varphi^2(3 - 2\varphi), \qquad \varphi = \mathrm{clamp}\!\left(\frac{x_s - x}{b},\, 0,\, 1\right)$$
+
+Power is full a band or more below the set-point, zero at and above it, and follows a smooth
+S-curve between. There is no threshold at which it switches, so it cannot chatter, and the
+solver sees no step. The vessel comes to rest inside the band, at the point where the power
+equals what it loses to its surroundings: below the set-point by a share of the band that grows
+with the losses. A controller acts only while the heater is switched on, and it can only heat: a
+tank the sun takes past the set-point stays there.
+
+The default band is 10 (psi or K). It was chosen for pressure control. The heater warms the wall
+and the wall warms the liquid, so when the power comes off there is still heat in the wall on its
+way in. A sealed 19 L tank holding 8 kg under 300 W in 10 °C air reaches its resting pressure
+without falling back at 10 psi (0.04 psi); at 5 psi it passes it by 0.4 psi once, and at 2 psi
+by 0.6 psi with a few decaying swings, never reaching the set-point. Ten psi is about half a
+kelvin of saturation temperature. Wall-temperature control acts on the state it heats and does
+not overshoot at any band, so 1 to 2 K is a reasonable setting there.
+
+The power delivered is recorded as the signal `<vessel>.heater_power`, in watts.
+
 ### Homogeneous mode
 
 One mixed volume at (m, U) with the full equation of state. A vessel switches to it when ullage
@@ -376,6 +409,10 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
   of air is tens of grams, so this matters only until the first N2O has displaced it.
 - Each vessel has one wall temperature (two with `wall_split`), and there is no conduction into stands and
   plumbing.
+- The heater controller is an idealisation. It is proportional and has no delay. A real
+  thermostat that switches fully on and off around its set-point gives the same average power but
+  a ripple this one does not show. The heater has no heat capacity of its own, and its power goes
+  to the wall as a whole, wherever on the tank it sits.
 - There is no nitrogen, either as a pressurant or dissolved: the contents are pure N2O plus
   inert air.
 - Hydrostatic head and elevation differences are ignored (about 1 psi per metre of liquid).

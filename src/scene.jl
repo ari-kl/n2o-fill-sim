@@ -37,6 +37,9 @@ const _VESSEL_PARAMS = [
     Param("emissivity", 0.8, "infrared emissivity of the outside surface"),
     Param("shade", 0.0, "fraction of sunlight blocked, 0..1"),
     Param("heater_W", 0.0, "heater power delivered to the wall when switched on"),
+    Param("heater_ctl", 0.0, "what runs the heater while it is switched on: 0 = nothing (full power), 1 = a controller holding a pressure, 2 = a controller holding a wall temperature"),
+    Param("heater_set", 0.0, "the controller's set-point: psig with heater_ctl = 1, °C with heater_ctl = 2"),
+    Param("heater_band", 10.0, "psi or K below the set-point over which the controller takes power from zero to full"),
 ]
 # Wall-to-contents coupling belongs to the vessel it describes: a value fitted for the run tank
 # must not silently change the bottle. The setting `h_in_mult` remains as a common factor.
@@ -72,6 +75,9 @@ const KINDS = Dict{String,Kind}(
          Param("emissivity", 0.8, "infrared emissivity"),
          Param("shade", 0.0, "fraction of sunlight blocked, 0..1"),
          Param("heater_W", 0.0, "heater power when switched on"),
+         Param("heater_ctl", 0.0, "what runs the heater while it is switched on: 0 = nothing (full power), 1 = a controller holding a pressure, 2 = a controller holding a wall temperature"),
+         Param("heater_set", 0.0, "the controller's set-point: psig with heater_ctl = 1, °C with heater_ctl = 2"),
+         Param("heater_band", 10.0, "psi or K below the set-point over which the controller takes power from zero to full"),
          _WALL_COUPLING...],
         "Supply cylinder: a two-phase vessel that cools as it delivers."),
     "Tank" => Kind([Pin("top", 0, -3), Pin("vent", 1, -2), Pin("bottom", 0, 3)],

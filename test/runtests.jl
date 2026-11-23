@@ -25,6 +25,19 @@ end
 tank(sim) = F.node_report(sim.net, sim.net.nodes[findfirst(n -> n.name == "TANK", sim.net.nodes)], sim.u)
 bottle(sim) = F.node_report(sim.net, sim.net.nodes[findfirst(n -> n.name == "BOTTLE", sim.net.nodes)], sim.u)
 closes(sim) = all(x -> abs(x) < 2e-4, F.closure(sim))
+# Largest difference between entries, each in the solver's error weights and against the
+# largest entry of its row.
+function jac_gap(sim)
+    u, net = copy(sim.u), sim.net
+    n = length(u)
+    A, B = zeros(n, n), zeros(n, n)
+    F.jac!(A, u, net, 0.0); F.jac_fd!(B, u, net, 0.0)
+    w = 1e-8 .+ 1e-5 .* abs.(u)
+    maximum(1:n) do i
+        scale = maximum(abs.(B[i, :]) .* w)
+        scale > 0 ? maximum(abs.(A[i, :] .- B[i, :]) .* w) / scale : 0.0
+    end
+end
 
 @testset "N2OFillSim" begin
 
@@ -1307,6 +1320,71 @@ end
     @test b.u[end-2] ≈ a.u[end-2] rtol = 2e-3                    # same mass vented
 end
 
+@testset "heater controller: holds a pressure or a wall temperature without overshoot (off unless asked for)" begin
+    # A sealed tank of 8 kg at 20 °C (718 psig) under a 300 W heater, in still 10 °C air with no sun:
+    # left alone it would cool, so holding 800 psig takes power for as long as the run lasts.
+    function run(sets; until = 1500.0)
+        s = rig(tank_fill = 8.0, tank_T = 20.0, air = 0.0)
+        F.apply_overrides!(s, vcat(["TANK.heater_W=300", "settings.T_amb_C=10", "settings.solar_W_m2=0"], sets))
+        sim = F.Sim(s)
+        F.run_until!(sim, 20.0); F.act!(sim, "TANK", "on"); F.run_until!(sim, until)
+        sim
+    end
+    psig(sim) = (sim.hist["TANK.P"] .- 101325) ./ F.PSI
+    plain = run(String[]; until = 300.0)
+    # with heater_ctl = 0 the set-point and band are not read: the same run to the last bit
+    @test run(["TANK.heater_set=800", "TANK.heater_band=2"]; until = 300.0).u == plain.u
+    W = plain.hist["TANK.heater_power"]
+    @test W[1] == 0 && W[end] == 300 && Set(W) == Set([0.0, 300.0])
+
+    hold = run(["TANK.heater_ctl=1", "TANK.heater_set=800"])                # the default band, 10 psi
+    P, W = psig(hold), hold.hist["TANK.heater_power"]
+    @test isempty(hold.failed) && hold.net.unconverged == 0 && closes(hold)
+    @test maximum(P) < 800 && 790 < P[end] < 800                # approaches from below and settles inside the band
+    on = searchsortedfirst(hold.t_hist, 40.0)                   # the first seconds go into the wall, and the cold air still wins
+    fall_back(P) = maximum(accumulate(max, P) .- P)             # how far it ever drops below a pressure it had reached
+    @test fall_back(P[on:end]) < 0.1                            # no oscillation
+    @test W[on] == 300 && 50 < W[end] < 150 && minimum(W[on:end]) > W[end] - 5     # power comes down from full to what the cold air takes, and stays
+    @test P[end] - P[searchsortedfirst(hold.t_hist, 1400.0)] < 0.1      # settled over the last 100 s
+    # switched off, a controller does nothing
+    F.act!(hold, "TANK", "off"); F.run_until!(hold, 1510.0)
+    @test hold.hist["TANK.heater_power"][end] == 0
+    # A narrow band holds closer to the set-point, and overshoots its resting point a little
+    # (heat already in the wall keeps arriving), still without passing the set-point.
+    tight = psig(run(["TANK.heater_ctl=1", "TANK.heater_set=800", "TANK.heater_band=2"]))
+    @test 799 < tight[end] < maximum(tight) < 800 && 0.2 < fall_back(tight[on:end]) < 1
+
+    warm = run(["TANK.heater_ctl=2", "TANK.heater_set=28", "TANK.heater_band=2"])
+    Tw, W = warm.hist["TANK.Tw"] .- 273.15, warm.hist["TANK.heater_power"]
+    @test isempty(warm.failed) && warm.net.unconverged == 0 && closes(warm)
+    @test maximum(Tw) < 28 && 26 < Tw[end] < 28 && all(>(-1e-4), diff(Tw[on:end])) && 5 < W[end] < 300
+    split = run(["TANK.heater_ctl=2", "TANK.heater_set=28", "TANK.heater_band=2", "TANK.wall_split=1"])
+    @test closes(split) && split.net.unconverged == 0 && 26 < split.hist["TANK.Tw_tube"][end] - 273.15 < 28    # it is the tube that is held
+
+    # The Jacobian with the controller part-way through its band, where its power answers the
+    # state: the pressure (the fluid states) in mode 1, the wall temperature in mode 2.
+    function mid_band!(sim, ctl)
+        n = sim.net.nodes[findfirst(n -> n.name == "TANK", sim.net.nodes)]
+        n.heater_ctl, n.heater_on = ctl, true
+        n.heater_set = (ctl == 1 ? tank(sim).P : sim.u[n.i+4]) + 0.4 * n.heater_band
+        @test 0 < F.heater_power(n, tank(sim).P, sim.u[n.i+4]) < n.heater_W
+        sim
+    end
+    for ctl in (1, 2), sets in (String[], ["TANK.wall_split=1"])
+        s = rig(tank_fill = 4.0, tank_T = 20.0)
+        F.apply_overrides!(s, vcat(["TANK.heater_W=300", "TANK.heater_ctl=$ctl"], sets))
+        sim = F.Sim(s); F.run_until!(sim, 1.0)
+        @test jac_gap(mid_band!(sim, ctl)) < 1e-6               # sealed: every column is local
+        F.act!(sim, "FILL", "open"); F.act!(sim, "VENT", "open"); F.run_until!(sim, 4.0)
+        @test jac_gap(mid_band!(sim, ctl)) < 1e-3               # filling and venting: the fluid columns go through the network
+    end
+    s = rig(tank_fill = 8.0, tank_T = 40.0, air = 0.0)          # above the critical temperature: one mixed fluid
+    F.apply_overrides!(s, ["TANK.heater_W=300", "TANK.heater_ctl=1", "settings.T_amb_C=40"])
+    sim = F.Sim(s); F.run_until!(sim, 1.0)
+    @test !sim.net.nodes[findfirst(n -> n.name == "TANK", sim.net.nodes)].strat
+    @test jac_gap(mid_band!(sim, 1)) < 1e-3                     # its relief valve is lifting, so this goes through the network too
+end
+
 @testset "overfilled tank warming in the sun goes liquid-full and lifts the relief valve" begin
     s = rig(tank_fill = 15.2, tank_T = 12.0, air = 0.0)       # ≈ 93 % liquid at 12 °C
     s.settings["T_amb_C"], s.settings["solar_W_m2"] = 38.0, 1000.0
@@ -1397,19 +1475,6 @@ end
 end
 
 @testset "the ODE Jacobian agrees with one differenced through the whole right-hand side" begin
-    # Largest difference between entries, each in the solver's error weights and against the
-    # largest entry of its row.
-    function jac_gap(sim)
-        u, net = copy(sim.u), sim.net
-        n = length(u)
-        A, B = zeros(n, n), zeros(n, n)
-        F.jac!(A, u, net, 0.0); F.jac_fd!(B, u, net, 0.0)
-        w = 1e-8 .+ 1e-5 .* abs.(u)
-        maximum(1:n) do i
-            scale = maximum(abs.(B[i, :]) .* w)
-            scale > 0 ? maximum(abs.(A[i, :] .- B[i, :]) .* w) / scale : 0.0
-        end
-    end
     sim = F.Sim(rig(tank_fill = 2.0, air = 0.0))
     F.run_until!(sim, 1.0)
     @test jac_gap(sim) < 1e-6                   # everything shut: no flows, every column is local

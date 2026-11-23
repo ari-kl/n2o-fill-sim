@@ -112,6 +112,11 @@ function compile(s::Scene)
         n.Cw = max(g("wall_kg") * g("wall_cp_J_kgK"), 1.0)
         n.A_in = π * n.D * n.H + π * n.D^2 / 2
         n.absorb, n.emiss, n.shade, n.heater_W = g("absorptivity"), g("emissivity"), g("shade"), g("heater_W")
+        # The heater's controller, in the units the equations use. Like a regulator's, a pressure
+        # set-point is a gauge reading; the band has a floor so that it cannot be a switch.
+        n.heater_ctl = round(Int, g("heater_ctl"))
+        n.heater_set = n.heater_ctl == 1 ? g("heater_set") * PSI + env.P_atm : g("heater_set") + 273.15
+        n.heater_band = max(g("heater_band"), 0.01) * (n.heater_ctl == 1 ? PSI : 1.0)
         n.h_in, n.h_mixed = g("h_in_mult"), g("h_in_W_m2K")
         n.split, n.tube_frac, n.link = g("wall_split") > 0.5, clamp(g("wall_tube_frac"), 0.02, 0.98), g("wall_link_W_K")
         n.G_ends = g("wall_ends_W_K")
@@ -1234,6 +1239,7 @@ function sample!(sim::Sim)
             put(n.name * ".liquid_vol_pct", 100 * r.liquid_frac); put(n.name * ".liquid_mass_pct", 100 * (1 - r.x))
             put(n.name * ".Tv", r.Tv); put(n.name * ".Tw", r.Tw); put(n.name * ".Psat", r.Psat)
             n.split && (put(n.name * ".Tw_tube", u[n.i+4]); put(n.name * ".Tw_ends", u[n.i+6]))
+            n.heater_W > 0 && put(n.name * ".heater_power", heater_power(n, r.P, u[n.i+4]))   # W delivered now
         end
     end
     for e in net.edges

@@ -69,6 +69,9 @@ Base.@kwdef mutable struct Node
     shade::Float64 = 0.0
     heater_W::Float64 = 0.0
     heater_on::Bool = false
+    heater_ctl::Int = 0           # 0: full power while switched on; 1: holds a pressure; 2: holds a wall temperature
+    heater_set::Float64 = 0.0     # what it holds: Pa absolute (1) or K (2)
+    heater_band::Float64 = 1.0    # Pa or K below the set-point over which power goes from zero to full
     strat::Bool = false
     ports::Vector{Float64} = Float64[]        # height of each connection, as a fraction of H
     # evaluated from the state each time the equations are evaluated
@@ -255,22 +258,38 @@ function h_outside(n::Node, Tw, env::Env)
     env.h_ext_mult * cbrt(h_nat^3 + h_wind^3)
 end
 """
+Power [W] the heater is delivering to the wall of a vessel at pressure `P` whose wall (the tube,
+if the wall is split) is at `Tw`. Nothing unless it is switched on. Without a controller that is
+its full power. With one it is proportional: full power a band or more below the set-point, none
+at or above it, and a smooth S-curve between (the curve the port cover uses), so the power has no
+step for the solver to stall on and nothing to chatter against. Callers pass a pressure worked out
+from the state they are differentiating, not the one `evaluate!` stored: the Jacobian's local
+columns perturb a state and call `derivative!` alone.
+"""
+function heater_power(n::Node, P, Tw)
+    n.heater_on || return 0.0
+    n.heater_ctl == 0 && return n.heater_W
+    φ = clamp((n.heater_set - (n.heater_ctl == 1 ? P : Tw)) / n.heater_band, 0.0, 1.0)
+    n.heater_W * φ^2 * (3 - 2φ)
+end
+
+"""
 Heat flow into a wall from outside [W]: convection, sunlight, infrared exchange and any heater.
 Air properties are fixed at round room-temperature values. Convection is natural (0.59·Ra^¼,
 vertical surface) combined with wind across a cylinder (Hilpert, 0.193·Re^0.618·Pr^⅓).
 """
-function q_external(n::Node, Tw, env::Env)
+function q_external(n::Node, Tw, env::Env, P)
     ΔT = env.T_amb - Tw
     A = π * n.D * n.H + π * n.D^2 / 2
     h_outside(n, Tw, env) * A * ΔT +
         n.absorb * (1 - n.shade) * env.solar * n.D * n.H +
         n.emiss * SIGMA * A * (env.T_amb^4 - Tw^4) +
-        (n.heater_on ? n.heater_W : 0.0)
+        heater_power(n, P, Tw)
 end
 # The same in two pieces, for a split wall: what an outside area A at its own temperature takes by
 # convection and radiation, and what lands on the tube alone (sun on its side, the heater).
 q_outside(n::Node, Tw, env::Env, A) = h_outside(n, Tw, env) * A * (env.T_amb - Tw) + n.emiss * SIGMA * A * (env.T_amb^4 - Tw^4)
-q_sun_heater(n::Node, env::Env) = n.absorb * (1 - n.shade) * env.solar * n.D * n.H + (n.heater_on ? n.heater_W : 0.0)
+q_sun_heater(n::Node, env::Env, P, Tw) = n.absorb * (1 - n.shade) * env.solar * n.D * n.H + heater_power(n, P, Tw)
 
 # A surface conductance `ua` in series with a conduction path `G` through the metal behind it
 # (G = 0: no such path is modelled). A thick bulkhead gives up its heat only as fast as the metal
@@ -341,6 +360,7 @@ function derivative!(du, n::Node, u, env::Env)
     if !n.strat
         f = homog(n, u)
         Tw = u[i+4]
+        P = n.heater_ctl == 1 ? f.P + air_pressure(n, u, f) : 0.0      # only a pressure-holding heater reads it
         # While liquid-full or supercritical the wall exchanges heat through one fixed film
         # coefficient (`h_mixed`). That is enough to get the warm-soak pressure rise. A closer
         # result in this regime would need the convection correlations used in the stratified mode.
@@ -348,14 +368,14 @@ function derivative!(du, n::Node, u, env::Env)
             Te, At, Ae = u[i+6], π * n.D * n.H, π * n.D^2 / 2
             hm = env.h_in_mult * n.h_in * n.h_mixed
             qt, qe, ql = hm * At * (Tw - f.T), _through(hm * Ae, n.G_ends) * (Te - f.T), n.link * (Te - Tw)
-            qxt, qxe = q_outside(n, Tw, env, At) + q_sun_heater(n, env), q_outside(n, Te, env, Ae)
+            qxt, qxe = q_outside(n, Tw, env, At) + q_sun_heater(n, env, P, Tw), q_outside(n, Te, env, Ae)
             du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qt + qe, 0.0, 0.0
             du[i+4], du[i+5] = (qxt - qt + ql) / (n.Cw * n.tube_frac), n.dair
             du[i+6] = (qxe - qe - ql) / (n.Cw * (1 - n.tube_frac))
             return qxt + qxe
         end
         qw = env.h_in_mult * n.h_in * n.h_mixed * n.A_in * (Tw - f.T)
-        qx = q_external(n, Tw, env)
+        qx = q_external(n, Tw, env, P)
         du[i], du[i+1], du[i+2], du[i+3] = n.dm_l, n.dE_v + qw, 0.0, 0.0
         du[i+4], du[i+5] = (qx - qw) / n.Cw, n.dair
         return qx
@@ -401,7 +421,7 @@ function derivative!(du, n::Node, u, env::Env)
         end
         qv_t, qv_e = c * hv_t * (π * n.D * (n.H - lvl)) * (Tw - s.Tv), _through(c * hv_e * As, n.G_ends) * (Te - s.Tv)
         link = n.link * (Te - Tw)
-        qxt, qxe = q_outside(n, Tw, env, π * n.D * n.H) + q_sun_heater(n, env), q_outside(n, Te, env, 2As)
+        qxt, qxe = q_outside(n, Tw, env, π * n.D * n.H) + q_sun_heater(n, env, s.P, Tw), q_outside(n, Te, env, 2As)
         q_wl, q_wv, qx = ql_t + ql_e, qv_t + qv_e, qxt + qxe
         dTw_tube = (qxt - ql_t - qv_t + link) / (n.Cw * n.tube_frac)
         dTw_ends = (qxe - ql_e - qv_e - link) / (n.Cw * (1 - n.tube_frac))
@@ -410,7 +430,7 @@ function derivative!(du, n::Node, u, env::Env)
         q_wl = wet * env.h_in_mult * n.h_in * h_l * (π * n.D * lvl + As) * (Tw - s.Tl)
         n.h_boil > 0 && (q_wl += wet * q_boiling(n, ss, Tw, π * n.D * lvl + As))
         q_wv = env.h_in_mult * n.h_in * h_wall(s.ρv, cpv, βv, μv, kv, Tw - s.Tv, max(n.H - lvl, 0.01)) * (π * n.D * (n.H - lvl) + As) * (Tw - s.Tv)
-        qx = q_external(n, Tw, env)
+        qx = q_external(n, Tw, env, s.P)
     end
 
     dml = n.dm_l - m_evap + m_cond
