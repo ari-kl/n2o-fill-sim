@@ -64,7 +64,7 @@ function read_fit(path)
     datasets = Study[_study(Dict(k => v for (k, v) in ds if !(k in ("name", "weight"))), base, "$path, dataset $(names[k])", dir, _DATASET_KEYS)
                      for (k, ds) in enumerate(d["dataset"])]
     for (k, st) in enumerate(datasets)
-        isempty(st.channels) && error("$path: dataset $(names[k]) scores nothing (it needs a log and [dataset.score] channels, or a manifest with maps_to)")
+        n_scored(st) == 0 && error("$path: dataset $(names[k]) scores nothing (it needs a log and [dataset.score] channels, or a manifest with maps_to)")
     end
     params = FitParam[]
     for p in get(d, "parameter", [])
@@ -119,24 +119,22 @@ function evaluate(fit::Fit, x; reltol = nothing)
         st = fit.datasets[k]
         overrides = [p.name => _value(p, x[j]) for (j, p) in enumerate(fit.params) if k in p.datasets]
         sim, why = simulate(st, overrides; reltol = something(reltol, st.reltol))
-        pairs = length(st.channels) * length(st.phases)
         if sim === nothing || !isempty(why)
             failed[k] = why
-            parts[k] = fill(100.0 * sqrt(fit.weights[k]), pairs)        # as bad as 100 sigma in every phase
-            rms[k] = ["rms.$(c[1]).$p" => NaN for c in st.channels for (p, _) in st.phases]
+            # as bad as 100 sigma in every scored number, in a vector as long as a finished run's
+            parts[k] = fill(100.0 * sqrt(fit.weights[k] * n_scored(st) / n_residuals(st)), n_residuals(st))
+            rms[k] = _rms_names(st)
         else
-            rms[k], r = score_run(st, sim)
-            parts[k] = r .* sqrt(fit.weights[k])
+            s = score_run(st, sim)
+            rms[k] = s.rms
+            parts[k] = s.residuals .* sqrt(fit.weights[k])
         end
     end
     reduce(vcat, parts), rms, failed
 end
 
-"The fit's one number: as a study's score, over every dataset's channels and phases together."
-function fit_score(fit::Fit, residuals)
-    pairs = sum(length(st.channels) * length(st.phases) for st in fit.datasets)
-    sqrt(sum(abs2, residuals) / pairs)
-end
+"The fit's one number: as a study's score, over every dataset's scored numbers together."
+fit_score(fit::Fit, residuals) = sqrt(sum(abs2, residuals) / sum(n_scored, fit.datasets))
 
 """
     nelder_mead(f, x0; step, max_evals, xtol, ftol, batch) -> (x, fx, evals)
@@ -402,14 +400,13 @@ function fit(path; write_scenes = false, quiet = false)
     end
     labels = [p.label for p in ft.params]
     std, corr, statements = identifiability(J, labels)
-    pairs = sum(length(st.channels) * length(st.phases) for st in ft.datasets)
-    misfit = sqrt(sum(abs2, r0) / max(pairs - np, 1))          # treating each channel-and-phase as one observation
+    misfit = sqrt(sum(abs2, r0) / max(sum(n_scored, ft.datasets) - np, 1))     # treating each scored number as one observation
     values = [_value(p, x[k]) for (k, p) in enumerate(ft.params)]
     # an approximate standard error in the parameter's own units (a factor, for a log parameter)
     spread = [p.log ? exp(std[k] * misfit * log(p.hi / p.lo)) : std[k] * misfit * (p.hi - p.lo) for (k, p) in enumerate(ft.params)]
     io = IOBuffer()
     println(io, "Fit \"", ft.name, "\"    score ", round(fx, digits = 4), " (", round(f0, digits = 3), " at the start), ", evals[], " evaluations")
-    println(io, "\nParameters (± is approximate: one channel-and-phase counted as one observation)")
+    println(io, "\nParameters (± is approximate: one scored number counted as one observation)")
     for (k, p) in enumerate(ft.params)
         at_bound = x[k] < 0.01 ? "  AT ITS LOWER BOUND" : x[k] > 0.99 ? "  AT ITS UPPER BOUND" : ""
         println(io, "  ", rpad(p.label, 34), rpad(round(values[k], sigdigits = 5), 12), p.log ? "×/÷ $(round(spread[k], sigdigits = 3))" : "± $(round(spread[k], sigdigits = 3))",
@@ -440,11 +437,12 @@ function fit(path; write_scenes = false, quiet = false)
         for (k, name) in enumerate(ft.names)
             st = ft.datasets[k]
             println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until)
-            println(out, "channels = [", join(["{ log = $(repr(c[1])), model = $(repr(c[2])), sigma = $(c[3]), weight = $(c[4]) }" for c in st.channels], ", "), "]")
+            println(out, "channels = [", join(["{ log = $(repr(c.log)), model = $(repr(c.model)), sigma = $(c.sigma), weight = $(c.weight) }" for c in st.channels], ", "), "]")
             println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
+            println(out, "scored = ", _list([g.name for g in st.scored]))
             println(out, "rms = { ", join(["$(repr(replace(key, "rms." => ""))) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in rms[k]], ", "), " }")
         end
-        println(out, "\nidentifiability = ", repr(statements))
+        println(out, "\nidentifiability = ", _list(statements))
     end
     if write_scenes
         for (k, name) in enumerate(ft.names)
@@ -464,28 +462,14 @@ end
 # Each dataset's own score from the combined residual vector.
 function _dataset_scores(ft::Fit, residuals)
     out, offset = Float64[], 0
-    total = length(residuals)
-    lens = _lengths(ft, total)
     for (k, st) in enumerate(ft.datasets)
-        m = length(st.channels) * length(st.phases)
-        push!(out, sqrt(sum(abs2, view(residuals, offset+1:offset+lens[k])) / (m * ft.weights[k])))
-        offset += lens[k]
+        push!(out, sqrt(sum(abs2, view(residuals, offset+1:offset+n_residuals(st))) / (n_scored(st) * ft.weights[k])))
+        offset += n_residuals(st)
     end
     out
 end
-# How many residuals each dataset contributes: one per scored log sample (or one per pair, when it failed).
-function _lengths(ft::Fit, total)
-    full = [sum(count(i -> a <= st.t_log[i] <= b && st.t_log[i] <= st.until && isfinite(st.cols[c[1]][i]), eachindex(st.t_log)) for c in st.channels for (_, (a, b)) in st.phases) for st in ft.datasets]
-    sum(full) == total && return full
-    short = [length(st.channels) * length(st.phases) for st in ft.datasets]
-    # some dataset failed: find which combination adds up
-    for mask in 0:(2^length(full)-1)
-        lens = [mask >> (k - 1) & 1 == 1 ? short[k] : full[k] for k in eachindex(full)]
-        sum(lens) == total && return lens
-    end
-    error("residual vector of unexpected length")
-end
 
+_list(v) = "[" * join(repr.(v), ", ") * "]"        # a list of strings as TOML (an empty one too)
 _today() = (t = Libc.strftime("%Y-%m-%d", time()); t)
 _commit(dir) = try strip(read(setenv(`git rev-parse --short HEAD`; dir), String)) catch; "unknown" end
 

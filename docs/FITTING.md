@@ -63,9 +63,15 @@ to = 29
 datasets = ["hf4"]
 ```
 
-What is minimised is the same normalised score a study reports: each channel's RMS difference
-divided by how far that reading can be trusted (`sigma`), every channel and phase counted once,
-over all datasets together (`weight` scales a whole dataset). See docs/STUDIES.md.
+What is minimised is the same normalised score a study reports: every scored number (a channel's
+RMS difference over a phase, or its mean difference over a time bin with `bin_s`), each divided
+by how far that reading can be trusted (`sigma`), over all datasets together (`weight` scales a
+whole dataset). See docs/STUDIES.md.
+
+**Count the scored numbers against the parameters.** A fit with about as many parameters as
+scored numbers can match anything and determines nothing. Two channels over three phases are six
+numbers. `bin_s` under `[dataset.score]` turns each long phase into several, and is the first
+thing to reach for when a fit has too little to go on.
 
 Shared and per-dataset parameters are the point of the format. Physics and hardware that did not
 change between tests (heat-transfer coefficients, a vent's discharge coefficient, a wall's mass)
@@ -115,16 +121,17 @@ not the data: look at why they fail.
     proportions changes no reading at all.
   - "X has no measurable effect": these logs say nothing about X.
 
-The spread treats each channel-and-phase as one independent observation, which is a rough stand-in
-for the real number of independent readings in a time series. Use it to compare parameters with
-each other, not as a confidence interval.
+The spread treats each scored number as one independent observation, which is a rough stand-in
+for the real number of independent readings in a time series (and too generous if bins are short:
+see "Time bins" in docs/STUDIES.md). Use it to compare parameters with each other, not as a
+confidence interval.
 
 ## What it writes
 
 - `evals.csv`: every evaluation (parameter values, score, each dataset's score, failures).
 - `report.txt`.
 - `<date>-<name>.toml`: the **calibration record**. The values, their bounds and spread, the
-  datasets, channels, phases and trust they were fitted against, the RMS reached, the commit of the fit file's own
+  datasets, channels, phases, scored numbers and trust they were fitted against, the RMS reached, the commit of the fit file's own
   folder (`commit`) and of the model that ran it (`model_commit`), and the identifiability
   statements. A fitted number without this is a number nobody can check.
 - with `--write-scenes`, `<dataset>.toml`: a copy of each dataset's scene with the fitted values

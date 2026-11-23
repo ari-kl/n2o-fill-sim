@@ -404,7 +404,7 @@ end
     @test val("score") ≈ sqrt(sum(abs2, ratios) / 4) rtol = 1e-5
     # and it is what the residual vector adds up to, so a fitter minimises the same thing
     rms1, res1 = F.score_run(st1, sim)
-    @test sqrt(sum(abs2, res1) / 4) ≈ F.study_score(st1, rms1) rtol = 1e-9
+    @test sqrt(sum(abs2, res1) / 4) ≈ F.study_score(F.score_run(st1, sim)) rtol = 1e-9
     # a sigma given for a channel changes its share of the score and nothing else
     st2 = F.read_study(study(replace(read(one, String), "weight = 0.5" => "weight = 0.5, sigma = 20")))
     @test [c[3] for c in st2.channels] == [5.0, 20.0] && [c[3] for c in st1.channels] == [5.0, 5.0]
@@ -508,6 +508,82 @@ end
     # a draft fit file from the [fit] tags of a scene
     draft = F.fit_skeleton(joinpath(@__DIR__, "..", "scenes", "hf4.toml"))
     @test occursin("name = \"BOTTLE.fill_kg\"", draft) && occursin("name = \"settings.h_in_mult\"", draft)
+end
+
+# A made-up log for the scoring tests: the rig with a 4 mm fill valve and a 27 °C bottle, filled
+# with the vent open until 15 s and closed after. The tank starts with 2 kg in it, which makes a
+# run several times quicker than starting empty. `extra(t)` is added to the logged pressure, and
+# `more` is further columns as name => function of (run, time).
+scoring_rig(; kw...) = rig(; tank_fill = 2.0, kw...)
+function made_up_log(path; extra = t -> 0.0, more = Pair{String,Function}[])
+    truth = scoring_rig(bottle_T = 27.0)
+    F.apply_overrides!(truth, ["FILL.d_mm=4"])
+    truth.schedule = [F.Action(1.0, "FILL", "open", 0.0), F.Action(1.0, "VENT", "open", 0.0), F.Action(15.0, "VENT", "close", 0.0)]
+    sim = F.Sim(truth)
+    F.run_until!(sim, 30.0)
+    open(path, "w") do io
+        println(io, join(vcat("t_s", "PT_psig", "FILL", "VENT", first.(more)), ","))
+        for t in 0:0.5:30
+            p = (F.signal_at(sim, "TANK.P", t) - 101325) / F.PSI + extra(t)
+            println(io, join(vcat(t, round(p, digits = 3), t >= 1 ? 1 : 0, 1 <= t < 15 ? 1 : 0, [round(f(sim, t), digits = 4) for (_, f) in more]), ","))
+        end
+    end
+    sim
+end
+
+@testset "scoring: time bins" begin
+    dir = mktempdir()
+    made_up_log(joinpath(dir, "log.csv"))
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    study(score) = (p = joinpath(dir, "s$(hash(score)).toml"); write(p, "scene = \"rig.toml\"\nreplay = \"log.csv\"\n[score]\nchannels = [{ log = \"PT_psig\", model = \"TANK.P\" }]\n" * score); p)
+    plain = F.read_study(study("phases = { venting = [1, 15], closed = [15, 30] }\n"))
+    st = F.read_study(study("bin_s = 5\nphases = { venting = [1, 15], closed = [15, 30] }\n"))
+    # a phase is cut into equal bins as near to bin_s long as fit it: three each here
+    @test [g.name for g in st.scored] == ["PT_psig.closed.$k" for k in 1:3] ∪ ["PT_psig.venting.$k" for k in 1:3]
+    @test F.n_scored(st) == F.n_residuals(st) == 6 && F.n_scored(plain) == 2 && F.n_residuals(plain) == 29 + 31
+    sim, failed = F.simulate(st, [])
+    s, s0 = F.score_run(st, sim), F.score_run(plain, sim)
+    # one residual per bin: the mean of model − log over the bin, with its sign, over sigma (5 psi)
+    diff(t) = (F.signal_at(sim, "TANK.P", t) - 101325) / F.PSI - st.cols["PT_psig"][findfirst(==(t), st.t_log)]
+    @test s.residuals[1] ≈ sum(diff, 15:0.5:19.5) / 10 / 5 rtol = 1e-9
+    @test s.residuals == last.(s.z) && first(s.z[1]) == "res.PT_psig.closed.1"
+    @test F.study_score(s) ≈ sqrt(sum(abs2, s.residuals) / 6)
+    # the per-phase RMS columns are the same with or without bins
+    @test first.(s.rms) == ["rms.PT_psig.closed", "rms.PT_psig.venting"] && last.(s.rms) ≈ last.(s0.rms)
+    # a phase can set its own bin length; the other is then scored whole
+    own = F.read_study(study("phases = { venting = [1, 15], closed = { from = 15, to = 30, bin_s = 7.5 } }\n"))
+    @test [g.name for g in own.scored] == ["PT_psig.closed.1", "PT_psig.closed.2", "PT_psig.venting"] && F.n_residuals(own) == 2 + 29
+    # the results file has a column for every scored number
+    head = split(readline(F.study(study("bin_s = 5\nphases = { venting = [1, 15], closed = [15, 30] }\n"); quiet = true)), ',')
+    @test "res.PT_psig.venting.3" in head && "rms.PT_psig.venting" in head
+    @test_throws ErrorException F.read_study(study("bins = 5\n"))                                           # no such key
+    @test_throws ErrorException F.read_study(study("phases = { closed = { from = 15, to = 30, bin = 5 } }\n"))
+    # a fit on binned residuals finds the values the log was made with
+    write(joinpath(dir, "fit.toml"), """
+        max_evals = 40
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "TANK.P", sigma = 0.5 }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        bin_s = 3.5
+        [[parameter]]
+        name = "FILL.d_mm"
+        from = 2
+        to = 8
+        start = 6
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 22
+        """)
+    r = F.fit(joinpath(dir, "fit.toml"); quiet = true)
+    @test abs(r.values["FILL.d_mm"] - 4) < 0.1 && abs(r.values["BOTTLE.T_C"] - 27) < 0.3 && r.score < 0.5
+    record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
+    @test length(record["dataset"][1]["scored"]) == 8
 end
 
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin

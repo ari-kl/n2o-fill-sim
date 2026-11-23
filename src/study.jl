@@ -10,6 +10,19 @@ struct StudyRun
     actions::Vector{Action}
 end
 
+"""
+One scored number: a channel over a phase, or over one time bin of a phase. Which log samples it
+covers is worked out once, from the log, when the study is read; a run only fills in the value.
+"""
+struct Scored
+    name::String                              # "PT202_psig.vent1", or "PT202_psig.hold.3" for the third bin
+    channel::Int
+    phase::Int
+    idx::Vector{Int}                          # the log samples it covers
+    sigma::Float64                            # how far a difference is trusted here, in the log's units
+    binned::Bool
+end
+
 "A study file, read and checked."
 struct Study
     dir::String                               # where results go
@@ -25,8 +38,9 @@ struct Study
     work_limit::Int                           # give up on a run after this many part-flow evaluations
     runs::Vector{StudyRun}
     varied::Vector{String}
-    channels::Vector{Tuple{String,String,Float64,Float64}}   # (log column, model signal, sigma in the log's units, weight)
+    channels::Vector{NamedTuple}              # (log column, model signal, sigma in the log's units, weight, y: the log's readings)
     phases::Vector{Pair{String,Tuple{Float64,Float64}}}
+    scored::Vector{Scored}                    # every scored number, in the order of the residuals
     metrics::Vector{Pair{String,Dict{String,Any}}}
 end
 
@@ -55,6 +69,9 @@ _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict
 
 const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "mode", "n", "seed",
                      "vary", "case", "score", "metrics", "set")
+const _SCORE_KEYS = ("channels", "phases", "bin_s")
+const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight")
+const _PHASE_KEYS = ("from", "to", "bin_s")
 const _METRIC_FNS = ("final", "max", "min", "mean_over", "time_in_band", "first_crossing")
 
 """
@@ -138,17 +155,58 @@ function _study(d, base, path, dir, allowed)
     # How far each reading is trusted: said here, else by the manifest, else the default for its kind.
     column(name) = columns[findfirst(c -> c.name == name, columns)]
     trust(name, given) = (s = Float64(given); isnan(s) && (s = column(name).sigma); isnan(s) ? default_sigma(column(name).role) : s)
-    channels = Tuple{String,String,Float64,Float64}[(String(c["log"]), String(c["model"]), trust(c["log"], get(c, "sigma", NaN)), Float64(get(c, "weight", 1.0)))
-                                                    for c in get(score, "channels", [])]
-    isempty(channels) && !haskey(score, "channels") && append!(channels, [(c.name, c.target, trust(c.name, NaN), 1.0) for c in columns if !isempty(c.target)])
-    all(c -> c[3] > 0, channels) || error("$path: a channel's sigma must be positive")
+    for k in keys(score)
+        k in _SCORE_KEYS || error("$path: unknown key \"$k\" in [score]. Keys: $(join(_SCORE_KEYS, ", "))")
+    end
+    channels = NamedTuple[]
+    for c in get(score, "channels", [])
+        for k in keys(c)
+            k in _CHANNEL_SCORE_KEYS || error("$path: unknown key \"$k\" in a [score] channel. Keys: $(join(_CHANNEL_SCORE_KEYS, ", "))")
+        end
+        log = String(c["log"])
+        push!(channels, (; log, model = String(c["model"]), sigma = trust(log, get(c, "sigma", NaN)), weight = Float64(get(c, "weight", 1.0)), y = cols[log]))
+    end
+    isempty(channels) && !haskey(score, "channels") &&
+        append!(channels, [(; log = c.name, model = c.target, sigma = trust(c.name, NaN), weight = 1.0, y = cols[c.name]) for c in columns if !isempty(c.target)])
+    all(c -> c.sigma > 0, channels) || error("$path: a channel's sigma must be positive")
+    bin_s = Dict{String,Float64}()             # phase => bin length, where a phase gives its own
     if haskey(score, "phases")
         sched = sort(vcat(schedule, scene.schedule); by = a -> a.t)
-        phases = [String(k) => (p isa AbstractVector ? (Float64(p[1]), Float64(p[2])) :
-                                (f = _phase_time(p["from"], sched); (f, _phase_time(p["to"], sched; after = f)))) for (k, p) in score["phases"]]
+        phases = Pair{String,Tuple{Float64,Float64}}[]
+        for (k, p) in score["phases"]
+            if p isa AbstractVector
+                push!(phases, String(k) => (Float64(p[1]), Float64(p[2])))
+                continue
+            end
+            for key in keys(p)
+                key in _PHASE_KEYS || error("$path: unknown key \"$key\" in phase $k. Keys: $(join(_PHASE_KEYS, ", "))")
+            end
+            f = _phase_time(p["from"], sched)
+            push!(phases, String(k) => (f, _phase_time(p["to"], sched; after = f)))
+            haskey(p, "bin_s") && (bin_s[String(k)] = Float64(p["bin_s"]))
+        end
     end
     isempty(phases) && push!(phases, "all" => (0.0, until))
     sort!(phases; by = first)
+    # The scored numbers: for each channel and phase, the log samples that have a reading, as one
+    # group or cut into bins. An empty group or bin is left out here, so that every run of the
+    # study (and every evaluation of a fit) is scored on exactly the same numbers.
+    scored = Scored[]
+    for (ci, c) in enumerate(channels), (pi, (phase, (a, b))) in enumerate(phases)
+        idx = [i for (i, t) in enumerate(t_log) if a <= t <= b && t <= until && isfinite(c.y[i])]
+        width = get(bin_s, phase, Float64(get(score, "bin_s", 0.0)))
+        width >= 0 || error("$path: bin_s must be positive (or 0 for no bins)")
+        if width == 0
+            isempty(idx) || push!(scored, Scored("$(c.log).$phase", ci, pi, idx, c.sigma, false))
+            continue
+        end
+        nb = max(1, round(Int, (b - a) / width))             # equal bins, as near to bin_s long as fit the phase
+        bin(i) = min(nb, 1 + floor(Int, (t_log[i] - a) / (b - a) * nb))
+        for k in 1:nb
+            mine = [i for i in idx if bin(i) == k]
+            isempty(mine) || push!(scored, Scored("$(c.log).$phase.$k", ci, pi, mine, c.sigma, true))
+        end
+    end
     for (k, v) in get(d, "metrics", Dict())
         v isa AbstractDict || error("$path: metric $k must be a table like { fn = \"final\", signal = \"TANK.m\" }")
     end
@@ -159,7 +217,7 @@ function _study(d, base, path, dir, allowed)
         haskey(m, "signal") || error("$path: metric $name needs a signal")
     end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
-          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, channels, phases, metrics)
+          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, channels, phases, scored, metrics)
 end
 
 "A recorded signal at time `t`, by straight-line interpolation of the history."
@@ -174,58 +232,71 @@ end
 _as_logged(role, v, p_atm) = role === :pressure ? (v - p_atm) / PSI : role === :temperature ? v - 273.15 : v
 
 """
-    score_run(study, sim) -> (rms, residuals)
+    score_run(study, sim) -> (; rms, residuals, z)
 
 Compare a run with the study's log. The model is interpolated onto the log's times, and times with
 no log reading are skipped.
 
 `rms` has one entry per scored channel and phase, in the log's own units (psi, °C, kg): the number
-to read. `residuals` is what gets added up into the one-number `score`, and what a fitter
-minimises. Each difference is divided by how far that reading is trusted (`sigma`), so that a
-pressure and a temperature can be weighed against each other, and by the square root of the number
-of samples in its phase, so that a long quiet hold does not outvote a ten-second vent. The sum of
-squares of `residuals` is then the sum over channels and phases of (weight · rms / sigma)².
+to read.
+
+`z` has one entry per scored number (see `Scored`), with no units: a difference divided by how far
+that reading is trusted (`sigma`), so that a pressure and a temperature can be weighed against each
+other. For a channel over a whole phase it is weight · rms / sigma. For a time bin it is
+weight · (mean of model − log over the bin) / sigma, with its sign. The one-number `score` is the
+root mean square of `z`.
+
+`residuals` is what a fitter minimises. Its sum of squares is the sum of squares of `z`: a bin is
+one entry, and a whole phase is one entry per sample, each divided by the square root of the number
+of samples, so that a long quiet hold does not outvote a ten-second vent.
 """
 function score_run(st::Study, sim::Sim)
-    rms, residuals = Pair{String,Float64}[], Float64[]
     p_atm = st.scene.settings["P_atm_kPa"] * 1e3
     t_end = simtime(sim)
-    for (logname, model, sigma, weight) in st.channels
-        haskey(sim.hist, model) || error("no recorded signal named $model. Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
-        role = st.columns[findfirst(c -> c.name == logname, st.columns)].role
-        y = st.cols[logname]
-        for (phase, (a, b)) in st.phases
-            first_ = length(residuals) + 1
-            e2 = 0.0
-            for (i, t) in enumerate(st.t_log)
-                (a <= t <= b && t <= t_end && isfinite(y[i])) || continue
-                d = _as_logged(role, signal_at(sim, model, t), p_atm) - y[i]
-                e2 += d^2
-                push!(residuals, weight * d / sigma)
+    e2, n = zeros(length(st.channels), length(st.phases)), zeros(Int, length(st.channels), length(st.phases))
+    z, residuals = Pair{String,Float64}[], Float64[]
+    for (ci, c) in enumerate(st.channels)
+        haskey(sim.hist, c.model) || error("no recorded signal named $(c.model). Signals: $(join(sort!(collect(keys(sim.hist))), ", "))")
+        role = st.columns[findfirst(col -> col.name == c.log, st.columns)].role
+        d = fill(NaN, length(st.t_log))                       # model − log at each scored sample the run reached
+        for g in st.scored, i in g.idx
+            g.channel == ci && st.t_log[i] <= t_end && (d[i] = _as_logged(role, signal_at(sim, c.model, st.t_log[i]), p_atm) - c.y[i])
+        end
+        for g in st.scored
+            g.channel == ci || continue
+            ds = [d[i] for i in g.idx if isfinite(d[i])]
+            if isempty(ds)                                     # the run stopped before this one
+                push!(z, "res." * g.name => NaN)
+                continue
             end
-            n = length(residuals) - first_ + 1
-            n > 0 && (@views residuals[first_:end] ./= sqrt(n))
-            push!(rms, "rms.$logname.$phase" => (n == 0 ? NaN : sqrt(e2 / n)))
+            e2[ci, g.phase] += sum(abs2, ds)
+            n[ci, g.phase] += length(ds)
+            if g.binned
+                push!(residuals, c.weight * sum(ds) / length(ds) / g.sigma)
+                push!(z, "res." * g.name => residuals[end])
+            else
+                append!(residuals, c.weight .* ds ./ (g.sigma * sqrt(length(ds))))
+                push!(z, "res." * g.name => c.weight * sqrt(sum(abs2, ds) / length(ds)) / g.sigma)
+            end
         end
     end
-    rms, residuals
+    rms = ["rms.$(c.log).$phase" => (n[ci, pi] == 0 ? NaN : sqrt(e2[ci, pi] / n[ci, pi])) for (ci, c) in enumerate(st.channels) for (pi, (phase, _)) in enumerate(st.phases)]
+    (; rms, residuals, z)
 end
 
 """
-The one-number score of a run: the root mean square, over every scored channel and phase, of its
-RMS difference in units of that reading's `sigma`. About 1 means the model is, on average, as far
-from the log as the readings themselves can be trusted; 3 means three times that.
+The one-number score of a run: the root mean square of its scored numbers `z`, each a difference
+in units of that reading's `sigma`. About 1 means the model is, on average, as far from the log as
+the readings themselves can be trusted; 3 means three times that.
 """
-function study_score(st::Study, rms)
-    total, pairs, k = 0.0, 0, 0
-    for (_, _, sigma, weight) in st.channels, _ in st.phases
-        k += 1
-        isnan(last(rms[k])) && continue            # a phase with no log reading on this channel
-        total += (weight * last(rms[k]) / sigma)^2
-        pairs += 1
-    end
-    pairs == 0 ? NaN : sqrt(total / pairs)
+function study_score(s)
+    v = [last(p) for p in s.z if !isnan(last(p))]            # a run that stopped early is scored on what it reached
+    isempty(v) ? NaN : sqrt(sum(abs2, v) / length(v))
 end
+
+"How many numbers a complete run is scored on, and how long its residual vector is."
+n_scored(st::Study) = length(st.scored)
+n_residuals(st::Study) = sum(g -> g.binned ? 1 : length(g.idx), st.scored; init = 0)
 
 # A metric's argument in SI: `lo_psig = 600` is a gauge pressure, `value_C = 10` a temperature.
 function _si(m, key, p_atm)
@@ -307,23 +378,24 @@ function run_one(st::Study, run::StudyRun; keep = nothing)
     started = Base.time()
     sim, failed = simulate(st, run.overrides, run.actions)
     if sim === nothing
-        append!(row, [k => NaN for k in vcat("score", [first(r) for r in _rms_names(st)], first.(st.metrics))])
+        append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], first.(st.metrics))])
         append!(row, ["t_end" => NaN, "failed" => failed, "unconverged" => 0, "mass_error" => NaN, "energy_error" => NaN, "vented_kg" => NaN])
     else
-        rms, residuals = isempty(st.channels) ? (Pair{String,Float64}[], Float64[]) : score_run(st, sim)
-        push!(row, "score" => (isempty(st.channels) ? NaN : study_score(st, rms)))
-        append!(row, rms)
+        s = score_run(st, sim)
+        push!(row, "score" => study_score(s))
+        append!(row, s.rms)
+        append!(row, s.z)
         p_atm = st.scene.settings["P_atm_kPa"] * 1e3
         append!(row, [name => metric(sim, m, p_atm) for (name, m) in st.metrics])
         r = run_summary(sim)
         append!(row, ["t_end" => r.t_s, "failed" => replace(failed, ',' => ';'), "unconverged" => r.unconverged, "mass_error" => r.mass_error,
                       "energy_error" => r.energy_error, "vented_kg" => r.vented_kg])
-        keep === nothing || write_csv(keep, sim; columns = unique(vcat([c[2] for c in st.channels], [m["signal"] for (_, m) in st.metrics])))
+        keep === nothing || write_csv(keep, sim; columns = unique(vcat([c.model for c in st.channels], [m["signal"] for (_, m) in st.metrics])))
     end
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
 end
-_rms_names(st::Study) = ["rms.$(c[1]).$p" => NaN for c in st.channels for (p, _) in st.phases]
+_rms_names(st::Study) = ["rms.$(c.log).$p" => NaN for c in st.channels for (p, _) in st.phases]
 
 """
     study(path; resume = false, keep_traces = false) -> results file

@@ -47,6 +47,8 @@ channels = [{ log = "PT202_psig", model = "TANK.P" },
             { log = "TH_tank_C", model = "TANK.T", sigma = 1.0, weight = 1.0 }]   # sigma, weight: optional
 phases = { stall = [140, 236], vent1 = [236, 310] }      # seconds after t0, or
                                                           # { from = "AV201 open", to = "AV201 close" }
+bin_s = 30                                    # optional: one scored number per 30 s of each phase
+                                              #   (a phase table can carry its own bin_s)
 
 [metrics]                                     # optional numbers taken from each run
 loaded_kg = { fn = "final", signal = "TANK.m" }
@@ -61,9 +63,10 @@ before anything runs, as are metric functions and log columns.
 skipped. Each channel and phase gives an RMS difference in the log's own units (psi, °C, kg), in a
 column named `rms.<log column>.<phase>`. Those are the numbers to read.
 
-`score` is the one number to sort by, and it has no units. Each RMS is divided by how far that
-reading can be trusted, its `sigma`, and the score is the root mean square of those ratios over
-every channel and phase:
+`score` is the one number to sort by, and it has no units. It is made of **scored numbers**, each
+a difference divided by how far that reading can be trusted, its `sigma`. Without `bin_s` there is
+one scored number per channel and phase, weight · rms / sigma, and the score is their root mean
+square:
 
     score = sqrt( mean over channels and phases of (weight · rms / sigma)² )
 
@@ -71,6 +74,27 @@ So a score of 1 means the model is, on average, as far from the log as the readi
 can be trusted, and 3 means three times that. Two things follow. A pressure and a temperature can
 be scored together, because 5 psi and 1 K each count as one. And every phase counts once, however
 long it is, so a ten-second vent weighs as much as a twenty-minute hold.
+
+Every scored number is also a column, `res.<log column>.<phase>`, so a row can be checked number
+by number (for example, to throw out every run in which any one of them is over 3).
+
+**Time bins.** One number for a twenty-minute hold says how far off the model was on average, and
+nothing about whether it drifted the right way. With `bin_s`, each phase is cut into equal bins as
+near to that many seconds as fit it, and each bin is one scored number:
+
+    weight · (mean of model − log over the bin) / sigma
+
+It keeps its sign, so a fitter can see that the model is high early and low late. The columns are
+`res.<log column>.<phase>.<bin number>`; the per-phase `rms` columns stay as they are. The score is
+still the root mean square of the scored numbers, so a phase now counts once per bin: a long phase
+weighs more than a short one. A bin with no log reading is left out.
+
+Make bins **30 s or longer** for a slow process such as a hold or a fill. A fitter treats every
+scored number as a separate piece of information. Neighbouring samples of a slowly changing
+pressure are not: if the model is 10 psi high now it will be about 10 psi high two seconds from
+now, whatever the parameters. Short bins therefore count the same information many times, and
+the fit comes out more confident than the data justify. A bin should be about as long as it takes
+for the model's error to change of its own accord.
 
 `sigma` comes from the channel in `[score]` if given, else from the manifest's channel, else from
 the kind of reading: **5 psi for a pressure, 1 K for a temperature, 0.25 kg for a mass**. Set it
