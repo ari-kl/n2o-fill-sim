@@ -47,6 +47,7 @@ struct Study
     scored::Vector{Scored}                    # every scored number, in the order of the residuals
     targets::Vector{NamedTuple}               # features scored beside them (see `_target`)
     metrics::Vector{Pair{String,Dict{String,Any}}}
+    bands::NamedTuple                         # (on, signals, percentiles, grid_s): the spread over the runs to write (see `study`)
 end
 
 # A small generator of our own, so that a seeded study draws the same samples on every machine and
@@ -73,7 +74,8 @@ end
 _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict && get(spec, "log", false)))
 
 const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "mode", "n", "seed",
-                     "vary", "case", "score", "targets", "metrics", "set")
+                     "vary", "case", "score", "targets", "metrics", "set", "sets", "bands")
+const _BANDS_KEYS = ("signals", "percentiles", "grid_s")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
 const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight", "offset")
 const _PHASE_KEYS = ("from", "to", "bin_s", "discrepancy")
@@ -119,7 +121,9 @@ function _study(d, base, path, dir, allowed)
     sort!(vary; by = first)                    # a TOML table has no order; fix one
     names_v = String[first(v) for v in vary]
     apply_overrides!(deepcopy(scene), ["$k=$(_values(s)[1])" for (k, s) in vary])      # checks every name now
+    spans = [_span(s) for (_, s) in vary]
     mode = get(d, "mode", "grid")
+    haskey(d, "sets") && mode != "sets" && error("$path: `sets` is for mode = \"sets\"")
     sets = Vector{Pair{String,Float64}}[]
     prefix = String[]                          # put before a run's id where the values alone would not be unique
     if mode == "grid"
@@ -164,8 +168,26 @@ function _study(d, base, path, dir, allowed)
                 push!(sets, at(u)); push!(prefix, "m$traj.$step;")
             end
         end
+    elseif mode == "sets"
+        # The parameter sets come from a file, one row each: those an earlier study could not rule
+        # out (see `study_keep`), to be run here on what may be another scene and schedule.
+        haskey(d, "sets") || error("$path: mode \"sets\" needs `sets`, a CSV file with a column for each parameter and a row for each set")
+        isempty(vary) || error("$path: a sets study takes its parameters from the file; remove [vary]")
+        columns_, rows = _table(rel(d["sets"]))
+        append!(names_v, columns_)
+        missing_ = [k for k in names_v if try apply_overrides!(deepcopy(scene), ["$k=0"]); false catch; true end]
+        isempty(missing_) || error("$path: $(d["sets"]) has columns that are not parameters of this scene: $(join(missing_, ", "))")
+        isempty(rows) && error("$path: $(d["sets"]) has no sets")
+        for (i, row) in enumerate(rows)
+            length(row) == length(names_v) || error("$path: $(d["sets"]): set $i has $(length(row)) values for $(length(names_v)) columns")
+            # an empty cell leaves that parameter as the scene has it
+            push!(sets, [k => something(tryparse(Float64, cell), NaN) for (k, cell) in zip(names_v, row) if !isempty(cell)])
+            all(isfinite ∘ last, sets[end]) || error("$path: $(d["sets"]): set $i has a value that is not a number")
+            push!(prefix, "s$i;")              # two rows may hold the same set: the file is taken as it is
+        end
+        spans = [(v = [last(p) for set in sets for p in set if first(p) == k]; isempty(v) ? (NaN, NaN, false) : (minimum(v), maximum(v), false)) for k in names_v]
     else
-        error("$path: mode must be \"grid\", \"oat\", \"lhs\" or \"morris\", not \"$mode\"")
+        error("$path: mode must be \"grid\", \"oat\", \"lhs\", \"morris\" or \"sets\", not \"$mode\"")
     end
     isempty(prefix) && (prefix = fill("", length(sets)))
     cases = [(String(c["name"]), [Action(Float64(a["t"]), String(a["part"]), String(a["action"]), Float64(get(a, "value", 0.0))) for a in get(c, "actions", [])])
@@ -261,8 +283,22 @@ function _study(d, base, path, dir, allowed)
         haskey(m, "signal") || error("$path: metric $name needs a signal")
         m["fn"] == "slope" && haskey(m, "unit") && error("$path: metric $name: a slope is in the signal's SI units per second; `unit` would shift it, not scale it. Remove `unit`")
     end
+    b = get(d, "bands", Dict{String,Any}())
+    for k in keys(b)
+        k in _BANDS_KEYS || error("$path: unknown key \"$k\" in [bands]. Keys: $(join(_BANDS_KEYS, ", "))")
+    end
+    bands = (; on = haskey(d, "bands"), signals = String.(get(b, "signals", String[])), percentiles = Float64.(get(b, "percentiles", [5, 50, 95])), grid_s = Float64(get(b, "grid_s", 1.0)))
+    bands.grid_s > 0 || error("$path: [bands] grid_s must be positive")
+    (!isempty(bands.percentiles) && issorted(bands.percentiles) && allunique(bands.percentiles) && all(p -> 0 <= p <= 100, bands.percentiles)) ||
+        error("$path: [bands] percentiles must be numbers from 0 to 100 in rising order, like [5, 50, 95]")
+    if !isempty(bands.signals)                 # the scene's signals are those a run of it records at its start
+        known = keys(Sim(deepcopy(scene)).hist)
+        unknown = [k for k in bands.signals if !(k in known)]
+        isempty(unknown) || error("$path: [bands] names signals this scene does not record: $(join(unknown, ", ")). Signals: $(join(sort!(collect(known)), ", "))")
+        allunique(bands.signals) || error("$path: [bands] names a signal twice")
+    end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
-          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, [_span(s) for (_, s) in vary], mode, channels, phases, scored, targets, metrics)
+          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, spans, mode, channels, phases, scored, targets, metrics, bands)
 end
 
 # A target: one feature of a log channel (its minimum in a vent, its slope in a hold), to be
@@ -488,7 +524,7 @@ function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
 end
 
 "Run one member of a study and reduce it to a row of results (column name => value)."
-function run_one(st::Study, run::StudyRun; keep = nothing)
+function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
     row = Pair{String,Any}["id" => run.id, "case" => run.case]
     append!(row, [k => get(Dict(run.overrides), k, NaN) for k in st.varied])
     started = Base.time()
@@ -509,6 +545,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing)
         r = run_summary(sim)
         append!(row, ["t_end" => r.t_s, "failed" => replace(failed, ',' => ';'), "unconverged" => r.unconverged, "mass_error" => r.mass_error,
                       "energy_error" => r.energy_error, "vented_kg" => r.vented_kg])
+        seen === nothing || seen(sim)                          # the caller takes what it wants from the run before it is dropped
         keep === nothing || write_csv(keep, sim; columns = unique(vcat([c.model for c in st.channels], [g.model for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
     end
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
@@ -526,9 +563,16 @@ _rms_names(st::Study) = ["rms.$(c.log).$p" => NaN for c in st.channels for (p, _
 Run every member of the study in `path`, on as many threads as Julia was started with, and append
 one row per run to `<study>_results/results.csv` as it finishes. A run that fails is a row with
 the reason in `failed`. With `resume`, runs whose id is already in the file are skipped.
+
+With `[bands]` in the file, also write `bands.csv`: for each time on a grid, the percentiles of
+each named signal over the runs (see `percentile_bands`), and `metric_bands.csv`, the same for each
+metric. With several cases there is a `bands_<case>.csv` for each: cases are different scenarios,
+and are not pooled. Each run is reduced to its signals on the grid as it finishes, so what is held
+is runs × grid times × signals numbers and never a whole run.
 """
 function study(path; resume = false, keep_traces = false, quiet = false)
     st = read_study(path)
+    resume && !isempty(st.bands.signals) && error("$path: a study with [bands] signals cannot be resumed: the runs already done left no history to take a band from. Run it without --resume")
     mkpath(st.dir)
     out = joinpath(st.dir, "results.csv")
     done = Set{String}()
@@ -544,10 +588,12 @@ function study(path; resume = false, keep_traces = false, quiet = false)
     keep_traces && mkpath(joinpath(st.dir, "traces"))
     lock_ = ReentrantLock()
     header = !isfile(out)
+    grids = [zeros(0, length(st.bands.signals)) for _ in st.runs]          # a run that cannot be built stays empty
+    seen = isempty(st.bands.signals) ? nothing : (index, sim) -> (grids[index] = _gridded(st, sim))
     Threads.@threads :dynamic for k in eachindex(todo)
         run = todo[k]
         index = findfirst(r -> r.id == run.id, st.runs)
-        row = run_one(st, run; keep = keep_traces ? joinpath(st.dir, "traces", "$index.csv") : nothing)
+        row = run_one(st, run; keep = keep_traces ? joinpath(st.dir, "traces", "$index.csv") : nothing, seen = seen === nothing ? nothing : sim -> seen(index, sim))
         lock(lock_) do
             open(out, "a") do io
                 header && (println(io, join(first.(row), ",")); header = false)
@@ -556,7 +602,79 @@ function study(path; resume = false, keep_traces = false, quiet = false)
         end
     end
     st.mode == "morris" && _screening(st, out, quiet)
+    st.bands.on && _write_bands(st, out, grids, quiet)
     out
+end
+
+_band_grid(st::Study) = 0:st.bands.grid_s:st.until
+# A run's band signals on the study's time grid: one row per grid time the run reached. (A history
+# read beyond its end would give its last value for ever, so a run that stopped is cut off here.)
+function _gridded(st::Study, sim::Sim)
+    grid = _band_grid(st)
+    n = count(<=(simtime(sim) + 1e-6), grid)
+    [signal_at(sim, key, grid[i]) for i in 1:n, key in st.bands.signals]
+end
+
+# The p-th percentile of sorted values, by straight-line interpolation between the two nearest.
+function _percentile(v, p)
+    h = 1 + (length(v) - 1) * p / 100
+    k = floor(Int, h)
+    v[k] + (h - k) * (v[min(k + 1, end)] - v[k])
+end
+
+"""
+    percentile_bands(runs, percentiles) -> (n, bands)
+
+The spread of some signals over several runs. `runs` has one matrix per run, with a row per grid
+time and a column per signal; a run that stopped early has fewer rows. `n[i]` is how many runs
+reached grid time `i`, and `bands[i, signal, k]` the `percentiles[k]`-th percentile of the signal
+over those runs. There is a row for every grid time that at least one run reached.
+"""
+function percentile_bands(runs, percentiles)
+    rows, signals = maximum(r -> size(r, 1), runs; init = 0), isempty(runs) ? 0 : size(runs[1], 2)
+    n = [count(r -> size(r, 1) >= i, runs) for i in 1:rows]
+    bands = zeros(rows, signals, length(percentiles))
+    for i in 1:rows, s in 1:signals
+        v = sort!([r[i, s] for r in runs if size(r, 1) >= i])
+        bands[i, s, :] = [_percentile(v, p) for p in percentiles]
+    end
+    n, bands
+end
+
+_percent_label(p) = "p" * (isinteger(p) ? string(Int(p)) : string(p))
+
+# After a study with [bands]: bands.csv from the runs' gridded signals, and metric_bands.csv from
+# the results file (read back, as for a screening). Each case has its own.
+function _write_bands(st::Study, out, grids, quiet)
+    cases = unique(r.case for r in st.runs)
+    ps = st.bands.percentiles
+    cell(x) = isnan(x) ? "" : string(round(x, sigdigits = 7))
+    for case in (isempty(st.bands.signals) ? () : cases)
+        n, bands = percentile_bands([g for (g, r) in zip(grids, st.runs) if r.case == case], ps)
+        file = joinpath(st.dir, length(cases) == 1 ? "bands.csv" : "bands_$case.csv")
+        open(file, "w") do io
+            println(io, "t_s,n,", join(["$key.$(_percent_label(p))" for key in st.bands.signals for p in ps], ","))
+            for i in eachindex(n)
+                println(io, _band_grid(st)[i], ",", n[i], ",", join([cell(bands[i, s, k]) for s in eachindex(st.bands.signals) for k in eachindex(ps)], ","))
+            end
+        end
+        quiet || println("bands in ", file)
+    end
+    isempty(st.metrics) && return
+    head, rows = _table(out)
+    failed, case_col = findfirst(==("failed"), head), findfirst(==("case"), head)
+    file = joinpath(st.dir, "metric_bands.csv")
+    open(file, "w") do io
+        println(io, "case,metric,n,", join(_percent_label.(ps), ","))
+        for case in cases, (name, _) in st.metrics
+            c = findfirst(==(name), head)
+            # a run that stopped partway has numbers, but not ones to put beside the others
+            v = sort!(filter(isfinite, [something(tryparse(Float64, row[c]), NaN) for row in rows if row[case_col] == case && isempty(row[failed])]))
+            println(io, case, ",", name, ",", length(v), ",", join([isempty(v) ? "" : cell(_percentile(v, p)) for p in ps], ","))
+        end
+    end
+    quiet || println("metric bands in ", file)
+    nothing
 end
 
 """
