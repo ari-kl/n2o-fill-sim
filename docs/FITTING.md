@@ -78,22 +78,28 @@ datasets together (`weight` scales a whole dataset). See [STUDIES.md](STUDIES.md
 
 ## Setting up a fit
 
-Count the scored numbers against the parameters. A fit with about as many parameters as
-scored numbers can match anything and determines nothing. Two channels over three phases are six
-numbers. `bin_s` under `[dataset.score]` turns each long phase into several, and is the first
-thing to reach for when a fit has too little to go on.
+A fit always returns numbers. Whether they mean anything is decided before it runs, by these
+five choices.
 
-Choose which parameters are shared. Shared and per-dataset parameters are the point of the format. Physics and hardware that did not
-change between tests (heat-transfer coefficients, a vent's discharge coefficient, a wall's mass)
-should be shared. Things that differ from day to day and were not measured (how full the bottle
-was, the air temperature) should be per dataset. Getting that split wrong in either direction is
-the commonest way to fit nonsense.
-
-State what the model cannot do. If the model is known to be wrong in part of a log, say so
-with a `discrepancy` on that phase ([STUDIES.md](STUDIES.md), "Stated model error"). Without it the fit
-spends its parameters on an error they cannot remove, and returns biased values with a small
-spread, which is the worst combination. With it, the values that the rest of the log determines
-come out as they should.
+1. **Fix what was measured.** A bottle temperature read from its pressure, a wall mass from a
+   drawing, the weather on the day: put them in the scene or in `set` and do not fit them. Every
+   value left free is one the fit can use to hide an error somewhere else.
+2. **Count the scored numbers against the parameters.** A fit with about as many parameters as
+   scored numbers can match anything and determines nothing. Two channels over three phases are
+   six numbers. `bin_s` under `[dataset.score]` turns each long phase into several, and is the
+   first thing to reach for when a fit has too little to go on.
+3. **Choose which parameters are shared.** Physics and hardware that did not change between
+   tests (heat-transfer coefficients, a vent's discharge coefficient, a wall's mass) should be
+   shared. Things that differ from day to day and were not measured (how full the bottle was)
+   should be per dataset. Getting that split wrong in either direction is the commonest way to
+   fit nonsense.
+4. **State what the model cannot do.** If the model is known to be wrong in part of a log, say
+   so with a `discrepancy` on that phase ([STUDIES.md](STUDIES.md), "Stated model error").
+   Without it the fit spends its parameters on an error they cannot remove, and returns biased
+   values with a small spread, which is the worst combination.
+5. **Keep a log back.** Fit with one log held out and see whether it is predicted better than
+   before (next section). A fit that improves its own logs and worsens the one it did not see
+   has fitted those logs, not the hardware.
 
 ## Checking a fit on a log it never saw
 

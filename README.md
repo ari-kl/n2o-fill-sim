@@ -2,33 +2,33 @@
 
 > [!WARNING]
 > **Experimental and unvalidated.** This is a research and learning tool, not an engineering
-> one. Its results are model predictions that have been compared with two fill logs from one
-> test stand and with no measured temperature at all. Do not use it to set fill quantities,
-> pressures, relief settings, procedures or operating limits, or as the basis for any safety
-> decision. Nitrous oxide is hazardous; work with it under your organisation's safety rules
-> and qualified supervision.
+> one. Its results are model predictions that have been compared with four fill logs from one
+> set of hardware, only one of which has a measured tank temperature. Do not use it to set fill
+> quantities, pressures, relief settings, procedures or operating limits, or as the basis for
+> any safety decision. Nitrous oxide is hazardous; work with it under your organisation's safety
+> rules and qualified supervision.
 
-A simulator for filling a hybrid rocket's nitrous oxide run tank. You draw the plumbing (bottle,
-hoses, valves, orifices, regulator, tank, vent), press Simulate, and click valves while it runs.
-It shows pressure, temperature, mass and flow everywhere, and how the tank behaves when you vent,
-heat, wait in the sun, or leave a valve stuck. Think of it as LTspice for a nitrous fill.
+A simulator for filling a hybrid rocket's nitrous oxide run tank. Draw the plumbing, press
+Simulate, and click valves while it runs. It shows pressure, temperature, mass and flow
+everywhere in the system, and how the tank responds when you vent, heat, wait in the sun, or
+leave a valve stuck. Think of it as LTspice for a nitrous fill.
 
 ![A recorded fill replayed: the plumbing coloured by pressure while the tank vents, with the logged pressures and load cell overlaid on the plots](docs/screenshot.png)
 
-It is an analysis tool. It does not talk to any control system or hardware, and its numbers are
-model predictions: see [How far to trust it](#how-far-to-trust-it).
+What it is for:
 
-The same model runs without the window from the command line, many times over with parameters
-varied (a study), or inside a fitter that adjusts parameters to match test logs. Four logs come
-with it, as 10 Hz or 1 Hz extracts in `test/data`. "HF3" and "HF4" are two static hot-fire tests
-of a student hybrid motor (June and July 2026), and `scenes/hf4.toml` is that test stand's fill
-plumbing. The other two are from the same hardware: an HF3 cold flow with nitrous
-(`scenes/hf3cf.toml`), and a fill and sealed hold from a launch campaign, "LC26 day 4", which has
-thermistors on the tank (`scenes/lc26_day4.toml`).
+- **Building intuition.** Why a fill stalls, what a vent pulse actually buys, how fast a closed
+  tank warms. [docs/MODEL.md](docs/MODEL.md) starts with a plain-language account of the physics.
+- **Replaying a real fill.** Load a telemetry log, replay its valve sequence through the model,
+  and see where the two agree and where they do not.
+- **Asking "what if".** Change a bore, a bottle temperature or the weather and run it again, once
+  in the window or thousands of times from the command line.
 
-## Installing and running
+It is an analysis tool. It does not talk to any control system or hardware.
 
-Julia 1.13 is needed. It runs natively on Windows and Linux, and on WSL through WSLg.
+## Quick start
+
+You need Julia 1.13. It runs natively on Windows and Linux, and on WSL through WSLg.
 
 ```
 git clone https://github.com/ari-kl/n2o-fill-sim
@@ -36,36 +36,61 @@ cd n2o-fill-sim
 julia --project -e "using Pkg; Pkg.instantiate()"
 ```
 
-On Windows, install Julia first (`winget install julia -s msstore`, then `juliaup add 1.13.4`).
+**Windows.** Install Julia first (`winget install julia -s msstore`, then `juliaup add 1.13.4`).
 After the lines above, double-click `n2o-fill-sim.cmd`, or from a terminal run
 `n2o-fill-sim.cmd scenes\hf4.toml`.
 
-On Linux or WSL, install [juliaup](https://github.com/JuliaLang/juliaup) first. Then:
+**Linux or WSL.** Install [juliaup](https://github.com/JuliaLang/juliaup) first. Then:
 
 ```
-julia --project bin/n2o-fill-sim.jl scenes/hf4.toml             # open the window on a scene
-julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --replay test/data/hf4_fill_10hz.csv --t0 9020 --run
-julia --project bin/n2o-fill-sim.jl --help
+julia --project bin/n2o-fill-sim.jl scenes/hf4.toml
 ```
 
 The window appears about 3 s after launch. The first launch after installing or changing the code
 compiles first, which can take a minute.
 
-Nothing is fetched at run time. To use it somewhere without a network, first run
-`Pkg.instantiate()` for the project and for `test/`, start the program once, and set
-`JULIA_PKG_OFFLINE=true`. `Manifest.toml` is committed so every machine gets the same versions.
+Nothing is fetched at run time. To use it somewhere without a network, run `Pkg.instantiate()`
+for the project and for `test/` beforehand, start the program once, and set
+`JULIA_PKG_OFFLINE=true`. `Manifest.toml` is committed, so every machine gets the same versions.
+
+## A five-minute tour
+
+The repository includes a real fill to play with: `scenes/hf4.toml` is the fill plumbing of a
+student hybrid motor's test stand, and `test/data/hf4_fill_10hz.csv` is the telemetry from a
+static fire on it.
+
+**Watch a recorded fill.** This replays the logged valve sequence through the model and overlays
+the logged pressures and load cell on the plots:
+
+```
+julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --replay test/data/hf4_fill_10hz.csv --t0 9020 --run
+```
+
+Press `5` for maximum speed. You will see the fast fill, the stall as bottle and tank pressures
+meet, two vent pulses with the pressure rebounding after each, and a slow climb under the heater.
+Where the model's line leaves the logged one is where the model is wrong; MODEL.md says why for
+each case.
+
+**Drive it yourself.** Open the scene without a replay, press Simulate, then `Space` to run.
+Click the fill valves open and watch the tank fill and stall. Click the vent. Right-click a valve
+and stick it open to see what a failure does. The Tanks tab shows what the present load would do
+if the tank were sealed and left to warm to 30 °C and 35 °C.
+
+**Build your own.** Stop / edit returns to the editor. Pick parts from the palette, click to
+place them, and click one pin and then another to wire them. A new, empty schematic offers the
+example scenes to start from.
 
 ## The window
 
-In the editor, pick a part from the palette and click to place it, then click one pin and another
-to wire them. An empty schematic offers the example scenes in `scenes/` to open instead. Select a part to edit its parameters; hovering a parameter, or a part on the
-schematic, says what it means. The Settings tab has ambient conditions, an optional target
-pressure window (drawn as a band on the pressure plot when both limits are set) and the model's
-tuning coefficients. The Schedule tab is a table of scripted
-actions (time, part, action). Problems that would stop a run are listed in red at the bottom of
-the Build tab.
+### Editing
 
-| Editing | |
+Select a part to edit its parameters; hovering a parameter, or a part on the schematic, says what
+it means. The Settings tab has the ambient conditions, an optional target pressure window (drawn
+as a band on the pressure plot when both limits are set) and the model's tuning coefficients. The
+Schedule tab is a table of scripted actions (time, part, action). Problems that would stop a run
+are listed in red at the bottom of the Build tab.
+
+| | |
 |---|---|
 | Select | click; shift-click to add or remove; drag a box over empty space; `Ctrl+A` for everything |
 | Move, rotate, delete | drag the selection; `R`; `Delete` |
@@ -75,31 +100,43 @@ the Build tab.
 | View | right-drag pans, the wheel zooms, `F` fits the schematic to the window |
 | Files | `Ctrl+O`, `Ctrl+S` |
 
-Simulate starts the run paused; press Run or `Space`. Keys `1` to `5` set the speed (×1, ×5, ×20,
-×100, max). "Step 1 s" runs one second at that speed and pauses again. Left-click a valve to open or close it. Right-click any part to stick a valve open or
-closed, switch a heater or change a set-point. Hover any part for its pressures, flow and
-temperature. The plumbing cannot be changed while running; Stop / edit returns to the editor.
+### Running
 
-A shut valve is drawn filled, with a bar across it; an open one as an outline only; one part-way
-as an outline with part of the fill. The colours (red, green, amber) say the same again. The
-body shows where the valve is; from the click until it gets there, which while paused is until
-you run or step, its actuator takes the colour of where it was told to go and carries an arrow
-(outline pointing away from the body: opening; filled pointing at it: closing). Check
-valves, relief valves and regulators are filled while nothing passes and outlines while something
-does.
+| | |
+|---|---|
+| Start, pause | Simulate starts the run paused; Run or `Space` |
+| Speed | `1` to `5`: ×1, ×5, ×20, ×100, max |
+| Step | "Step 1 s" runs one second at the chosen speed and pauses again |
+| Valves | left-click opens or closes |
+| Faults and set-points | right-click a part: stick a valve open or closed, switch a heater, change a set-point |
+| Read a part | hover it for pressures, flow and temperature |
+| Back to editing | Stop / edit. The plumbing cannot be changed during a run. |
 
-A normally-open valve is open until something commands it shut, as on a powered-down panel. The
-panel says which valves are open for that reason.
+If the simulation cannot keep up with the speed asked for, it falls behind instead of stuttering,
+and the panel shows the speed achieved.
 
-The Tanks tab shows each tank's pressure, liquid share and temperatures, and what the present
-load would do if the tank were closed and warmed to 30 °C and 35 °C. The Signals tab plots any
-recorded signal. The View tab sets units and colours the plumbing by pressure, temperature or
-vapour share. Each wire is one colour, because a wire has no pressure drop in this model; the
-step in colour across a part is the drop it causes.
+### Reading the schematic
 
-If the simulation cannot keep up with the speed asked for, it falls behind rather than
-stuttering, and the panel shows the speed achieved. On WSL the window is software-rendered at
-10-20 ms a frame; on Windows it draws on the GPU.
+| Symbol | Meaning |
+|---|---|
+| Valve drawn filled, with a bar across | shut |
+| Valve drawn as an outline | open |
+| Outline with part of the fill | part-way through its stroke |
+| Arrow on the actuator | where the valve was told to go, until it gets there (outline pointing away: opening; filled pointing in: closing) |
+| Check valve, relief valve, regulator | filled while nothing passes, outline while something does |
+
+Red, green and amber say the same thing again in colour. A normally-open valve is open until
+something commands it shut, as on a powered-down panel; the panel lists which valves are open for
+that reason.
+
+The View tab sets units and colours the plumbing by pressure, temperature or vapour share. Each
+wire is one colour, because a wire has no pressure drop in this model; the step in colour across
+a part is the drop that part causes.
+
+### Tabs and export
+
+The Tanks tab shows each tank's pressure, liquid share and temperatures, and the warm-soak
+figures described above. The Signals tab plots any recorded signal.
 
 "Export CSV" writes two files next to the scene:
 
@@ -111,10 +148,12 @@ stuttering, and the panel shows the speed achieved. On WSL the window is softwar
   or clicked. Loaded as a schedule it repeats the run. "Keep my clicks as the schedule" does the
   same without leaving the window.
 
-## Headless runs
+On WSL the window is software-rendered at 10-20 ms a frame; on Windows it draws on the GPU.
 
-`--headless` runs the schedule or a replay with no window and prints a summary. Changes are given
-on the command line, so a scene file does not have to be edited to try something:
+## Running without the window
+
+`--headless` runs the schedule or a replay with no window and prints a summary. Changes go on the
+command line, so a scene file does not have to be edited to try something:
 
 ```
 julia --project bin/n2o-fill-sim.jl scenes/regulated_fill.toml --headless --until 1800 --csv out.csv
@@ -125,40 +164,55 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
     --csv out.csv --columns TANK.P,TANK.m
 ```
 
-`--set` changes a part's parameter or a setting by name and refuses a name that does not exist.
-`--schedule file.csv` adds actions from a file with columns `t_s,part,action,value`, the format
-of the exported `_events.csv`. `--sample-dt 0.5` sets the shortest interval between recorded samples (default 0.1 s). A replay runs to the end of its log unless `--until` says
-otherwise. Warnings (for example a heater that nothing switches on) are printed before the run.
-`--help` lists every option. The HF4 fill, 16 minutes of real time, simulates in about a third of
-a second.
+| Option | Does |
+|---|---|
+| `--set PART.param=value`, `--set settings.key=value` | changes one number; refuses a name that does not exist |
+| `--schedule file.csv` | adds actions from a file with columns `t_s,part,action,value` (the format of the exported `_events.csv`) |
+| `--until SECONDS` | where to stop; a replay otherwise runs to the end of its log |
+| `--sample-dt SECONDS` | shortest interval between recorded samples (default 0.1 s) |
+| `--csv file`, `--columns A,B` | write the recorded signals, or some of them |
+| `--help` | every option |
+
+Warnings, such as a heater that nothing switches on, are printed before the run. The HF4 fill, 16
+minutes of real time, simulates in about a third of a second.
 
 ## Test logs
 
 "Load test log..." or `--replay log.csv` reads a telemetry CSV. Pressure, mass and temperature
-columns can be overlaid on the plots, together with what saturation implies (the saturation
-temperature of a logged pressure, the saturation pressure of a logged temperature). Valve and
+columns can be overlaid on the plots, together with what saturation implies: the saturation
+temperature of a logged pressure, and the saturation pressure of a logged temperature. Valve and
 heater columns are matched to parts by name and can be replayed as the schedule.
 
-Check what a 1 means before replaying. Older logs (`valve_` columns, HF3 and HF4) use 1 = open.
-Some later logs write the same valves as `solenoid_` columns with 1 for a reported state of
-CLOSED. `solenoid_` and `relay_` columns are therefore never replayed until you choose.
+Check what a 1 means before replaying. Older logs (`valve_` columns) use 1 = open. Some later
+logs write the same valves as `solenoid_` columns with 1 for a reported state of CLOSED.
+`solenoid_` and `relay_` columns are therefore never replayed until you choose.
 
 A log that needs more than guessing (several boards on different clocks, valve columns with
 inverted meaning, bouncing states, offsets) is described once in a manifest and loaded with
 `--manifest log.toml` or through the same dialog. [docs/LOGS.md](docs/LOGS.md) has the rules and
 the manifest format.
 
+Four logs come with the repository, as 10 Hz or 1 Hz extracts in `test/data`:
+
+| Log | Scene | What it is |
+|---|---|---|
+| HF4 | `scenes/hf4.toml` | Fill before a static hot fire (July 2026): fill, two vents, heater |
+| HF3 | `scenes/hf4.toml` | An earlier hot fire (June 2026) on the same stand: one unvented fill |
+| HF3 cold flow | `scenes/hf3cf.toml` | Unvented nitrous fill, a sealed period, then a blowdown |
+| LC26 day 4 | `scenes/lc26_day4.toml` | Vented fill and a 1000 s sealed hold, with thermistors on the tank |
+
 ## Studies and fitting
 
-A study runs one scene many times with parameters varied, scores each run against a log, and
-writes one row per run. See [docs/STUDIES.md](docs/STUDIES.md).
+A **study** runs one scene many times with parameters varied, scores each run against a log, and
+writes one row per run. It answers "how much does this number matter?" and "which values can the
+log not rule out?". See [docs/STUDIES.md](docs/STUDIES.md).
 
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl study studies/hf4_vent.toml
 ```
 
-A fit adjusts parameters to match one or several logs at once and reports which of them the logs
-cannot tell apart. It takes a fit file that you write, or draft with `fit --init`. See
+A **fit** adjusts parameters to match one or several logs at once, and reports which of them the
+logs cannot tell apart. That report matters more than the fitted numbers. See
 [docs/FITTING.md](docs/FITTING.md).
 
 ```
@@ -168,7 +222,7 @@ julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml
 
 ## Scene files
 
-A scene is a TOML file you can also edit by hand. The unit of every number is in its name.
+A scene is a TOML file, which you can also edit by hand. The unit of every number is in its name.
 
 ```toml
 [settings]
@@ -196,15 +250,9 @@ action = "open"           # open, close, stuck_open, stuck_closed, unstick (valv
                           # on, off (heater, named by its vessel); set + value (regulator, relief)
 ```
 
-Wires are ideal, so everything wired together is one point. A Bottle or Tank cannot be wired
-straight to another vessel or to Atmosphere; put a valve, orifice or pipe between them.
-Regulator, CheckValve and ReliefValve pass flow from `a` to `b` only. A Tank's `bottom` pin draws
-liquid, `top` draws ullage, and `vent` draws ullage until the liquid reaches `vent_height_frac`,
-then liquid. A Bottle draws liquid if `draw_height_frac` is 0 (siphon tube or tipped), vapour if 1.
-
 | Part | What it models |
 |---|---|
-| Bottle, Tank | Liquid zone, ullage and wall at separate temperatures, exchanging heat and mass; cool as they deliver; can go liquid-full |
+| Bottle, Tank | Liquid, ullage and wall at separate temperatures, exchanging heat and mass; cool as they deliver; can go liquid-full |
 | Pipe | Friction for a length and bore, plus minor losses `K` |
 | Valve | On/off, bore and `Cd` or a `Cv`; normally-open or normally-closed; stroke time; can be stuck |
 | Orifice | Fixed restriction: orifice plate, quick-disconnect, a fitting |
@@ -213,39 +261,43 @@ then liquid. A Bottle draws liquid if `draw_height_frac` is 0 (siphon tube or ti
 | Atmosphere | Where vented nitrous goes; totals what was lost |
 | Junction, Gauge | A tee; a pressure and temperature reading |
 
-Each part kind's parameters, with their meanings, are in one table at the top of `src/scene.jl`;
-the property panel shows the same text.
+Rules worth knowing:
+
+- Wires are ideal, so everything wired together is one point.
+- A Bottle or Tank cannot be wired straight to another vessel or to Atmosphere. Put a valve,
+  orifice or pipe between them.
+- Regulator, CheckValve and ReliefValve pass flow from `a` to `b` only.
+- A Tank's `bottom` pin draws liquid, `top` draws ullage, and `vent` draws ullage until the liquid
+  reaches `vent_height_frac`, then liquid.
+- A Bottle draws liquid if `draw_height_frac` is 0 (siphon tube, or tipped) and vapour if 1.
+
+Every parameter of every part kind, with its meaning, is in one table at the top of
+`src/scene.jl`; the property panel shows the same text.
 
 ## How far to trust it
 
-[docs/MODEL.md](docs/MODEL.md) has the equations, their sources, what is left out, the
-calibration, and background numbers for planning a fill. In short:
+The model has the right structure and the right fluid properties. It has been fitted to one fill
+and compared with three more. It is not validated. [docs/MODEL.md](docs/MODEL.md) has the detail;
+in short:
 
-- Properties are the reference equation of state and match CoolProp to round-off.
-- The plumbing in `scenes/hf4.toml` was fitted to the HF4 hot-fire log (five numbers adjusted).
-  After fitting, tank pressure follows the log within about 5 psi RMS at the stall, 16 psi through
-  the vents and 3 psi through the heater period, and the final load is 9.5 kg against 9.5-9.8 kg
-  measured.
-- Run unchanged against the HF3 log (a different day and procedure), it gets the stall pressure
-  within 6 psi and the final load within the load cell's uncertainty, but reaches the stall about
-  20 s too early.
-- Two further logs, again with nothing in the model re-fitted: an HF3 cold flow (tank pressure
-  within 2.5 psi RMS through a 100 s sealed period; 4.6 kg loaded against 4.3 kg on the load cell)
-  and LC26 day 4 (a 1000 s sealed hold followed within 5 psi RMS once the outside heat input was
-  fitted; the vented fill only within about 33 psi). The LC26 thermistors show the tank wall within
-  about 1 K of the liquid, where the model's single wall temperature sits several kelvin above it:
-  see MODEL.md, "Further checks".
-- Known disagreements: the middle of the fast fill is too quick in both tests; at HF4's first stall
-  the model holds 8.3 kg where the load cell reads 6.7 kg (the load cell may have been hanging up,
-  see MODEL.md section 8, but that is not established).
-- Several inputs are guesses nobody has measured (bottle size and contents, hose lengths, wall
-  masses, heater power, vent discharge coefficient). They are marked `[guess]` or `[fit]` in the
-  scene file. MODEL.md section 9 lists what to measure.
-- The first ~20 s of a fill and the contents of the lines are not modelled (see MODEL.md,
-  "What is left out").
-- It has not been checked against a regulated fill or a fill to a lower pressure, and against a
-  measured temperature and a long hold only once (LC26 day 4). Treat those results as showing
-  which way things go and roughly how fast.
+| | |
+|---|---|
+| Fluid properties | The reference equation of state; they match CoolProp to round-off. |
+| Tank pressure through stalls, holds and heating | Within 3 to 8 psi RMS of the logs. |
+| Tank pressure through the fast part of a fill | 15 to 60 psi off. The middle of a fill is too quick in the model, and the first 20 s are not modelled at all. |
+| Loaded mass at the end of a fill | Within about 0.5 kg of the load cell on the three tests that have one. |
+| A long sealed hold | The tank warms about twice as fast as the model's outside heat allows. The cause is open. |
+
+Things to keep in mind:
+
+- Several inputs are guesses nobody has measured, above all how full the supply bottle was. They
+  are marked `[guess]` or `[fit]` in the scene files, and MODEL.md lists what to measure.
+- The test logs do not determine the model's heat-transfer coefficients. Those are published
+  values, not calibrated ones.
+- The lines between vessels hold no fluid, so hose charging and trapped liquid do not appear.
+- It has not been checked against a regulated fill or a fill to a lower pressure.
+
+Treat a result as showing which way things go and roughly how fast.
 
 ## Tests
 
@@ -257,7 +309,6 @@ julia --project test/stress.jl            # worst cases: a supercritical bottle,
 ```
 
 `test/` needs its own `Pkg.instantiate()` once (it adds CoolProp, to check the property code).
-Keep the mouse away from the window while `gui_input.jl` runs, because real input reaches it too.
 
 ## Layout
 
@@ -273,15 +324,14 @@ src/logs.jl           reading test logs, column meaning, manifests, overlay and 
 src/study.jl          studies: parameter sets, scoring, metrics
 src/fit.jl            fitting to several logs, identifiability report, calibration records
 src/gui*.jl           the window: state and loop, schematic, panels, plots, dialogs
-scenes/               hf4.toml (fitted to the HF4 log), hf3cf.toml and lc26_day4.toml (further
-                      logs), regulated_fill.toml (regulated hot-day fill)
+scenes/               example scenes, each matching a log in test/data, plus a regulated fill
 studies/              an example study file
 assets/               the window icon
 test/                 tests, benchmark, stress cases, and extracts of the fill logs
-docs/MODEL.md         equations, sources, omissions, calibration, sensor notes, background numbers
+docs/MODEL.md         how the model works, what it leaves out, how it compares with the logs
 docs/LOGS.md          how test logs are read; the manifest format
 docs/STUDIES.md       running a scene many times with parameters varied, scored against a log
-docs/FITTING.md       fitting parameters to several logs at once; what the logs do and do not determine
+docs/FITTING.md       fitting parameters to several logs at once
 ```
 
 ## Licence
