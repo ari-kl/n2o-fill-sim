@@ -75,7 +75,7 @@ the Build tab.
 | Files | `Ctrl+O`, `Ctrl+S` |
 
 Simulate starts the run paused; press Run or `Space`. Keys `1` to `5` set the speed (×1, ×5, ×20,
-×100, max). Left-click a valve to open or close it. Right-click any part to stick a valve open or
+×100, max). "Step 1 s" runs one second at that speed and pauses again. Left-click a valve to open or close it. Right-click any part to stick a valve open or
 closed, switch a heater or change a set-point. Hover any part for its pressures, flow and
 temperature. The plumbing cannot be changed while running; Stop / edit returns to the editor.
 

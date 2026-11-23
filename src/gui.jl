@@ -68,6 +68,7 @@ Base.@kwdef mutable struct App
     sim::Union{Nothing,Sim} = nothing
     paused::Bool = true
     speed::Float64 = 1.0
+    step_left::Float64 = 0.0                  # simulated seconds of a "Step" still to run before pausing again
     rate::Float64 = 0.0                       # simulated seconds per wall second actually achieved
     solver_ms::Float64 = 0.0                  # wall time the last frame spent stepping the simulation
     frame_ms::Float64 = 0.0                   # wall time the last frame spent in our code (solver + building the UI)
@@ -357,16 +358,21 @@ function frame(app::App)
     size = unsafe_load(io.DisplaySize)
     dt = clamp(unsafe_load(io.DeltaTime), 0.001f0, 0.1f0)
     app.solver_ms = 0.0
+    # Pausing, stopping the run, or the solver giving up abandons a step.
+    (app.paused || (running(app) && !isempty(app.sim.failed))) && (app.step_left = 0.0)
     if running(app) && !app.paused && isempty(app.sim.failed)
         # Give the solver at most 12 ms of each frame. If that is not enough to keep up (the first
         # seconds of a fill, or a high speed setting) simulated time falls behind rather than the
         # window stuttering; the panel shows the speed actually achieved.
-        start, want, done = seconds(), app.speed * dt, 0.0
+        # A step is an ordinary run, at the chosen speed, that pauses itself when its time is used up.
+        stepping = app.step_left > 0
+        start, want, done = seconds(), stepping ? min(app.speed * dt, app.step_left) : app.speed * dt, 0.0
         while done < want - 1e-9 && seconds() - start < 0.012 && isempty(app.sim.failed)
             done += advance!(app.sim, want - done; max_steps = 1)
         end
         app.solver_ms = 1e3 * (seconds() - start)
         app.rate = 0.9 * app.rate + 0.1 * done / dt
+        stepping && (app.step_left -= done) < 1e-9 && (app.paused = true; app.step_left = 0.0)
     end
     shortcuts(app)
     side = min(px(400), 0.45f0 * size.x)

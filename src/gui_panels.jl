@@ -119,7 +119,10 @@ function run_header(app::App)
     sim, net = app.sim, app.sim.net
     button(app.paused ? "Run" : "Pause") && (app.paused = !app.paused)
     tip("Space")
-    ig.SameLine(); button("Step 1 s") && advance!(sim, 1.0)
+    # A step is worked off by the frame loop like any running, so a second that is slow to solve
+    # cannot freeze the window. Pressing again while one is under way adds another second.
+    ig.SameLine(); button("Step 1 s") && (app.step_left += 1.0; app.paused = false)
+    tip("Run one second at the chosen speed, then pause again.")
     ig.SameLine()
     if button("Stop / edit")
         app.sim, app.want_fit = nothing, true
@@ -131,7 +134,7 @@ function run_header(app::App)
         ig.SameLine()
     end
     ig.NewLine()
-    text("t = $(round(simtime(sim), digits = 1)) s    running at ×$(round(app.rate, digits = 1))")
+    text("t = $(round(simtime(sim), digits = 1)) s    " * (app.step_left > 0 ? "stepping, $(round(app.step_left, digits = 1)) s to go" : "running at ×$(round(app.rate, digits = 1))"))
     tip("Frame $(round(1e3 * unsafe_load(ig.GetIO().DeltaTime), digits = 1)) ms: solver $(round(app.solver_ms, digits = 1)) ms, building the display $(round(app.frame_ms - app.solver_ms, digits = 1)) ms, the rest is the graphics driver and waiting for the screen.")
     isempty(sim.failed) || coloured_wrapped(WARN4, sim.failed)
     button("De-energise all valves") && fail_safe!(sim)
