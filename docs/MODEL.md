@@ -99,14 +99,35 @@ Two details make this dependable in practice:
   dead end's own pressure, it stops earlier: behind a shut valve a regulator's outlet rests at
   min(supply, set-point) and never falls with the supply; a check valve stops one cracking
   pressure short; a relief valve reseats at its set pressure.
-- **The solve is Newton's method, with a fallback.** It works to a mass imbalance of 1e-9 of the
-  largest flow. It also stops once no pressure moves by more than 0.01 Pa, because the flow laws
-  carry round-off of their own (largest with supercritical fluid upstream); an imbalance under
-  1e-6 of the largest flow is then accepted. If Newton does not settle (a check valve cracking, a
-  restriction starting to choke), each junction is balanced in turn with its neighbours held,
-  repeatedly. A solve that still fails is counted, and the window shows the count in amber. A
-  junction that is in balance and that no flow responds to is held where it is while the others
-  are solved; left in, its empty row would make the whole system singular.
+- **Parts that open on pressure are planned in rounds.** Regulators, check valves and relief
+  valves open and shut on the pressures being solved for. After each solve the plan is checked,
+  and a part that was planned as shut and turns out open sends the solve round again with that
+  part in. A part found open this way stays in for the rest of that solve. Without that rule two
+  check valves in series, or regulators in series, could flip each other shut in turn until the
+  rounds ran out, leaving no flow and the full supply pressure across open parts. With the set
+  only growing, the rounds end after at most one per pressure-operated part.
+- **The solve is Newton's method.** It works to a mass imbalance of 1e-9 of the largest flow. It
+  also stops once no pressure moves by more than 0.01 Pa, because the flow laws carry round-off
+  of their own (largest with supercritical fluid upstream); an imbalance under 1e-6 of the
+  largest flow is then accepted. A junction that is in balance and that no flow responds to is
+  held where it is while the others are solved; left in, its empty row would make the whole
+  system singular.
+- **Two rules keep Newton from cycling.** No pressure moves more than 20 bar in a step, and a
+  step is halved (twice at most) if the imbalance does not fall. And a step may not jump a
+  pressure-operated part's band. Outside its band (shut, or fully open) such a part's area does
+  not answer the pressures, so the Jacobian knows nothing of the band ahead, which is 30 psi
+  wide for a default regulator and 0.3 psi for a default check valve. A step that would carry a
+  part from outside its band past the middle of it is cut to stop at the middle; the next step
+  has the part's real slope. Circuit simulators limit the voltage step across a diode for the
+  same reason.
+- **A fallback handles what is left.** If Newton does not settle (a restriction starting to
+  choke; the top of the two-phase dome, where the flux through a restriction turns from falling
+  to rising as its upstream pressure climbs), each junction is balanced in turn with its
+  neighbours held. That cannot fail, since a junction's imbalance falls steadily as its own
+  pressure rises, but it closes in slowly along pipes in series. Its use is to get off the
+  corner: Newton is tried again after eight passes, and once more after sixty further passes.
+- **A solve that still fails is counted,** and the window shows the count in amber. It is not
+  harmless: the flows it leaves do not balance, so mass goes missing between vessels.
 
 ### Time stepping
 
@@ -446,9 +467,13 @@ heater was switched on, not what it delivered.
 The 990 s HF4 replay takes about 0.3 s (559 solver steps, about 230,000 equation-of-state
 evaluations). In the window at ×1 the solver uses a few hundredths of a millisecond of a typical
 frame and 3.5 ms in the worst single step. `test/stress.jl` drives scenes nobody tuned (a bottle
-heated until supercritical, and random plumbing from default parts); chains of check valves and
-regulators are the remaining weak spot, with junction solves that fail to settle and frames of up
-to about 0.6 s. `test/bench.jl` prints these numbers.
+heated until supercritical, and 150 random plumbings from default parts, valves opened and
+toggled). No junction solve fails in either. The costliest single solver step in them takes
+8,300 part-flow evaluations, about 22 times HF4's average step: the hot bottle's line passing
+the top of the two-phase dome, a step the ODE solver attempts several times over, with solves
+that go to the fallback and back. Nothing bounds the cost of one step: it grows with the attempts
+the ODE solver rejects, and a solve that fails costs about a hundred times one that does not.
+`test/bench.jl` prints the HF4 numbers.
 
 ### HF3 cold flow and LC26 day 4
 
