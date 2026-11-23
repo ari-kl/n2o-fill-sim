@@ -21,6 +21,29 @@ strided(k) = plot_spec(Stride = 8k)
 # every digit, under the mouse that is choosing the time.
 legend_label(key, x) = key * ":  " * lpad(string(round(x, sigdigits = 4)), 8, '\u2007')
 
+"""
+The target pressure window from the settings, as a faint band across the pressure plot with its
+limits written above it. Drawn straight onto the plot rather than as a plot item, so that it neither
+takes a legend entry nor stretches the automatic pressure axis to include it: off the axis, it is
+simply out of sight. Nothing is drawn unless both limits are set.
+"""
+function target_band(app::App)
+    lo, hi = app.scene.settings["target_lo_psig"], app.scene.settings["target_hi_psig"]
+    hi > lo > 0 || return
+    limits = ImPlot.GetPlotLimits()
+    y(psig) = shown(app, :pressure, psig * PSI + p_atm(app))  # the settings are in psig, the axis in the chosen unit
+    a, b = ImPlot.PlotToPixels(limits.X.Min, y(hi)), ImPlot.PlotToPixels(limits.X.Max, y(lo))
+    dl = ImPlot.GetPlotDrawList()
+    ImPlot.PushPlotClipRect()
+    ig.AddRectFilled(dl, (a.x, a.y), (b.x, b.y), col(70, 200, 110, 36))
+    ig.AddLine(dl, (a.x, a.y), (b.x, a.y), col(70, 200, 110, 110), 1f0)
+    ig.AddLine(dl, (a.x, b.y), (b.x, b.y), col(70, 200, 110, 110), 1f0)
+    # The label sits above the band, to leave what is inside it (the part being judged) clear.
+    ig.AddText(dl, (a.x + px(4), a.y - ig.GetFontSize() - px(1)), col(150, 220, 170, 200), "target " * fmt(app, :pressure, lo * PSI + p_atm(app); with_unit = false) * " to " * fmt(app, :pressure, hi * PSI + p_atm(app)))
+    ImPlot.PopPlotClipRect()
+    nothing
+end
+
 function plot_panel(app::App)
     sim = app.sim
     n = length(sim.t_hist)
@@ -72,6 +95,7 @@ function plot_panel(app::App)
             beside = w - legend_w - px(34) >= px(150)             # 34: the colour patch and the legend's padding
             ImPlot.SetupLegend(beside ? ImPlot.ImPlotLocation_NorthEast : ImPlot.ImPlotLocation_NorthWest,
                                beside ? ImPlot.ImPlotLegendFlags_Outside : ImPlot.ImPlotLegendFlags_None)
+            kind === :pressure && target_band(app)
             for key in keys_
                 c = get!(app.cache, key, Float64[])
                 length(c) > n && empty!(c)
