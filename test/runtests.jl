@@ -2206,6 +2206,8 @@ end
     @test sim.hist["LC.m_read"][end] ≈ sim.hist["TANK.m"][end] atol = 0.01
 end
 
+include("control.jl")
+
 @testset "window icon files load at their sizes" begin
     icons = N2OFillSim.window_icons()
     @test size.(icons) == [(16, 16), (32, 32), (48, 48)]

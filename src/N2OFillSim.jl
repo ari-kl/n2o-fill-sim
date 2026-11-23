@@ -11,6 +11,7 @@ include("network.jl")
 include("logs.jl")
 include("gui.jl")
 include("study.jl")
+include("control.jl")
 include("fit.jl")
 
 const USAGE = """
@@ -31,9 +32,10 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
   --csv out.csv           headless: write the recorded signals, and the action log as out_events.csv
   --columns A,B,...       with --csv: write only these signals (for example TANK.P,TANK.m)
 
-       julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces]
+       julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces] [--allow-julia-policy]
   runs a scene many times with parameters varied and scores each run (see docs/STUDIES.md);
-  it uses as many threads as Julia was started with (-t)
+  it uses as many threads as Julia was started with (-t). --allow-julia-policy lets a study's
+  controller run a policy written in Julia (kind = "julia"), which is code from a file
        julia --project bin/n2o-fill-sim.jl study keep results.csv [--cutoff 3] [--nth 2]
   prints which of a study's runs its log could not rule out (those with fewer than --nth scored
   numbers further than --cutoff from the log) and writes their parameter sets to kept.csv beside it
@@ -50,7 +52,7 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
 """
 
 const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout", "--profile", "--profile-n", "--cutoff", "--nth", "--bands")
-const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init")
+const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init", "--allow-julia-policy")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
 function options(args)
@@ -105,8 +107,8 @@ function main(args = ARGS)
     end
     if !isempty(files) && files[1] == "study"
         length(files) == 3 && files[2] == "keep" && return study_keep(files[3]; cutoff = parse(Float64, opt("--cutoff", "3")), nth = parse(Int, opt("--nth", "2")))
-        length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]   or   study keep results.csv [--cutoff 3] [--nth 2]")
-        return study(files[2]; resume = flag("--resume"), keep_traces = flag("--keep-traces"))
+        length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces] [--allow-julia-policy]   or   study keep results.csv [--cutoff 3] [--nth 2]")
+        return study(files[2]; resume = flag("--resume"), keep_traces = flag("--keep-traces"), allow_julia_policy = flag("--allow-julia-policy"))
     end
     path = isempty(files) ? "" : files[1]
     isempty(path) || isfile(path) || flag("--headless") && error("no such scene file: $path")

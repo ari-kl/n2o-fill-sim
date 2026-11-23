@@ -180,6 +180,7 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --headless \
 | `--until SECONDS` | where to stop; a replay otherwise runs to the end of its log |
 | `--sample-dt SECONDS` | shortest interval between recorded samples (default 0.1 s) |
 | `--csv file`, `--columns A,B` | write the recorded signals, or some of them |
+| `study file.toml --allow-julia-policy` | runs a study whose controller has a policy written in Julia, which is code from a file ([docs/STUDIES.md](docs/STUDIES.md)) |
 | `--help` | every option |
 
 Warnings, such as a heater that nothing switches on, are printed before the run. The HF4 fill, 16
@@ -226,6 +227,11 @@ study with `mode = "sets"` and `[bands]` runs them on the scenario to predict, a
 draws the spread behind the live plots ("Load bands..." or `--bands`). See "Prediction bands" in
 [docs/STUDIES.md](docs/STUDIES.md); `studies/hf4_sample.toml` and `studies/hf4_bands.toml` are a
 worked example.
+
+A study can also run a controller inside each run: policies that read the instruments at a fixed
+tick and command valves and heaters, such as a vent that holds a pressure band. See "Control
+policies" in [docs/STUDIES.md](docs/STUDIES.md). A policy written in Julia runs only with
+`study file.toml --allow-julia-policy`.
 
 A fit adjusts parameters to match one or several logs at once, and reports which of them the
 logs cannot tell apart. That report matters more than the fitted numbers. See

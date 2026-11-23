@@ -1284,6 +1284,16 @@ function act!(sim::Sim, part, action, value = 0.0; record = true)
     true
 end
 
+"""
+Add an action to what is still to come in the schedule, after any already there for the same
+time. `advance!` applies it when it falls due, as it does the scene's own schedule.
+"""
+function schedule!(sim::Sim, a::Action)
+    k = searchsortedlast(view(sim.schedule, sim.next_action:length(sim.schedule)), a; by = x -> x.t)
+    insert!(sim.schedule, sim.next_action + k, a)
+    sim
+end
+
 "Drop every valve to its de-energised (fail) state, as on loss of power."
 fail_safe!(sim::Sim) = foreach(e -> e.kind === :valve && act!(sim, e.name, "deenergise"), sim.net.edges)
 

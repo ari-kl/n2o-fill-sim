@@ -5,8 +5,8 @@ there is one, and reduces each run to a row of numbers. It is how to ask "which 
 fits this log best", "how sensitive is the loaded mass to the bottle temperature", or, with no log
 at all, "how long does the tank stay above 800 psig for each of these fill plans".
 
-This file covers the study file format, how runs are scored, screening for the parameters
-that matter, and prediction bands (the spread of a prediction over every parameter set a log
+This file covers the study file format, how runs are scored, control policies (a controller
+inside the runs), screening for the parameters that matter, and prediction bands (the spread of a prediction over every parameter set a log
 could not rule out). The scoring section also applies to fits ([FITTING.md](FITTING.md)), which minimise
 the same score.
 
@@ -240,6 +240,139 @@ error).
 Every row also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
 wall time. A run that cannot be built or does not finish is still a row.
+
+## Control policies
+
+A study's runs normally follow a schedule fixed in advance: the scene's own, a replayed log's and
+each case's actions. A `[controller]` table adds a controller that reads the instruments at a
+fixed tick and commands valves and heaters as the run goes on, the way a vent controller or an
+operator would. It is how to ask "how many times does the vent cycle to hold this band", or "how
+much is loaded by the time the tank has settled", where the answer depends on what was commanded
+and the commands depend on what the run does.
+
+```toml
+scene = "../scenes/hf4.toml"
+until = 900
+
+[[case]]
+name = "fill"
+actions = [{ t = 2, part = "AV201", action = "open" }, { t = 2, part = "AV203", action = "open" }]
+
+[controller]
+dt = 0.2                                      # the tick, seconds (default 0.2)
+latency_s = 0.0                               # a reading is what the instrument showed this long before the tick
+actuation_delay_s = 0.0                       # a command reaches its part this long after the tick that sent it
+stand_ins = []                                # true signals a policy may read as if they were instruments
+noise = { "PT202.P_read" = { sigma_psi = 2 } } # optional: noise added to a reading (sigma in SI, sigma_psi or sigma_K)
+
+[[controller.policy]]
+name = "vent"
+kind = "hysteresis"
+reading = "PT202.P_read"
+actuator = "AV204"
+open_above_psig = 800
+close_below_psig = 760
+min_open_s = 1                                # it stays open at least this long once opened
+min_shut_s = 10                               #   and shut at least this long once shut
+
+[vary]
+"controller.vent.close_below_psig" = [740, 760, 780]
+```
+
+Without a `[controller]` a study runs exactly as it always has: none of what follows is used.
+
+### Ticks
+
+The controller ticks at t = 0, dt, 2 dt, and so on, to the end of the run. At each tick the run is
+brought to the tick, its readings are taken, and the policies act in the order they are listed.
+The solver is not stopped at the ticks: it runs ahead as far as the physics allows and the state
+at the tick is read off its interpolant, so a tick at which nothing is commanded costs a sample,
+not a restart. A command goes into the run's schedule like any other action and is applied
+`actuation_delay_s` after its tick. A policy sends a command only when what it wants changes, so
+a valve held open is not told to open again at every tick.
+
+A sample is recorded at every tick, so a run with a controller is recorded at least that densely,
+whatever `sample_dt` says.
+
+### Readings and stand-ins
+
+A policy sees only the readings it declares, taken as an instrument would report them: a Gauge's
+`P_read` or `T_read`, a LoadCell's `m_read` (with the sensor parameters set on that part; MODEL.md
+section 8). A gauge with no sensor parameter set reads the truth, so its `P_read` is its `P`, as
+in scoring. Each reading is the recorded signal at `latency_s` before the tick, plus the noise
+given for it, if any.
+
+Sometimes a policy has to act on something no instrument on the stand measures, such as the true
+mass in the tank. Name that signal in `stand_ins` and a policy may read it. The study then says so:
+every row has a `stand_ins` column listing them, so a result that leaned on a quantity nobody
+could have measured is marked as such. A true signal not in `stand_ins` is an error when the study
+is read, as is a stand-in nothing reads.
+
+The noise on a reading is drawn from the same small generator a seeded study uses, seeded from
+the run's parameters other than the controller's and its case. Two runs that differ only in
+controller settings therefore see the same noise, so a difference between them is the
+controller's doing and not the luck of the draw, and the same run gives the same noise on any
+number of threads and with `--resume`.
+
+### Units
+
+Settings that are levels (`open_above`, `close_below`, `above`) are given in SI, as an absolute
+pressure in Pa or a temperature in K, or by their name with `_psig` or `_C` for a gauge pressure or
+a temperature in Celsius, as metric arguments are. Times are in seconds. A noise sigma is a
+difference, so it takes `sigma` (SI), `sigma_psi` or `sigma_K`, never a gauge zero. The scene has
+no display units of its own (those are a window setting), so a study file says its units by name.
+
+### Policies
+
+| `kind` | What it does | Settings |
+|---|---|---|
+| `hysteresis` | opens a valve when a reading goes above one level and shuts it when the reading falls below a lower one, each time only once the valve has been open (or shut) for its minimum | `reading`, `actuator`, `open_above`, `close_below`, `min_open_s`, `min_shut_s` |
+| `pulse_wait` | when a reading is above a level, opens a valve for `pulse_s`, shuts it, and waits `wait_s` before it may open again | `reading`, `actuator`, `above`, `pulse_s`, `wait_s` |
+| `heater_hold` | switches a vessel's heater on (`on = 1`, the default) or off. While on, the heater runs as its own `heater_ctl` and `heater_set` say | `heater`, `on` |
+| `julia` | a policy written in Julia (below) | `file`, `reads`, `actuators`, `settings` |
+
+Every policy has a `name` (used in `[vary]` and in its signals) and may start disabled
+(`enabled = false`). A hysteresis or pulse-and-wait policy starts out believing its valve shut. A
+heater's set-point is a parameter of the vessel (`TANK.heater_set`), so it is varied or set per
+run like any other.
+
+### Varying controller settings
+
+`[vary]` takes controller settings by name: `controller.<policy>.<setting>`, for example
+`"controller.vent.open_above_psig" = [790, 800, 810]`, and `controller.dt`,
+`controller.latency_s` and `controller.actuation_delay_s`. Every run's controller is built and
+checked when the study is read.
+
+### Signals
+
+Each policy adds signals to the run's history, held from one tick to the next: `ctl.<name>.enabled`
+(1 or 0), `ctl.<name>.cmd` (its last command: 1 for open or on, 0 for close or off) and, for a
+policy with a reading, `ctl.<name>.obs`, the reading it acted on, noise and all. They can be
+metrics, `[bands]` signals and `--keep-traces` columns like any other.
+
+### A policy written in Julia
+
+When none of the policies above will do, `kind = "julia"` names a file whose last expression is a
+function of `(obs, state)`:
+
+```julia
+(obs, state) -> begin
+    x = obs.readings["PT202.P_read"]
+    want = x > obs.settings["above"]
+    want == get(state, "open", false) && return []
+    state["open"] = want
+    [("AV204", want ? "open" : "close")]
+end
+```
+
+`obs` has `t`, `step`, `readings` (only those listed in the policy's `reads`) and `settings` (the
+policy's `settings` table); `state` is a Dict of its own, kept from tick to tick. It returns the
+commands to send, each `(part, action)` or `(part, action, value)`, on parts listed in its
+`actuators`. The same checks apply as for any policy: a reading must be an instrument's or a
+stand-in. The file is code and runs as such, so a study with one runs only with
+`--allow-julia-policy` on the command line, and its rows have `escape_hatch` = 1.
+
+A controller outside the simulator, talking to it over a line protocol, is not supported.
 
 ## Screening
 

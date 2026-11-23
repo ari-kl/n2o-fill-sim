@@ -48,6 +48,7 @@ struct Study
     targets::Vector{NamedTuple}               # features scored beside them (see `_target`)
     metrics::Vector{Pair{String,Dict{String,Any}}}
     bands::NamedTuple                         # (on, signals, percentiles, grid_s): the spread over the runs to write (see `study`)
+    controller::Any                           # nothing, or (; spec, fns, allow_julia, stand_ins, escape_hatch, signals): see control.jl
 end
 
 # A small generator of our own, so that a seeded study draws the same samples on every machine and
@@ -74,7 +75,7 @@ end
 _span(spec) = (v = _values(spec); (minimum(v), maximum(v), spec isa AbstractDict && get(spec, "log", false)))
 
 const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", "reltol", "wall_limit", "work_limit", "mode", "n", "seed",
-                     "vary", "case", "score", "targets", "metrics", "set", "sets", "bands")
+                     "vary", "case", "score", "targets", "metrics", "set", "sets", "bands", "controller")
 const _BANDS_KEYS = ("signals", "percentiles", "grid_s")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
 const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight", "offset")
@@ -89,10 +90,41 @@ Read a study file: the scene, the log to replay and score against (optional), wh
 how, the cases, and the scores and metrics to record. Unknown keys, parameters and signals named
 wrongly are errors here, before anything runs.
 """
-read_study(path) = _study(TOML.parsefile(path), dirname(abspath(path)), path, splitext(abspath(path))[1] * "_results", _STUDY_KEYS)
+read_study(path; allow_julia_policy = false) =
+    _study(TOML.parsefile(path), dirname(abspath(path)), path, splitext(abspath(path))[1] * "_results", _STUDY_KEYS; allow_julia = allow_julia_policy)
+
+# Overrides split into the scene's and the controller's (`controller.<policy>.<setting>[.<step>]`).
+_split_overrides(ov) = ([p for p in ov if !startswith(first(p), "controller.")], [p for p in ov if startswith(first(p), "controller.")])
+
+# Write a controller override into a copy of the [controller] table: `controller.dt`, or a
+# policy's setting, or its value for one step (`controller.vent.open_above_psig.hold`).
+function _controller_override!(spec, key, v)
+    f = split(key, '.')[2:end]
+    length(f) == 1 && f[1] in ("dt", "latency_s", "actuation_delay_s") && return (spec[f[1]] = v)
+    2 <= length(f) <= 3 || error("cannot read \"$key\": expected controller.<policy>.<setting> or controller.<policy>.<setting>.<step>")
+    k = findfirst(p -> get(p, "name", "") == f[1], get(spec, "policy", []))
+    k === nothing && error("\"$key\": there is no policy named $(f[1])")
+    p = spec["policy"][k]
+    if length(f) == 2
+        get(p, f[2], 0.0) isa AbstractDict && error("\"$key\": $(f[1]).$(f[2]) is given step by step; name the step, as in $key.<step>")
+        p[f[2]] = v
+    else
+        haskey(p, f[2]) && !(p[f[2]] isa AbstractDict) && error("\"$key\": $(f[1]).$(f[2]) is one value for every step; remove the step from the name")
+        get!(p, f[2], Dict{String,Any}())[f[3]] = v
+    end
+end
+
+# A run's controller: the study's table with the run's controller overrides written in.
+function _run_controller(st, ctl_ov, scene, sim; seed = "")
+    spec = deepcopy(st.controller.spec)
+    for (k, v) in ctl_ov
+        _controller_override!(spec, k, v)
+    end
+    _controller(spec, scene, sim; seed, allow_julia = st.controller.allow_julia, fns = st.controller.fns)
+end
 
 # A study from its parsed file. `path` is only for messages; a fit builds one of these per dataset.
-function _study(d, base, path, dir, allowed)
+function _study(d, base, path, dir, allowed; allow_julia = false)
     for k in keys(d)
         k in allowed || error("$path: unknown key \"$k\". Keys: $(join(allowed, ", "))")
     end
@@ -120,7 +152,7 @@ function _study(d, base, path, dir, allowed)
     vary = collect(get(d, "vary", Dict{String,Any}()))
     sort!(vary; by = first)                    # a TOML table has no order; fix one
     names_v = String[first(v) for v in vary]
-    apply_overrides!(deepcopy(scene), ["$k=$(_values(s)[1])" for (k, s) in vary])      # checks every name now
+    apply_overrides!(deepcopy(scene), ["$k=$(_values(s)[1])" for (k, s) in vary if !startswith(k, "controller.")])      # checks every name now
     spans = [_span(s) for (_, s) in vary]
     mode = get(d, "mode", "grid")
     haskey(d, "sets") && mode != "sets" && error("$path: `sets` is for mode = \"sets\"")
@@ -175,7 +207,7 @@ function _study(d, base, path, dir, allowed)
         isempty(vary) || error("$path: a sets study takes its parameters from the file; remove [vary]")
         columns_, rows = _table(rel(d["sets"]))
         append!(names_v, columns_)
-        missing_ = [k for k in names_v if try apply_overrides!(deepcopy(scene), ["$k=0"]); false catch; true end]
+        missing_ = [k for k in names_v if !startswith(k, "controller.") && try apply_overrides!(deepcopy(scene), ["$k=0"]); false catch; true end]
         isempty(missing_) || error("$path: $(d["sets"]) has columns that are not parameters of this scene: $(join(missing_, ", "))")
         isempty(rows) && error("$path: $(d["sets"]) has no sets")
         for (i, row) in enumerate(rows)
@@ -200,6 +232,28 @@ function _study(d, base, path, dir, allowed)
     label(v) = string(round(v, sigdigits = 6))
     runs = [StudyRun(pre * join(["$k=$(label(v))" for (k, v) in set], ";") * (isempty(name) ? "" : "|" * name), name, set, actions) for (pre, set) in zip(prefix, sets) for (name, actions) in cases]
     allunique(r.id for r in runs) || error("$path: two runs would be identical (a value listed twice, or two cases with one name)")
+    controller = nothing
+    if haskey(d, "controller")
+        spec = d["controller"]
+        spec isa AbstractDict || error("$path: [controller] must be a table")
+        fns = Dict{String,Any}()
+        for p in get(spec, "policy", [])
+            p isa AbstractDict && get(p, "kind", "") == "julia" && allow_julia && haskey(p, "file") && (fns[p["file"]] = _julia_policy(rel(p["file"])))
+        end
+        controller = (; spec, fns, allow_julia, stand_ins = String[], escape_hatch = false, signals = String[])
+        # Every run's controller is checked now, with its overrides: a name or a reading wrong in
+        # one run should stop the study before any of it runs.
+        sim0 = Sim(deepcopy(scene))
+        c = nothing
+        for ov in unique([last(_split_overrides(r.overrides)) for r in runs])
+            c = try
+                _run_controller((; controller), ov, scene, sim0)
+            catch err
+                err isa ErrorException ? error("$path: $(err.msg)") : rethrow()
+            end
+        end
+        controller = (; spec, fns, allow_julia, stand_ins = c.stand_ins, escape_hatch = c.escape_hatch, signals = c.signals)
+    end
     # what is scored: listed channels, or every log reading that a manifest maps to a model signal
     score = get(d, "score", Dict{String,Any}())
     for c in get(score, "channels", [])
@@ -292,13 +346,13 @@ function _study(d, base, path, dir, allowed)
     (!isempty(bands.percentiles) && issorted(bands.percentiles) && allunique(bands.percentiles) && all(p -> 0 <= p <= 100, bands.percentiles)) ||
         error("$path: [bands] percentiles must be numbers from 0 to 100 in rising order, like [5, 50, 95]")
     if !isempty(bands.signals)                 # the scene's signals are those a run of it records at its start
-        known = keys(Sim(deepcopy(scene)).hist)
+        known = vcat(collect(keys(Sim(deepcopy(scene)).hist)), controller === nothing ? String[] : controller.signals)
         unknown = [k for k in bands.signals if !(k in known)]
         isempty(unknown) || error("$path: [bands] names signals this scene does not record: $(join(unknown, ", ")). Signals: $(join(sort!(collect(known)), ", "))")
         allunique(bands.signals) || error("$path: [bands] names a signal twice")
     end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
-          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, spans, mode, channels, phases, scored, targets, metrics, bands)
+          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, spans, mode, channels, phases, scored, targets, metrics, bands, controller)
 end
 
 # A target: one feature of a log channel (its minimum in a vent, its slope in a hold), to be
@@ -520,6 +574,7 @@ The study's scene with some parameters changed, replaying its log, run to the en
 why if it could not be built (then `sim` is nothing), failed, or ran out of wall time.
 """
 function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
+    st.controller === nothing || return _simulate(st, overrides, actions; reltol)[1:2]
     try
         scene = deepcopy(st.scene)
         apply_overrides!(scene, ["$k=$v" for (k, v) in overrides])
@@ -533,12 +588,30 @@ function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
     end
 end
 
+# The same with a controller: (sim, failed, controller). `case` is part of what its noise is seeded from.
+function _simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol, case = "")
+    c = nothing
+    try
+        scene_ov, ctl_ov = _split_overrides(overrides)
+        scene = deepcopy(st.scene)
+        apply_overrides!(scene, ["$k=$v" for (k, v) in scene_ov])
+        scene.schedule = sort(vcat(scene.schedule, st.schedule, actions); by = a -> a.t)
+        sim = Sim(scene; sample_dt = st.sample_dt, reltol)
+        c = _run_controller(st, ctl_ov, scene, sim; seed = _noise_seed(scene_ov, case))
+        run_controlled!(sim, c, st.until; wall_limit = st.wall_limit, work_limit = st.work_limit)
+        return sim, !isempty(sim.failed) ? sim.failed : simtime(sim) >= st.until - 1e-6 ? "" :
+                    work(sim) >= st.work_limit ? "stopped at the work limit ($(st.work_limit) part-flow evaluations)" : "stopped at the wall-time limit", c
+    catch err
+        return nothing, first(replace(sprint(showerror, err), '\n' => ' ', ',' => ';'), 200), c
+    end
+end
+
 "Run one member of a study and reduce it to a row of results (column name => value)."
 function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
     row = Pair{String,Any}["id" => run.id, "case" => run.case]
     append!(row, [k => get(Dict(run.overrides), k, NaN) for k in st.varied])
     started = Base.time()
-    sim, failed = simulate(st, run.overrides, run.actions)
+    sim, failed = st.controller === nothing ? simulate(st, run.overrides, run.actions) : _simulate(st, run.overrides, run.actions; case = run.case)
     if sim === nothing
         append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], ["res.target." * g.name for g in st.targets],
                                          first.(_offset_names(st)), first.(_target_names(st)), first.(st.metrics))])
@@ -558,6 +631,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
         seen === nothing || seen(sim)                          # the caller takes what it wants from the run before it is dropped
         keep === nothing || write_csv(keep, sim; columns = unique(vcat([_scored_signal(sim, c.model) for c in st.channels], [_scored_signal(sim, g.model) for g in st.targets], [m["signal"] for (_, m) in st.metrics])))
     end
+    st.controller === nothing || append!(row, ["stand_ins" => join(st.controller.stand_ins, ";"), "escape_hatch" => st.controller.escape_hatch ? 1 : 0])
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
 end
@@ -568,7 +642,7 @@ _offset_names(st::Study) = [name => NaN for ci in eachindex(st.channels) for (_,
 _rms_names(st::Study) = ["rms.$(c.log).$p" => NaN for c in st.channels for (p, _) in st.phases]
 
 """
-    study(path; resume = false, keep_traces = false) -> results file
+    study(path; resume = false, keep_traces = false, allow_julia_policy = false) -> results file
 
 Run every member of the study in `path`, on as many threads as Julia was started with, and append
 one row per run to `<study>_results/results.csv` as it finishes. A run that fails is a row with
@@ -580,8 +654,8 @@ metric. With several cases there is a `bands_<case>.csv` for each: cases are dif
 and are not pooled. Each run is reduced to its signals on the grid as it finishes, so what is held
 is runs × grid times × signals numbers and never a whole run.
 """
-function study(path; resume = false, keep_traces = false, quiet = false)
-    st = read_study(path)
+function study(path; resume = false, keep_traces = false, quiet = false, allow_julia_policy = false)
+    st = read_study(path; allow_julia_policy)
     resume && !isempty(st.bands.signals) && error("$path: a study with [bands] signals cannot be resumed: the runs already done left no history to take a band from. Run it without --resume")
     mkpath(st.dir)
     out = joinpath(st.dir, "results.csv")
