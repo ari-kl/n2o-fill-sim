@@ -92,9 +92,7 @@ function plot_panel(app::App)
             for (name, okind, _) in app.overlay
                 okind === kind && (legend_w = max(legend_w, ig.CalcTextSize(name).x + log_w))
             end
-            # Beside the plot only where the plot keeps most of its width; otherwise at the top
-            # left, over the oldest data. (34: the colour patch and the legend's padding.)
-            beside = w - legend_w - px(34) >= max(px(150), 0.6f0 * w)
+            beside = w - legend_w - px(34) >= px(150)             # 34: the colour patch and the legend's padding
             ImPlot.SetupLegend(beside ? ImPlot.ImPlotLocation_NorthEast : ImPlot.ImPlotLocation_NorthWest,
                                beside ? ImPlot.ImPlotLegendFlags_Outside : ImPlot.ImPlotLegendFlags_None)
             kind === :pressure && target_band(app)
