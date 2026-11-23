@@ -113,21 +113,47 @@ Two details make this dependable in practice:
   held where it is while the others are solved; left in, its empty row would make the whole
   system singular.
 - Two rules keep Newton from cycling. No pressure moves more than 20 bar in a step, and a
-  step is halved (twice at most) if the imbalance does not fall. And a step may not jump a
+  step is halved (twice at most, and up to five times once a solve is past its twelfth
+  iteration) if the imbalance does not fall. And a step may not jump a
   pressure-operated part's band. Outside its band (shut, or fully open) such a part's area does
   not answer the pressures, so the Jacobian knows nothing of the band ahead, which is 30 psi
   wide for a default regulator and 0.3 psi for a default check valve. A step that would carry a
   part from outside its band past the middle of it is cut to stop at the middle; the next step
   has the part's real slope. Circuit simulators limit the voltage step across a diode for the
-  same reason.
+  same reason. A regulator or relief valve also passes nothing backwards, which is one more
+  such corner: a step that would reverse the pressure across one is cut to close nine tenths of
+  it instead.
+- Slopes are taken on the part's own side of a corner. The Jacobian comes from differencing
+  each part's flow with a step of a millionth of the pressure. For a pressure-operated part
+  within that step of the edge of its band (a check valve passing milligrams a second) the
+  step is taken away from the edge; across it the slope comes out many times too small. Flow
+  reversing through any part is a corner of the same kind, since what comes back is the fluid
+  from the other end; a solve past its twelfth iteration treats it so.
 - A fallback handles what is left. If Newton does not settle (a restriction starting to
   choke; the top of the two-phase dome, where the flux through a restriction turns from falling
   to rising as its upstream pressure climbs), each junction is balanced in turn with its
   neighbours held. That cannot fail, since a junction's imbalance falls steadily as its own
   pressure rises, but it closes in slowly along pipes in series. Its use is to get off the
   corner: Newton is tried again after eight passes, and once more after sixty further passes.
-- A solve that still fails is counted, and the window shows the count in amber. It is not
-  harmless: the flows it leaves do not balance, so mass goes missing between vessels.
+- Every solve has an allowance of 600 part-flow evaluations for each part carrying flow. A
+  normal solve takes 4 a part, and the costliest that converged in 450 random plumbings took 428. A
+  solve that spends its allowance stops at the pressures that came closest to balance. Most of
+  what cannot be solved is not physical: a stage of a step the ODE solver is about to reject can
+  ask for the flows at 1e15 Pa, and without the allowance each such stage ran every method above
+  to its end, about a hundred times the cost of a solve that works. A state that is not a number
+  is not solved at all. Nothing a failed solve leaves behind (starting pressures, junction
+  enthalpies, the factorised Jacobian) is carried into the next.
+- A solve that fails is counted, and the window shows the count in amber. It is not
+  harmless: the flows it leaves do not balance, so mass goes missing between vessels. A solve
+  that ends with a part open, more than 3 kPa across it and no flow through it is counted as
+  failed too, whatever its imbalance: zero flow everywhere balances every junction, and a line
+  that has merely stopped must not pass for one that has converged.
+- A junction nothing flows into has no enthalpy of its own. It holds no fluid. While a solve
+  is still moving the pressures about, what leaves such a junction is taken to be what its
+  highest-pressure neighbour would send. (It used to keep its last mixture. One evaluation at
+  a state far from anything physical could then leave an enthalpy the flow law returns nothing
+  for, and the line stayed shut behind it.) A state with a vessel above 1e9 Pa is not solved
+  at all: the derivative is returned as not a number and the ODE solver shortens the step.
 
 ### Time stepping
 
@@ -155,8 +181,13 @@ every flow and junction enthalpy, and the vessels' derivatives with those flows.
 
 A wall temperature changes neither the vessel's pressure nor what leaves through its ports, and a
 vessel with every connection shut has no flow to change: those columns need only that vessel's
-derivative. If the junction solve did not converge there is nothing sound to linearise about, and
-every column is differenced through the whole right-hand side instead.
+derivative. If the junction solve gave up, the network is linearised all the same, about the
+pressures the solve stopped at. The slopes of the flow laws exist there whatever the imbalance:
+with solves cut short on purpose and up to four tenths of the flow out of balance, the result
+stayed within about 1e-2 of the converged Jacobian (largest entry of each row). Differencing
+through the whole right-hand side there costs a failing solve for every state and returns the
+difference of two unconverged results over a step of 1e-7: errors of 1e6 and more on the same
+scale.
 
 On the HF4 replay a Jacobian costs 42 to 54 part-flow evaluations this way, against 250 to 520
 for plain differences. The two agree to about 3e-4 of the largest entry in each row, and plain
@@ -175,6 +206,12 @@ valve's position and command, heater states, set-points and the ambient conditio
 timestamped log of every action applied. The README lists the exported columns.
 A Gauge or LoadCell whose sensor parameters are set also records what the instrument would have
 reported (`NAME.P_read`, `NAME.T_read`, `NAME.m_read`; see section 8).
+
+A valve has four signals. `position` is how far open it is, 0 to 1. `cmd_frac` is how far open it
+is being told to be: 0 or 1 for a valve commanded shut or open, the fraction for one set
+part-open. `open_cmd` is 1 whenever `cmd_frac` is above zero, which is what a 0/1 valve column in
+a test log means. `stuck` is 0 for a healthy valve, 1 stuck open, 2 stuck closed and 3 stuck
+part-way; while it is not 0, `position` does not follow the command.
 
 ## 2. Nitrous oxide properties (`src/n2o.jl`)
 
@@ -247,13 +284,20 @@ HEM when it is at it. The model blends the two by how close the liquid is to boi
 
 | Part | Effective area |
 |---|---|
-| Orifice, Valve | `Cd·π·d²/4`. A valve may give `Cv` instead (1.698e-5 m² per unit Cv), and its area scales with how far open it is. |
+| Orifice, Valve | `Cd·π·d²/4`. A valve may give `Cv` instead (1.698e-5 m² per unit Cv), and its area scales with how far open it is: the larger of its opening and its `leak_frac`. |
 | Pipe | area × (1 + K + f·L/D)^-½ with the Churchill friction factor. Below Re = 4000 the value at 4000 is used (section 6). |
 | Regulator | area × clamp((set − P_outlet)/droop, 0, 1), flow a → b only |
-| Relief valve | opens linearly from its set pressure to fully open 10 % above |
+| Relief valve | area × clamp((P_inlet − set)/band, 0, 1), flow a → b only. The band is `band_frac` × set pressure (gauge) + 500 Pa: with the default 0.1, fully open 10 % above the set pressure. |
 | Check valve | opens over a band above its cracking pressure |
 
 `Cd` is the calibration knob on every part. Typical sharp-edged values are 0.6 to 0.8.
+
+A valve's opening is a share of its area, not a stem position: a valve set to 0.25 passes a
+quarter of what it passes fully open at the same pressures, whatever its trim. It moves towards
+the opening it is told at 1/`travel_s` of full stroke a second, so a `set` from shut to 0.25
+takes a quarter of the stroke time. `leak_frac` is the share of the area that still passes when
+the valve is shut, and it is the whole effect of a leak: at any opening above it the valve
+passes what a tight one would.
 
 ## 4. Bottles and tanks (`src/vessel.jl`)
 
@@ -430,6 +474,28 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
 - Pipe friction is an equivalent orifice, which is rough for a long line that flashes along
   its length.
 - The relief valve has no pop and reseat hysteresis.
+- A leak into a closed section of line fills it at once. The lines hold no fluid, so the
+  section between a leaking valve and a tight one has nothing to fill: it stands at the
+  pressure beyond the leak from the first evaluation, with no flow through the leak. A real
+  section comes up over the time the leak takes to fill it. To see that time, put a small Tank
+  where the section is, as for trapped liquid. A leak that leads on to a vessel or to the
+  atmosphere flows at its own rate.
+- Trickles mix badly. A junction's mixture enthalpy follows the flows into it, and the
+  junction solve's Jacobian leaves that out. It matters where a trickle of vapour meets a
+  trickle of liquid (a leak beside a check valve that is just cracking, near atmospheric
+  pressure): a few percent of vapour by mass changes the mixture's density several times over,
+  and with it the flow through the next part. Such solves converge slowly and now and then not
+  at all.
+- A valve's opening is a share of its area. There is no trim characteristic (linear, equal
+  percentage, quick opening) between stem travel and area, and the discharge coefficient does
+  not change with opening.
+- Vessels at rest against each other sit on a corner. Two vessels joined by an open line
+  and long equalised breathe milligrams a second back and forth as they warm and cool, and what
+  flows depends on which way: liquid from a bottle's dip tube one way, vapour from the tank the
+  other. The equations have a corner exactly at the resting state. The ODE solver rejects more
+  steps there, and a rejected step can pass through states far from anything physical (1e15 Pa,
+  or not a number). Those are cut short by the junction solve's allowance and can show in the
+  count of failed solves, though no accepted step used them.
 
 ## 7. Calibration
 
@@ -511,13 +577,19 @@ heater was switched on, not what it delivered.
 
 The 990 s HF4 replay takes about 0.3 s (559 solver steps, about 230,000 equation-of-state
 evaluations). In the window at ×1 the solver uses a few hundredths of a millisecond of a typical
-frame and 3.5 ms in the worst single step. `test/stress.jl` drives scenes nobody tuned (a bottle
-heated until supercritical, and 150 random plumbings from default parts, valves opened and
-toggled). No junction solve fails in either. The costliest single solver step in them takes
-8,300 part-flow evaluations, about 22 times HF4's average step: the hot bottle's line passing
-the top of the two-phase dome, a step the ODE solver attempts several times over, with solves
-that go to the fallback and back. Nothing bounds the cost of one step: it grows with the attempts
-the ODE solver rejects, and a solve that fails costs about a hundred times one that does not.
+frame and 3.5 ms in the worst single step. `test/stress.jl -d` drives scenes nobody tuned (a bottle
+heated until supercritical, and 150 random plumbings from default parts, valves opened, set
+part-open and toggled, a quarter of them leaking). No junction solve fails in either. The
+costliest single solver step in them takes 12,100 part-flow evaluations, about 32 times HF4's
+average step: a step the ODE solver attempts several times over, with junction solves that
+converge slowly at a corner of a flow law. The next 300 plumbings have three failed solves and a
+step of 29,000: a leak of a millionth of a valve's area feeding a check valve at its cracking
+pressure, where every solve converges but takes some 170 evaluations a part.
+
+The cost of a step is bounded in part. One junction solve spends at most 600 evaluations for each
+part carrying flow (section 1), and one attempt at a step is nine solves and a Jacobian. The
+number of attempts the ODE solver makes at a step before it accepts one is not bounded; the most
+seen is nine.
 `test/bench.jl` prints the HF4 numbers.
 
 ### HF3 cold flow and LC26 day 4
