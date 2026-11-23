@@ -42,6 +42,7 @@ debounce_s = 0.5                # a valve or heater change counts only if it the
 source_column = "source"        # the column naming the board that wrote the row
 reference_source = "BOARD-A"    # every other board's clock is shifted onto this one
 clock_offsets = "auto"          # or given: { "BOARD-B" = 100.18, "BOARD-C" = 1869.08 }
+already_aligned_s = 30.0        # a row this close to the reference clock already is not shifted (default 30 s)
 
 [[channel]]
 column = "PT202 [PSI]"
@@ -78,6 +79,14 @@ in: for every row of that board, the last time seen on a reference-board row min
 time, and then the median of those. It is good to about one reference sampling period. If the
 offset over the first third of the file differs from the last third by more than 0.5 s, a warning
 says that board's clock drifts.
+
+A board does not always stamp with its own clock: some send bursts of rows that already carry
+the reference board's time. Adding the board's offset to such a row would put it that far out of
+place (tens of minutes, in one real log). So a row whose time is within `already_aligned_s` of the
+last reference-board time seen before it in the file, and would be further than that from it once
+shifted, is left as it is. This holds for estimated and given offsets alike. Each board's count of
+such rows is reported as a warning, and they are left out when the offset is estimated. For a
+board whose own offset is smaller than `already_aligned_s` the rule changes nothing.
 
 ### The grid
 

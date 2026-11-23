@@ -232,7 +232,7 @@ section 9.
 ## 7. Calibration against HF4
 
 HF4 was a static hot fire on 2026-07-11. `scenes/hf4.toml` is the fill panel and tank as drawn
-in the motor's final design report (Fig. 35). The logged valve and heater states
+in the QRET Chimera Final Design Report (2026), Fig. 35. The logged valve and heater states
 (`test/data/hf4_fill_10hz.csv`, a 10 Hz slice of the hot-fire log) drive the model from device
 time 9020 s to 10010 s. Values fitted, in the order they were pinned down:
 
@@ -437,4 +437,4 @@ replace them:
 - Bergman et al., "Fundamentals of Heat and Mass Transfer" (natural convection on a vertical
   surface; Hilpert correlation for a cylinder in cross flow). The constants for these two and for
   air properties were written from the textbook values, not checked against a copy.
-- The motor's final design report (2026) and static fire procedure, for the plumbing.
+- QRET, Chimera Final Design Report (2026), and the team's static fire procedure, for the plumbing.
