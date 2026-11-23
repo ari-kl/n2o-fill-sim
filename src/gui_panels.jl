@@ -4,10 +4,8 @@ function param_inputs(values::Dict{String,Float64}, params, app::App)
     for p in params
         v = Ref{Cdouble}(values[p.key])
         ig.SetNextItemWidth(px(110))
-        if ig.InputDouble(p.key, v, 0.0, 0.0, "%.4g") && isfinite(v[])
-            snapshot!(app)
-            values[p.key] = v[]
-        end
+        number_box(app, p.key, v, "%.4g") && (values[p.key] = v[])
+        mark("param " * p.key)
         tip(p.help)
     end
 end
@@ -53,7 +51,7 @@ function build_tab(app::App)
     button("Undo") && undo!(app)
     tip("Ctrl+Z")
     ig.SameLine(); button("Redo") && redo!(app)
-    tip("Ctrl+Y")
+    tip("Ctrl+Y or Ctrl+Shift+Z")
     ig.SameLine(); button("Load test log...") && browse!(app, :log)
     tip("Overlay a recorded test on the plots and, if you want, replay its valve sequence.")
 

@@ -70,7 +70,7 @@ the Build tab.
 | Move, rotate, delete | drag the selection; `R`; `Delete` |
 | Copy, paste, duplicate | `Ctrl+C`; `Ctrl+V` at the pointer; `Ctrl+D` in place |
 | Wire corners | click a wire to add a corner and drag it; right-click a corner to remove it, a wire to cut it |
-| Undo, redo | `Ctrl+Z`, `Ctrl+Y` |
+| Undo, redo | `Ctrl+Z`; `Ctrl+Y` or `Ctrl+Shift+Z`. A number typed into a box is one step |
 | View | right-drag pans, the wheel zooms, `F` fits the schematic to the window |
 | Files | `Ctrl+O`, `Ctrl+S` |
 

@@ -199,8 +199,24 @@ at(715, () -> ig.AddMouseButtonEvent(io(), 1, false))
 check(718, "a right-drag that starts on a wire pans and leaves the wire", () -> view_before[4] !== nothing && nwires() == view_before[2] && length(app.undo) == view_before[3] && app.origin[1] > view_before[1][1] + 30)
 at(719, () -> (app.origin = view_before[1]))
 
+# --- a number typed into a parameter box is one undo step, and undo keeps the part selected
+const PARAM = F.KINDS["Valve"].params[1].key
+type(n, s) = at(n, () -> ig.AddInputCharactersUTF8(io(), s))
+press(720, "tab Build")
+click(726, 12, 4)                                             # AV201
+at(730, () -> (global edit_before = (length(app.undo), part("AV201").p[PARAM])))
+press(731, "param " * PARAM)
+type(736, "3"); type(738, "1"); type(740, "7")                # three changes of value: 3, 31, 317
+key(742, ig.ImGuiKey_Enter)
+check(746, "a typed parameter is one undo step", () -> part("AV201").p[PARAM] == 317 && length(app.undo) == edit_before[1] + 1)
+ctrl(748, ig.ImGuiKey_Z)
+check(754, "undoing it keeps the part selected", () -> part("AV201").p[PARAM] == edit_before[2] && app.sel == ["AV201"])
+shift(756, true); ctrl(757, ig.ImGuiKey_Z); shift(762, false)
+check(764, "Ctrl+Shift+Z redoes", () -> part("AV201").p[PARAM] == 317)
+ctrl(766, ig.ImGuiKey_Z)
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "722")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "774")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)

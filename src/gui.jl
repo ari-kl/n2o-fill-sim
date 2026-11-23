@@ -84,6 +84,7 @@ Base.@kwdef mutable struct App
     zoom::Float32 = 1f0
     canvas::NTuple{4,Float32} = (0f0, 0f0, 800f0, 500f0)   # where the schematic was drawn last frame: x, y, width, height
     want_fit::Bool = true                     # zoom to fit on the next frame
+    edit_fresh::Bool = false                  # a number box was clicked into and has not changed anything yet
     undo::Vector{Scene} = Scene[]
     redo::Vector{Scene} = Scene[]
     dirty::Bool = false                       # unsaved changes
@@ -141,8 +142,18 @@ function snapshot!(app::App)
     app.dirty = true
     nothing
 end
-undo!(app::App) = isempty(app.undo) || (push!(app.redo, app.scene); app.scene = pop!(app.undo); empty!(app.sel); app.dirty = true)
-redo!(app::App) = isempty(app.redo) || (push!(app.undo, app.scene); app.scene = pop!(app.redo); empty!(app.sel); app.dirty = true)
+# The selection survives, less any part the step took away, so undoing a parameter edit leaves
+# the part's parameters on show.
+function swap_scene!(app::App, from::Vector{Scene}, to::Vector{Scene})
+    isempty(from) && return
+    push!(to, app.scene)
+    app.scene, app.dirty = pop!(from), true
+    filter!(name -> find_part(app.scene, name) !== nothing, app.sel)
+    isempty(app.sel) || setbuf!(app.name_buf, current(app))
+    nothing
+end
+undo!(app::App) = swap_scene!(app, app.undo, app.redo)
+redo!(app::App) = swap_scene!(app, app.redo, app.undo)
 
 # ImGui's Text takes a printf format; these take plain strings.
 text(s) = ig.TextUnformatted(s)
@@ -155,6 +166,19 @@ tip(s) = ig.IsItemHovered() && ig.SetTooltip(replace(s, "%" => "%%"))
 const RECTS = Dict{String,NTuple{4,Float32}}()
 mark(label) = (a = ig.GetItemRectMin(); b = ig.GetItemRectMax(); RECTS[label] = (a.x, a.y, b.x, b.y); nothing)
 button(label, id = label) = (pressed = ig.Button(label); mark(id); pressed)
+
+"""
+A box for a number that belongs to the scene. True when the number in `v` has changed; the caller
+stores it. Typing changes the value at every keystroke, which used to be an undo step each: here
+the scene is snapshotted once, at the first change after the box was clicked or tabbed into.
+"""
+function number_box(app::App, label, v, format)
+    changed = ig.InputDouble(label, v, 0.0, 0.0, format)
+    ig.IsItemActivated() && (app.edit_fresh = true)
+    (changed && isfinite(v[])) || return false
+    app.edit_fresh && (snapshot!(app); app.edit_fresh = false)
+    true
+end
 
 # --- values in display units. `kind` is :pressure, :temperature, :mass, :flow, :share, :state or :quality.
 p_atm(app::App) = app.scene.settings["P_atm_kPa"] * 1e3
@@ -328,7 +352,7 @@ function shortcuts(app::App)
         foreach(name -> delete_part!(s, name), app.sel)
         empty!(app.sel)
     elseif ctrl && pressed(ig.ImGuiKey_Z)
-        undo!(app)
+        unsafe_load(io.KeyShift) ? redo!(app) : undo!(app)
     elseif ctrl && pressed(ig.ImGuiKey_Y)
         redo!(app)
     elseif ctrl && pressed(ig.ImGuiKey_A)
