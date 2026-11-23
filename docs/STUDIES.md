@@ -30,6 +30,7 @@ wall_limit = 600                              # and, as a last resort, after thi
 mode = "grid"                                 # "grid": every combination
                                               # "oat": the scene as it is, then one parameter at a time
                                               # "lhs": n runs spread over the ranges (needs n; seed optional)
+                                              # "morris": screening, n trajectories (see below)
 
 [set]                                         # optional: changes applied to every run
 "settings.T_amb_C" = 28
@@ -185,6 +186,46 @@ that is a pressure or a temperature (not a slope: that stays in SI per second).
 **Every row** also carries how far the run got (`t_end`), why it failed if it did (`failed`), how
 many junction solves did not settle, the mass and energy balance errors, the mass vented and the
 wall time. A run that cannot be built or does not finish is still a row.
+
+## Screening: which parameters matter
+
+Before fitting ten parameters it is worth knowing which of them the scored numbers respond to at
+all. `mode = "morris"` answers that cheaply, by the method of elementary effects (Morris, 1991).
+
+```toml
+mode = "morris"
+n = 20                                        # trajectories (default 20); seed optional
+[vary]
+"VENT_ORIFICE.Cd" = { from = 0.5, to = 1.0 }  # the range to screen over; log = true for even ratios
+"settings.interphase_E" = { from = 100, to = 2000, log = true }
+```
+
+Each parameter's range is cut into four levels (0, 1/3, 2/3 and all of the way across). A
+trajectory starts at a random point on that grid and then moves one parameter at a time, in a
+random order, by two thirds of its range. With k parameters that is k + 1 runs, and each step is
+one **elementary effect**: the change in an output, divided by the step. So `n = 20` costs
+20 × (k + 1) runs and gives every parameter 20 effects, each taken with the other parameters
+somewhere different. A seed gives the same runs on any machine. A morris study takes one `[[case]]`
+at most.
+
+Besides `results.csv` (one row per run, ids beginning `m<trajectory>.<step>;`), the study writes
+`screening.csv`: for every varied parameter and every output (the score, each scored number
+`res.*`, each target's model value and each metric),
+
+- `mu_star`: the mean of the absolute effects. How much the output moves when the parameter
+  crosses its whole range. Because it is per whole range, parameters can be compared with each
+  other, and a wider range gives a larger number: the answer is about the ranges you gave.
+- `sigma`: the spread of the effects. Small beside `mu_star` means the parameter acts the same
+  way wherever the others are. Large means its effect depends on the others, or bends.
+- `n`: how many effects went into it. A step with a failed run at either end is left out.
+
+The ranking by `mu_star` on the score is printed. Read the table by output as well: a parameter
+with a small effect on the score can still be the only one that moves a particular scored number,
+and that number is then what pins it. A parameter whose `mu_star` is small on every scored number
+cannot be found from this log, whatever a fit reports: fix it at a measured or published value.
+Screening says what matters, not what the values are, and not which parameters can be told apart
+from each other (two can both matter and still only act together: the fit report's last section
+is for that).
 
 ## Reading the result
 

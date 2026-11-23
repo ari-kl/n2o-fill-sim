@@ -794,6 +794,80 @@ end
     @test Set(t["name"] for t in record["targets"]) == Set(["rise", "end_psig"]) && abs(record["target"]["rise.model"] - record["target"]["rise.log"]) < 0.05
 end
 
+@testset "screening: which parameters matter (elementary effects)" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    study(top, vary) = (p = joinpath(dir, "s$(hash((top, vary))).toml"); write(p, """
+        scene = "rig.toml"
+        until = 10
+        mode = "morris"
+        $top
+        [vary]
+        $vary
+        [[case]]
+        name = "fill"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }]
+        [metrics]
+        loaded_kg = { fn = "final", signal = "TANK.m" }
+        peak_psig = { fn = "max", signal = "TANK.P", unit = "psig" }
+        """); p)
+    # the design: n trajectories of k + 1 runs on four levels, each run moving one parameter by two thirds of its range
+    unit = "a = { from = 0, to = 1 }\nb = { from = 0, to = 1 }\nc = { from = 0, to = 1 }\n"
+    vary = replace(unit, "a =" => "\"BOTTLE.T_C\" =", "b =" => "\"FILL.Cd\" =", "c =" => "\"VENT_OR.Cd\" =")
+    st = F.read_study(study("n = 5\nseed = 2", vary))
+    X = [Dict(r.overrides)[name] for r in st.runs, name in st.varied]
+    @test size(X) == (5 * 4, 3) && all(x -> any(l -> abs(x - l) < 1e-12, (0, 1 / 3, 2 / 3, 1)), X) && allunique(r.id for r in st.runs)
+    steps = [X[a+1, :] .- X[a, :] for start in 1:4:20 for a in start:start+2]
+    @test all(d -> count(!=(0), d) == 1 && abs(maximum(abs, d) - 2 / 3) < 1e-12, steps)
+    @test all(start -> sort([findfirst(!=(0), X[a+1, :] .- X[a, :]) for a in start:start+2]) == [1, 2, 3], 1:4:20)      # every parameter once per trajectory
+    @test [r.id for r in F.read_study(study("n = 5\nseed = 2", vary)).runs] == [r.id for r in st.runs]                  # a seed repeats
+    @test [r.id for r in F.read_study(study("n = 5\nseed = 3", vary)).runs] != [r.id for r in st.runs]
+    # the arithmetic, on an output that is a straight line in each parameter: the effect is its coefficient, with no spread
+    ee = F.elementary_effects(X, [3 * X[i, 1] - 2 * X[i, 2] for i in 1:20])
+    @test [e.mu_star for e in ee] ≈ [3, 2, 0] && all(e -> e.sigma < 1e-12 && e.n == 5, ee)
+    # an interaction shows as spread; a failed run costs the effects on either side of it and nothing else
+    ee = F.elementary_effects(X, [X[i, 1] * X[i, 2] for i in 1:20])
+    @test ee[1].sigma > 0.1 && ee[3].mu_star == 0
+    y = [3 * X[i, 1] for i in 1:20]; y[2] = NaN
+    @test sum(e.n for e in F.elementary_effects(X, y)) == 13 && F.elementary_effects(X, y)[1].mu_star ≈ 3
+    # on the rig: the bottle's temperature and the fill valve matter to what is loaded; an orifice behind a shut vent valve does not
+    file = study("n = 4", "\"BOTTLE.T_C\" = { from = 15, to = 30 }\n\"FILL.d_mm\" = { from = 2, to = 6, log = true }\n\"VENT_OR.d_mm\" = { from = 1, to = 3 }\n")
+    out = F.study(file; quiet = true)
+    @test countlines(out) == 1 + 4 * 4
+    rows = split.(readlines(joinpath(dirname(out), "screening.csv")), ',')
+    @test rows[1] == ["parameter", "output", "mu_star", "sigma", "n"] && length(rows) == 1 + 3 * 2
+    mu(p, o) = parse(Float64, only(r for r in rows if r[1] == p && r[2] == o)[3])
+    @test mu("FILL.d_mm", "loaded_kg") > 0.5 && mu("BOTTLE.T_C", "peak_psig") > 20 && mu("VENT_OR.d_mm", "loaded_kg") < 1e-6
+    @test all(r -> r[5] == "4", rows[2:end])
+    # resumed, the screening still counts every run
+    lines = readlines(out)
+    write(out, join(lines[1:6], "\n") * "\n")
+    F.study(file; resume = true, quiet = true)
+    @test split.(readlines(joinpath(dirname(out), "screening.csv")), ',') == rows
+    @test_throws ErrorException F.read_study(study("", vary * "[[case]]\nname = \"other\"\n"))                           # one case at most
+    # against a log, the score and every scored number are screened too, and the ranking is printed
+    made_up_log(joinpath(dir, "log.csv"))
+    scored = joinpath(dir, "scored.toml")
+    write(scored, """
+        scene = "rig.toml"
+        replay = "log.csv"
+        mode = "morris"
+        n = 2
+        [vary]
+        "BOTTLE.T_C" = { from = 15, to = 30 }
+        "VENT_OR.d_mm" = { from = 1, to = 3 }
+        [score]
+        channels = [{ log = "PT_psig", model = "TANK.P" }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        """)
+    said = mktemp() do path, io
+        redirect_stdout(() -> F.study(scored), io); close(io); read(path, String)
+    end
+    @test occursin("Screening:", said) && occursin("BOTTLE.T_C", said)
+    rows = split.(readlines(joinpath(dir, "scored_results", "screening.csv")), ',')
+    @test Set(r[2] for r in rows[2:end]) == Set(["score", "res.PT_psig.closed", "res.PT_psig.venting"]) && all(r -> parse(Float64, r[3]) > 0, rows[2:end])
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

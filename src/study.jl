@@ -39,6 +39,8 @@ struct Study
     work_limit::Int                           # give up on a run after this many part-flow evaluations
     runs::Vector{StudyRun}
     varied::Vector{String}
+    spans::Vector{Tuple{Float64,Float64,Bool}}   # each varied parameter's lowest and highest value, and whether it is on a ratio scale
+    mode::String
     channels::Vector{NamedTuple}              # (log column, model signal, sigma in the log's units, weight, y: the log's readings,
                                               #   offset: "none", or its zero is unknown: "free" (one for the run) or "per_phase")
     phases::Vector{Pair{String,Tuple{Float64,Float64}}}
@@ -119,6 +121,7 @@ function _study(d, base, path, dir, allowed)
     apply_overrides!(deepcopy(scene), ["$k=$(_values(s)[1])" for (k, s) in vary])      # checks every name now
     mode = get(d, "mode", "grid")
     sets = Vector{Pair{String,Float64}}[]
+    prefix = String[]                          # put before a run's id where the values alone would not be unique
     if mode == "grid"
         vals = [_values(s) for (_, s) in vary]
         for combo in Iterators.product(vals...)
@@ -139,17 +142,40 @@ function _study(d, base, path, dir, allowed)
                 names_v[k] => (logscale ? lo * (hi / lo)^u : lo + (hi - lo) * u)
             end for k in eachindex(vary)])
         end
+    elseif mode == "morris"
+        # Screening by elementary effects (Morris, 1991). Each of n trajectories starts at a random
+        # point on a grid of four levels per parameter (0, 1/3, 2/3 and 1 of its range) and then moves
+        # one parameter at a time, in random order, by two thirds of its range: up from the lower two
+        # levels, down from the upper two. That is k + 1 runs for k effects, one per parameter, each
+        # taken somewhere different in the space.
+        n, g = Int(get(d, "n", 20)), _Lcg(UInt64(get(d, "seed", 1)))
+        at(u) = [(s = _span(vary[k][2]); names_v[k] => (s[3] ? s[1] * (s[2] / s[1])^u[k] : s[1] + (s[2] - s[1]) * u[k])) for k in eachindex(vary)]
+        for traj in 1:n
+            u = [floor(4 * _next!(g)) / 3 for _ in vary]
+            order = collect(eachindex(vary))
+            for i in length(order):-1:2
+                j = 1 + floor(Int, _next!(g) * i)
+                order[i], order[j] = order[j], order[i]
+            end
+            push!(sets, at(u)); push!(prefix, "m$traj.0;")
+            for (step, k) in enumerate(order)
+                u[k] += u[k] < 0.5 ? 2 / 3 : -2 / 3
+                push!(sets, at(u)); push!(prefix, "m$traj.$step;")
+            end
+        end
     else
-        error("$path: mode must be \"grid\", \"oat\" or \"lhs\", not \"$mode\"")
+        error("$path: mode must be \"grid\", \"oat\", \"lhs\" or \"morris\", not \"$mode\"")
     end
+    isempty(prefix) && (prefix = fill("", length(sets)))
     cases = [(String(c["name"]), [Action(Float64(a["t"]), String(a["part"]), String(a["action"]), Float64(get(a, "value", 0.0))) for a in get(c, "actions", [])])
              for c in get(d, "case", [])]
     isempty(cases) && push!(cases, ("", Action[]))
+    mode == "morris" && length(cases) > 1 && error("$path: a morris study takes one case at most (screen each case in its own study)")
     for (name, actions) in cases, a in actions
         find_part(scene, a.part) === nothing && error("$path: case $name acts on $(a.part), which is not in the scene")
     end
     label(v) = string(round(v, sigdigits = 6))
-    runs = [StudyRun(join(["$k=$(label(v))" for (k, v) in set], ";") * (isempty(name) ? "" : "|" * name), name, set, actions) for set in sets for (name, actions) in cases]
+    runs = [StudyRun(pre * join(["$k=$(label(v))" for (k, v) in set], ";") * (isempty(name) ? "" : "|" * name), name, set, actions) for (pre, set) in zip(prefix, sets) for (name, actions) in cases]
     allunique(r.id for r in runs) || error("$path: two runs would be identical (a value listed twice, or two cases with one name)")
     # what is scored: listed channels, or every log reading that a manifest maps to a model signal
     score = get(d, "score", Dict{String,Any}())
@@ -234,7 +260,7 @@ function _study(d, base, path, dir, allowed)
         haskey(m, "signal") || error("$path: metric $name needs a signal")
     end
     Study(dir, scene, schedule, t_log, cols, columns, until, Float64(get(d, "sample_dt", 0.5)),
-          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, channels, phases, scored, targets, metrics)
+          Float64(get(d, "reltol", 1e-5)), Float64(get(d, "wall_limit", 600.0)), Int(get(d, "work_limit", 5_000_000)), runs, names_v, [_span(s) for (_, s) in vary], mode, channels, phases, scored, targets, metrics)
 end
 
 # A target: one feature of a log channel (its minimum in a vent, its slope in a hold), to be
@@ -527,5 +553,65 @@ function study(path; resume = false, keep_traces = false, quiet = false)
             end
         end
     end
+    st.mode == "morris" && _screening(st, out, quiet)
     out
+end
+
+"""
+    elementary_effects(X, y) -> [(mu_star, sigma, n) for each parameter]
+
+Reduce a Morris design to its two numbers per parameter. `X` has one row per run, in trajectory
+order (k + 1 rows per trajectory, each differing from the one before in a single column), with each
+parameter as its position in its range, 0 to 1. `y` is one output of those runs. An elementary
+effect is the change in `y` over one step divided by the step, so it is per whole range of the
+parameter and parameters can be compared.
+
+`mu_star` is the mean of the effects' absolute values: how much the parameter matters. `sigma` is
+their spread: large beside `mu_star` means the effect depends on where the other parameters are
+(an interaction) or is far from a straight line. `n` is how many effects there were; a step with a
+failed run at either end is left out.
+"""
+function elementary_effects(X, y)
+    k = size(X, 2)
+    effects = [Float64[] for _ in 1:k]
+    for start in 1:k+1:size(X, 1), a in start:start+k-1
+        j = findfirst(j -> X[a, j] != X[a+1, j], 1:k)
+        e = (y[a+1] - y[a]) / (X[a+1, j] - X[a, j])
+        isfinite(e) && push!(effects[j], e)
+    end
+    map(effects) do e
+        n = length(e)
+        m = n == 0 ? NaN : sum(e) / n
+        (mu_star = n == 0 ? NaN : sum(abs, e) / n, sigma = n < 2 ? NaN : sqrt(sum(abs2, e .- m) / (n - 1)), n = n)
+    end
+end
+
+# After a morris study: read the results back (so that resumed runs count too), and write
+# screening.csv with a row for every varied parameter and every scored or measured number.
+function _screening(st::Study, out, quiet)
+    lines = readlines(out)
+    head = split(lines[1], ',')
+    rows = Dict(String(first(f)) => f for f in split.(lines[2:end], ','))
+    X = [(v = Dict(r.overrides)[name]; (lo, hi, logscale) = st.spans[k]; logscale ? log(v / lo) / log(hi / lo) : (v - lo) / (hi - lo)) for r in st.runs, (k, name) in enumerate(st.varied)]
+    outputs = [h for h in head if (h == "score" && n_scored(st) > 0) || startswith(h, "res.") || (startswith(h, "target.") && endswith(h, ".model")) || h in first.(st.metrics)]
+    file = joinpath(st.dir, "screening.csv")
+    open(file, "w") do io
+        println(io, "parameter,output,mu_star,sigma,n")
+        for o in outputs
+            c = findfirst(==(o), head)
+            y = [haskey(rows, r.id) ? something(tryparse(Float64, rows[r.id][c]), NaN) : NaN for r in st.runs]
+            ee = elementary_effects(X, y)
+            for (k, e) in enumerate(ee)
+                println(io, st.varied[k], ",", o, ",", round(e.mu_star, sigdigits = 6), ",", round(e.sigma, sigdigits = 6), ",", e.n)
+            end
+            if o == "score" && !quiet
+                println("Screening: mean |effect| on the score of moving each parameter across its whole range (and the spread of the effects)")
+                for k in sortperm([e.mu_star for e in ee]; rev = true)
+                    println("  ", rpad(st.varied[k], 34), rpad(round(ee[k].mu_star, sigdigits = 4), 12), "(", round(ee[k].sigma, sigdigits = 4), ", from ", ee[k].n, " effects)")
+                end
+            end
+        end
+    end
+    quiet || println("screening in ", file)
+    file
 end
