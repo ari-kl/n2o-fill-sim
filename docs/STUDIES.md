@@ -450,6 +450,43 @@ out is printed.
 The controller's own signals include `ctl.step` (the number of the step running, 0 before the
 first and after the last) and `ctl.mark.<name>` (0, then 1 from the mark on).
 
+### Cases with a controller
+
+A case can be a whole scenario: `set` changes parameters for its runs only, as `[set]` does for
+the study, and `group` is a label carried into a `group` column for sorting and filtering (cases
+are still run, and banded, one by one).
+
+```toml
+[[case]]
+name = "hot_day"
+group = "summer"
+set = { "settings.T_amb_C" = 32, "BOTTLE.T_C" = 32, "controller.heat.on" = 0 }
+actions = [
+    { t = 300, part = "AV204", action = "stuck_closed" },                    # at a time, as always
+    { mark = "ready", plus_s = 60, part = "AV204", action = "stuck_closed" }, # a minute after the mark
+    { step = "hold", edge = "start", policy = "vent", action = "disable" },  # on a policy
+    { t = 400, reading = "PT202.P_read", fault = "freeze" },                 # on a reading
+]
+```
+
+A case's `set` is applied before the run's own varied parameters, and a parameter cannot be both
+set by a case and varied. Its controller settings (`controller.<policy>.<setting>`) count as the
+controller's: they do not change the noise. Its other parameters do, like a varied one.
+
+An action with a time and a part goes into the schedule as before. The controller carries out the
+rest at the first tick at or after it falls due: one keyed to a mark or a step's edge (with
+`plus_s` after it), one on a policy (`enable`, `disable`), and a fault on a reading:
+
+- `freeze`: the reading stays at what it was at that tick, whatever the truth does, and the
+  policies go on acting on it, as they would on a reading that has stopped updating.
+- `offset`: `value` (SI), `value_psi` or `value_K` is added to it.
+- `drop`: the reading is missing. A missing reading is NaN, and every comparison with it is false,
+  so a policy on it sends nothing and a condition on it is not met: absence is never taken for a
+  value.
+- `clear`: the reading is restored.
+
+A policy or reading named in a case must exist, and a keyed action needs a `[controller]`.
+
 ### A policy written in Julia
 
 When none of the policies above will do, `kind = "julia"` names a file whose last expression is a

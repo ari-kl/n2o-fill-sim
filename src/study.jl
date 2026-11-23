@@ -8,6 +8,9 @@ struct StudyRun
     case::String
     overrides::Vector{Pair{String,Float64}}
     actions::Vector{Action}
+    set::Vector{Pair{String,Float64}}         # the case's own parameter changes, applied before `overrides`
+    keyed::Vector{Any}                        # the case's actions the controller carries out (`CaseAction`s)
+    group::String
 end
 
 """
@@ -115,12 +118,56 @@ function _controller_override!(spec, key, v)
 end
 
 # A run's controller: the study's table with the run's controller overrides written in.
-function _run_controller(st, ctl_ov, scene, sim; seed = "")
+function _run_controller(st, ctl_ov, scene, sim; seed = "", keyed = Any[])
     spec = deepcopy(st.controller.spec)
     for (k, v) in ctl_ov
         _controller_override!(spec, k, v)
     end
-    _controller(spec, scene, sim; seed, allow_julia = st.controller.allow_julia, fns = st.controller.fns, end_on = st.controller.end_on)
+    _controller(spec, scene, sim; seed, allow_julia = st.controller.allow_julia, fns = st.controller.fns, end_on = st.controller.end_on,
+                case_actions = CaseAction[keyed...])
+end
+
+const _CASE_KEYS = ("name", "actions", "set", "group")
+
+# A case: (name, the actions put in the schedule, its parameter changes, the actions the controller
+# carries out, its group). An action with a time and a part and nothing else goes in the schedule,
+# as it always has; one keyed to a mark or a step edge, or on a policy or a reading, is the
+# controller's.
+function _case(c, path)
+    c isa AbstractDict && haskey(c, "name") || error("$path: each [[case]] needs a name")
+    name = String(c["name"])
+    for k in keys(c)
+        k in _CASE_KEYS || error("$path: unknown key \"$k\" in case $name. Keys: $(join(_CASE_KEYS, ", "))")
+    end
+    actions, keyed = Action[], Any[]
+    for a in get(c, "actions", [])
+        if haskey(a, "t") && haskey(a, "part") && !any(k -> haskey(a, k), ("mark", "step", "plus_s", "policy", "reading", "fault"))
+            push!(actions, Action(Float64(a["t"]), String(a["part"]), String(a["action"]), Float64(get(a, "value", 0.0))))
+            continue
+        end
+        w = "$path: case $name: an action"
+        at = haskey(a, "t") ? Float64(a["t"]) : haskey(a, "mark") ? Dict(k => a[k] for k in ("mark", "plus_s") if haskey(a, k)) :
+             haskey(a, "step") ? Dict(k => a[k] for k in ("step", "edge", "plus_s") if haskey(a, k)) : error("$w needs `t`, `mark` or `step`")
+        targets = [k for k in ("part", "policy", "reading") if haskey(a, k)]
+        length(targets) == 1 || error("$w acts on one of a part, a policy or a reading")
+        allowed = vcat(["t", "mark", "step", "edge", "plus_s"], targets[1] == "reading" ? ["reading", "fault", "value", "value_psi", "value_K"] : [targets[1], "action", "value"])
+        for k in keys(a)
+            k in allowed || error("$w: unknown key \"$k\". Keys: $(join(allowed, ", "))")
+        end
+        if targets[1] == "part"
+            push!(keyed, CaseAction(at, :part, String(a["part"]), String(a["action"]), Float64(get(a, "value", 0.0)), false))
+        elseif targets[1] == "policy"
+            get(a, "action", "") in ("enable", "disable") || error("$w on a policy is \"enable\" or \"disable\"")
+            push!(keyed, CaseAction(at, :policy, String(a["policy"]), a["action"], 0.0, false))
+        else
+            fault = String(get(a, "fault", ""))
+            fault in ("freeze", "offset", "drop", "clear") || error("$w on a reading needs fault = \"freeze\", \"offset\", \"drop\" or \"clear\"")
+            v = haskey(a, "value_psi") ? a["value_psi"] * PSI : Float64(get(a, "value", get(a, "value_K", 0.0)))
+            push!(keyed, CaseAction(at, :fault, String(a["reading"]), fault, v, false))
+        end
+    end
+    set = sort!([String(k) => Float64(v) for (k, v) in get(c, "set", Dict())]; by = first)
+    (name, actions, set, keyed, String(get(c, "group", "")))
 end
 
 # A time given by an event of the run: `{ mark = "ready", plus_s = 300 }` or `{ step = "fill",
@@ -268,15 +315,22 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
         error("$path: mode must be \"grid\", \"oat\", \"lhs\", \"morris\" or \"sets\", not \"$mode\"")
     end
     isempty(prefix) && (prefix = fill("", length(sets)))
-    cases = [(String(c["name"]), [Action(Float64(a["t"]), String(a["part"]), String(a["action"]), Float64(get(a, "value", 0.0))) for a in get(c, "actions", [])])
-             for c in get(d, "case", [])]
-    isempty(cases) && push!(cases, ("", Action[]))
+    cases = [_case(c, path) for c in get(d, "case", [])]
+    isempty(cases) && push!(cases, ("", Action[], Pair{String,Float64}[], Any[], ""))
     mode == "morris" && length(cases) > 1 && error("$path: a morris study takes one case at most (screen each case in its own study)")
-    for (name, actions) in cases, a in actions
-        find_part(scene, a.part) === nothing && error("$path: case $name acts on $(a.part), which is not in the scene")
+    for (name, actions, set, keyed) in cases
+        for a in vcat(actions, [k for k in keyed if k.kind === :part])
+            p = a isa Action ? a.part : a.target
+            find_part(scene, p) === nothing && error("$path: case $name acts on $p, which is not in the scene")
+        end
+        apply_overrides!(deepcopy(scene), ["$k=$v" for (k, v) in set if !startswith(k, "controller.")])
+        both = intersect(first.(set), names_v)
+        isempty(both) || error("$path: case $name sets $(join(both, ", ")), which the study also varies")
+        isempty(keyed) || haskey(d, "controller") || error("$path: case $name has actions keyed to marks or steps, or on policies or readings; those need a [controller]")
     end
     label(v) = string(round(v, sigdigits = 6))
-    runs = [StudyRun(pre * join(["$k=$(label(v))" for (k, v) in set], ";") * (isempty(name) ? "" : "|" * name), name, set, actions) for (pre, set) in zip(prefix, sets) for (name, actions) in cases]
+    runs = [StudyRun(pre * join(["$k=$(label(v))" for (k, v) in set], ";") * (isempty(name) ? "" : "|" * name), name, set, actions, cset, keyed, group)
+            for (pre, set) in zip(prefix, sets) for (name, actions, cset, keyed, group) in cases]
     allunique(r.id for r in runs) || error("$path: two runs would be identical (a value listed twice, or two cases with one name)")
     controller = nothing
     if haskey(d, "controller")
@@ -291,15 +345,18 @@ function _study(d, base, path, dir, allowed; allow_julia = false)
         # one run should stop the study before any of it runs.
         sim0 = Sim(deepcopy(scene))
         c = nothing
-        for ov in unique([last(_split_overrides(r.overrides)) for r in runs])
+        for (ov, case) in unique([(last(_split_overrides(vcat(r.set, r.overrides))), r.case) for r in runs])
             c = try
-                _run_controller((; controller), ov, scene, sim0)
+                _run_controller((; controller), ov, scene, sim0; keyed = runs[findfirst(r -> r.case == case, runs)].keyed)
             catch err
                 err isa ErrorException ? error("$path: $(err.msg)") : rethrow()
             end
         end
         controller = (; spec, fns, allow_julia, stand_ins = c.stand_ins, escape_hatch = c.escape_hatch, signals = c.signals, end_on,
                       steps = [x.name for x in c.steps], marks = c.mark_names)
+        for (name, _, _, keyed) in cases, a in keyed
+            _check_event(a.at, controller, "$path: case $name")
+        end
     end
     # what is scored: listed channels, or every log reading that a manifest maps to a model signal
     score = get(d, "score", Dict{String,Any}())
@@ -642,7 +699,7 @@ function simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol)
 end
 
 # The same with a controller: (sim, failed, controller). `case` is part of what its noise is seeded from.
-function _simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol, case = "")
+function _simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol, case = "", keyed = Any[])
     c = nothing
     try
         scene_ov, ctl_ov = _split_overrides(overrides)
@@ -650,7 +707,7 @@ function _simulate(st::Study, overrides, actions = Action[]; reltol = st.reltol,
         apply_overrides!(scene, ["$k=$v" for (k, v) in scene_ov])
         scene.schedule = sort(vcat(scene.schedule, st.schedule, actions); by = a -> a.t)
         sim = Sim(scene; sample_dt = st.sample_dt, reltol)
-        c = _run_controller(st, ctl_ov, scene, sim; seed = _noise_seed(scene_ov, case))
+        c = _run_controller(st, ctl_ov, scene, sim; seed = _noise_seed(scene_ov, case), keyed)
         run_controlled!(sim, c, st.until; wall_limit = st.wall_limit, work_limit = st.work_limit)
         return sim, !isempty(sim.failed) ? sim.failed : c.ended || (c.end_on[1] == "" && simtime(sim) >= st.until - 1e-6) ? "" :
                     simtime(sim) >= st.until - 1e-6 ? "reached max_s = $(st.until) before the $(c.end_on[2]) of step $(c.end_on[1])" :
@@ -665,7 +722,8 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
     row = Pair{String,Any}["id" => run.id, "case" => run.case]
     append!(row, [k => get(Dict(run.overrides), k, NaN) for k in st.varied])
     started = Base.time()
-    sim, failed, c = st.controller === nothing ? (simulate(st, run.overrides, run.actions)..., nothing) : _simulate(st, run.overrides, run.actions; case = run.case)
+    overrides = vcat(run.set, run.overrides)  # the case's changes, then the run's own
+    sim, failed, c = st.controller === nothing ? (simulate(st, overrides, run.actions)..., nothing) : _simulate(st, overrides, run.actions; case = run.case, keyed = run.keyed)
     if sim === nothing
         append!(row, [k => NaN for k in vcat("score", first.(_rms_names(st)), ["res." * g.name for g in st.scored], ["res.target." * g.name for g in st.targets],
                                          first.(_offset_names(st)), first.(_target_names(st)), first.(st.metrics))])
@@ -697,6 +755,7 @@ function run_one(st::Study, run::StudyRun; keep = nothing, seen = nothing)
         end
         append!(row, ["t_$m" => c === nothing ? NaN : get(c.marks, m, NaN) for m in st.controller.marks])
     end
+    any(r -> !isempty(r.group), st.runs) && push!(row, "group" => run.group)
     push!(row, "wall_s" => round(Base.time() - started, digits = 3))
     row
 end

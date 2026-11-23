@@ -142,6 +142,20 @@ struct Step
 end
 
 """
+One of a case's actions that the controller carries out: on a part, on a policy (`enable`,
+`disable`) or on a reading (a fault: `freeze`, `offset` by `value`, `drop`, `clear`). `at` is a
+time or an event (`{ mark = ..., plus_s }`, `{ step = ..., edge, plus_s }`).
+"""
+mutable struct CaseAction
+    at::Any
+    kind::Symbol                              # :part, :policy or :fault
+    target::String                            # the part, policy or reading
+    action::String
+    value::Float64
+    done::Bool
+end
+
+"""
 A controller: its tick, the delays, what it may read and how, its policies in tick order, and what
 it has done. Built afresh for every run from the study's `[controller]` table.
 """
@@ -165,6 +179,8 @@ mutable struct Controller
     mark_names::Vector{String}
     end_on::Tuple{String,String}              # (step, "start" or "end"): the run ends at that edge; ("", "") for none
     ended::Bool
+    case_actions::Vector{CaseAction}
+    faults::Dict{String,Tuple{Symbol,Float64}}   # reading => (fault, its value: the offset, or the frozen reading)
     obs::Dict{String,Float64}                 # this tick's readings
     log::Vector{Command}
     escape_hatch::Bool                        # a Julia policy took part
@@ -289,7 +305,7 @@ reading (a Gauge's `P_read` or `T_read`, a LoadCell's `m_read`), or a true signa
 `stand_ins`. `seed` is what the noise is seeded from. `fns` holds the functions of Julia policies,
 loaded once when the study is read.
 """
-function _controller(spec, scene::Scene, sim::Sim; seed = "", allow_julia = false, fns = Dict{String,Any}(), where = "[controller]", end_on = ("", ""))
+function _controller(spec, scene::Scene, sim::Sim; seed = "", allow_julia = false, fns = Dict{String,Any}(), where = "[controller]", end_on = ("", ""), case_actions = CaseAction[])
     for k in keys(spec)
         k in _CONTROLLER_KEYS || error("$where: unknown key \"$k\". Keys: $(join(_CONTROLLER_KEYS, ", "))")
     end
@@ -382,6 +398,10 @@ function _controller(spec, scene::Scene, sim::Sim; seed = "", allow_julia = fals
     for s in stand_ins
         s in values(source) || error("$where: stand_ins names $s, which nothing reads")
     end
+    for a in case_actions                      # a case's actions on policies and readings name ones that exist
+        a.kind === :policy && !any(q -> q.name == a.target, policies) && error("$where: a case acts on policy $(a.target), which does not exist")
+        a.kind === :fault && !haskey(source, a.target) && error("$where: a case puts a fault on $(a.target), which nothing reads. Readings: $(join(sort!(collect(keys(source))), ", "))")
+    end
     noise = Dict{String,Float64}()
     for (r, v) in get(spec, "noise", Dict())
         haskey(source, r) || error("$where: noise is given for $r, which no policy reads")
@@ -399,7 +419,8 @@ function _controller(spec, scene::Scene, sim::Sim; seed = "", allow_julia = fals
         isempty(_reads(q)) || push!(signals, "ctl.$(q.name).obs")
     end
     Controller(dt, latency, delay, source, stand_ins, noise, rng, policies, "", steps, 0, Dict{String,Float64}(), Dict{String,Float64}(),
-               Dict{String,Bool}(), NaN, Dict{String,Float64}(), mark_names, end_on, false, Dict{String,Float64}(), Command[],
+               Dict{String,Bool}(), NaN, Dict{String,Float64}(), mark_names, end_on, false, deepcopy(case_actions), Dict{String,Tuple{Symbol,Float64}}(),
+               Dict{String,Float64}(), Command[],
                any(q -> q isa JuliaPolicy, policies), signals, fill(NaN, length(signals)))
 end
 
@@ -452,13 +473,19 @@ _gauss!(g::_Lcg) = (u1 = _next!(g); u2 = _next!(g); sqrt(-2 * log(1 - u1)) * cos
 """
     _observe!(c, sim, t)
 
-Take every declared reading for the tick at `t`: the recorded signal at `t - latency`, plus noise.
+Take every declared reading for the tick at `t`: the recorded signal at `t - latency`, plus noise,
+then any fault a case has put on it (a frozen reading keeps the first value it had once frozen).
 Each noisy reading's stream is drawn once a tick whatever the policies do with it.
 """
 function _observe!(c::Controller, sim::Sim, t)
     for (r, src) in c.source
         v = signal_at(sim, src, max(t - c.latency, 0.0))
         haskey(c.noise, r) && (v += c.noise[r] * _gauss!(c.rng[r]))
+        f = get(c.faults, r, nothing)
+        if f !== nothing                       # a dropped reading is NaN: every comparison with it is false
+            f[1] === :freeze && isnan(f[2]) && (c.faults[r] = (:freeze, v))
+            v = f[1] === :freeze ? c.faults[r][2] : f[1] === :offset ? v + f[2] : NaN
+        end
         c.obs[r] = v
     end
 end
@@ -581,6 +608,26 @@ function _sequence!(c::Controller, sim::Sim, t)
     _enter!(c, sim, c.k + 1, t)
 end
 
+# A case's actions that have fallen due, carried out at this tick.
+function _case_actions!(c::Controller, sim::Sim, t)
+    for a in c.case_actions
+        a.done && continue
+        at = _event_time(a.at, c)
+        (isnan(at) || t < at - 1e-9) && continue
+        a.done = true
+        if a.kind === :part
+            schedule!(sim, Action(t, a.target, a.action, a.value))
+        elseif a.kind === :policy
+            p = c.policies[findfirst(q -> q.name == a.target, c.policies)]
+            p.enabled = a.action == "enable"
+        elseif a.action == "clear"
+            delete!(c.faults, a.target)
+        else
+            c.faults[a.target] = (Symbol(a.action), a.action == "offset" ? a.value : NaN)
+        end
+    end
+end
+
 # Whether the edge the run is to end at has come.
 _at_end(c::Controller) = c.end_on[1] != "" && haskey(c.end_on[2] == "start" ? c.t_start : c.t_end, c.end_on[1])
 
@@ -604,15 +651,17 @@ function _update_signals!(c::Controller)
     end
 end
 
-# One tick: read, move the sequence on, then each enabled policy in order (so a policy switched on
+# One tick: a case's actions that are due, read, move the sequence on, then each enabled policy in order (so a policy switched on
 # by a step that starts at this tick acts at this tick, with that step's settings).
 function _tick!(c::Controller, sim::Sim, t)
     _pad!(c, sim, t)
+    _case_actions!(c, sim, t)
     _observe!(c, sim, t)
     _sequence!(c, sim, t)
     for p in c.policies
         p.enabled ? _tick!(p, c, sim, t) : p isa BandWatch && (p.since = NaN)     # a watch counts only while it is on
     end
+    _case_actions!(c, sim, t)                  # those keyed to a mark or a step edge of this very tick
     _update_signals!(c)
     _pad!(c, sim)
     c.ended = _at_end(c)

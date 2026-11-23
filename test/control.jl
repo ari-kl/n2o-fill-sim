@@ -330,3 +330,82 @@ end
     @test_throws ErrorException F.read_study(file("bad2.toml", replace(body, "step = \"hold\", edge = \"end\", max_s" => "step = \"hld\", edge = \"end\", max_s")))
     @test_throws ErrorException F.read_study(file("bad3.toml", replace(body, "align = \"ready\"" => "align = \"fill\"")))
 end
+
+@testset "control: cases with their own parameters, groups, keyed actions, policy actions and reading faults" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), gauged_rig())
+    file(name, body) = (p = joinpath(dir, name); write(p, body); p)
+    table(path) = (lines = readlines(path); (split(lines[1], ','), [split(l, ',') for l in lines[2:end]]))
+    body = """
+        scene = "rig.toml"
+        until = 30
+        [[case]]
+        name = "warm"
+        group = "a"
+        set = { "BOTTLE.T_C" = 30, "controller.vent.open_above_psig" = 400 }
+        actions = [{ t = 1.0, part = "FILL", action = "open" }]
+        [[case]]
+        name = "cool"
+        group = "a"
+        set = { "BOTTLE.T_C" = 15 }
+        actions = [{ t = 1.0, part = "FILL", action = "open" }]
+        [[case]]
+        name = "keyed"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }, { mark = "up", plus_s = 2, part = "FILL", action = "stuck_closed" },
+                   { mark = "up", policy = "vent", action = "disable" }]
+        [[case]]
+        name = "frozen"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }, { t = 1.5, reading = "PT.P_read", fault = "freeze" }]
+        [[case]]
+        name = "faults"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }, { t = 3.0, reading = "PT.P_read", fault = "offset", value_psi = 50 },
+                   { t = 6.0, reading = "PT.P_read", fault = "drop" }, { t = 9.0, reading = "PT.P_read", fault = "clear" }]
+        [controller]
+        dt = 0.5
+        [[controller.policy]]
+        name = "vent"
+        kind = "hysteresis"
+        reading = "PT.P_read"
+        actuator = "VENT"
+        open_above_psig = 300
+        close_below_psig = 250
+        [[controller.policy]]
+        name = "up"
+        kind = "band_watch"
+        reading = "PT.P_read"
+        lo_psig = 100
+        hi_psig = 5000
+        [metrics]
+        peak = { fn = "max", signal = "TANK.P", unit = "psig" }
+        """
+    st = F.read_study(file("c.toml", body))
+    @test [r.set for r in st.runs][1:2] == [["BOTTLE.T_C" => 30.0, "controller.vent.open_above_psig" => 400.0], ["BOTTLE.T_C" => 15.0]]
+    head, rows = table(F.study(file("c.toml", body); quiet = true))
+    row(case) = rows[findfirst(r -> r[2] == case, rows)]
+    val(case, name) = (x = row(case)[findfirst(==(name), head)]; isempty(x) ? NaN : parse(Float64, x))
+    @test all(r -> isempty(r[findfirst(==("failed"), head)]), rows) && head[end-1] == "group" && row("warm")[end-1] == "a" && row("keyed")[end-1] == ""
+    @test val("warm", "peak") > val("cool", "peak")                                  # a case's parameters are its own
+    run(case) = (r = st.runs[findfirst(r -> r.case == case, st.runs)]; F._simulate(st, vcat(r.set, r.overrides), r.actions; case, keyed = r.keyed))
+    sim, _, c = run("warm")
+    @test c.policies[1].open_above[""] ≈ 400 * F.PSI + 101325                          # and so are its controller settings
+    sim, _, c = run("keyed")
+    t_up = c.marks["up"]
+    stuck = findfirst(a -> a.action == "stuck_closed", sim.log)
+    @test sim.log[stuck].t ≈ t_up + 2 && !c.policies[1].enabled                        # keyed to the mark, at the first tick from then
+    @test all(x -> x.t <= t_up, c.log)                                                  # the vent, disabled at the mark, said no more
+    sim, _, c = run("frozen")
+    obs = sim.hist["ctl.vent.obs"]
+    after = findall(t -> t >= 1.5, sim.t_hist)
+    @test all(==(obs[after[1]]), obs[after]) && F.signal_at(sim, "PT.P", 30.0) > obs[after[1]] + 100 * F.PSI   # it stays at the stale value
+    @test obs[after[1]] < 300 * F.PSI + 101325 && isempty(c.log)                       # and the vent acts on that, so never opens
+    sim, _, c = run("faults")
+    d(t) = F.signal_at(sim, "ctl.vent.obs", t) - F.signal_at(sim, "PT.P", t)
+    @test abs(d(2.0)) < 1 && d(4.0) ≈ 50 * F.PSI && isnan(F.signal_at(sim, "ctl.vent.obs", 7.0)) && abs(d(10.0)) < 1
+    # mistakes
+    @test_throws ErrorException F.read_study(file("b1.toml", replace(body, "\"BOTTLE.T_C\" = 15" => "\"BOTTLE.TC\" = 15")))
+    @test_throws ErrorException F.read_study(file("b2.toml", replace(body, "policy = \"vent\"" => "policy = \"vnt\"")))
+    @test_throws ErrorException F.read_study(file("b3.toml", replace(body, "reading = \"PT.P_read\", fault = \"freeze\"" => "reading = \"TANK.P\", fault = \"freeze\"")))
+    @test_throws ErrorException F.read_study(file("b4.toml", replace(body, "mark = \"up\", plus_s = 2" => "mark = \"down\", plus_s = 2")))
+    @test_throws ErrorException F.read_study(file("b5.toml", body * "[vary]\n\"BOTTLE.T_C\" = [20]\n"))       # set by a case and varied
+    @test_throws ErrorException F.read_study(file("b6.toml", replace(body, r"\[controller\][\s\S]*\[metrics\]" => "[metrics]")))   # keyed actions need a controller
+end
