@@ -5,6 +5,7 @@ and then says how well those logs determine each value.
 
 ```
 julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml [--write-scenes]
+julia -t 8 --project bin/n2o-fill-sim.jl fit myfit.toml --holdout coldflow      # leave one log out, then predict it
 julia --project bin/n2o-fill-sim.jl fit --init scenes/hf4.toml      # a draft fit file from the scene's [fit] tags
 ```
 
@@ -88,6 +89,27 @@ spends its parameters on an error they cannot remove, and returns biased values 
 spread, which is the worst combination. With it, the values that the rest of the log determines
 come out as they should.
 
+## Checking a fit on a log it never saw
+
+    fit myfit.toml --holdout coldflow
+
+leaves the dataset called `coldflow` out of the fit entirely, fits the rest, and then runs
+`coldflow` once with the fitted values. A fit can always be made to match the logs it was given.
+Whether its values are properties of the hardware, or only of those logs, shows on a log it was
+not given. Do it once for each dataset in turn: the scores of the held-out logs, side by side,
+are the honest measure of the fit.
+
+What happens to each parameter:
+
+- shared with the fitted datasets: fitted on them, and used for the held-out one;
+- belonging only to the held-out dataset (`datasets = ["coldflow"]`): not fitted. It stays at the
+  `start` given for it, or at the scene's value. So give such a parameter a measured start value,
+  or the prediction is being judged with a guess in it.
+
+The report and the calibration record give each fitted dataset's own score, and for the held-out
+one its score with the fitted values beside its score with every parameter at its start value.
+If the second is the better of the two, the fit made the model worse at predicting.
+
 ## How it searches
 
 Optionally a Latin hypercube over the bounds (`explore`) to find a good place to start. Then, by
@@ -138,11 +160,11 @@ confidence interval.
 
 ## What it writes
 
-- `evals.csv`: every evaluation (parameter values, score, each dataset's score, failures).
+- `evals.csv`: every evaluation of the search (parameter values, score, each dataset's score, failures).
 - `report.txt`.
 - `<date>-<name>.toml`: the **calibration record**. The values, their bounds and spread, the
   datasets, channels, phases, scored numbers and trust they were fitted against, the RMS reached, the commit of the fit file's own
-  folder (`commit`) and of the model that ran it (`model_commit`), and the identifiability
-  statements. A fitted number without this is a number nobody can check.
-- with `--write-scenes`, `<dataset>.toml`: a copy of each dataset's scene with the fitted values
+  folder (`commit`) and of the model that ran it (`model_commit`), the
+  identifiability statements; with `--holdout`, the held-out dataset's scores under `[holdout]`. A fitted number without this is a number nobody can check.
+- with `--write-scenes`, `<dataset>.toml`: a copy of each fitted dataset's scene with the fitted values
   in place and a header saying which fit produced them. The scenes you gave are never modified.

@@ -33,16 +33,17 @@ usage: julia --project bin/n2o-fill-sim.jl [scene.toml] [options]
        julia -t 8 --project bin/n2o-fill-sim.jl study file.toml [--resume] [--keep-traces]
   runs a scene many times with parameters varied and scores each run (see docs/STUDIES.md);
   it uses as many threads as Julia was started with (-t)
-       julia -t 8 --project bin/n2o-fill-sim.jl fit file.toml [--write-scenes]
+       julia -t 8 --project bin/n2o-fill-sim.jl fit file.toml [--write-scenes] [--holdout NAME]
   fits parameters to one or several logs at once and reports what the logs do and do not
-  determine (see docs/FITTING.md); `fit --init scene.toml` drafts a fit file from the scene's [fit] tags
+  determine (see docs/FITTING.md); `fit --init scene.toml` drafts a fit file from the scene's [fit] tags.
+  --holdout leaves the named dataset out of the fit and then predicts it with the fitted values
        julia --project bin/n2o-fill-sim.jl manifest suggest log.csv scene.toml
   prints a draft manifest for a log, to be checked and corrected by hand
        julia --project bin/n2o-fill-sim.jl manifest extract log.toml out.csv
   writes the log as its manifest describes it: one clock, an even grid, valve columns as 1 = open
 """
 
-const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames")
+const _VALUED = ("--replay", "--manifest", "--t0", "--set", "--schedule", "--until", "--sample-dt", "--csv", "--columns", "--shot", "--frames", "--holdout")
 const _FLAGS = ("--help", "--run", "--headless", "--resume", "--keep-traces", "--write-scenes", "--init")
 
 "Split a command line into positional arguments and options (an option may be given more than once)."
@@ -92,9 +93,9 @@ function main(args = ARGS)
         return print(suggest_manifest(files[3], load_scene(files[4])))
     end
     if !isempty(files) && files[1] == "fit"
-        length(files) == 2 || error("usage: fit file.toml [--write-scenes]   or   fit --init scene.toml")
+        length(files) == 2 || error("usage: fit file.toml [--write-scenes] [--holdout NAME]   or   fit --init scene.toml")
         flag("--init") && return print(fit_skeleton(files[2]))
-        return fit(files[2]; write_scenes = flag("--write-scenes"))
+        return fit(files[2]; write_scenes = flag("--write-scenes"), holdout = opt("--holdout"))
     end
     if !isempty(files) && files[1] == "study"
         length(files) == 2 || error("usage: study file.toml [--resume] [--keep-traces]")

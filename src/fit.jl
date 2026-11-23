@@ -34,6 +34,10 @@ struct Fit
     method::String                # "lm" (Levenberg-Marquardt) or "nelder-mead"
     jac_reltol::Float64           # solver tolerance for the sensitivity runs
     jac_step::Float64             # their step, as a fraction of each parameter's range
+    held_name::String             # a dataset left out of the fit, to be predicted afterwards ("" if none)
+    held::Union{Nothing,Study}
+    held_shared::Vector{Int}      # the fitted parameters that apply to it
+    held_fixed::Vector{Pair{String,Float64}}   # its own parameters, which stay at the start values given for them
 end
 
 const _FIT_KEYS = ("name", "dataset", "parameter", "explore", "seed", "max_evals", "method", "jacobian_reltol", "jacobian_step")
@@ -45,13 +49,16 @@ _unit(p::FitParam, v) = p.log ? log(v / p.lo) / log(p.hi / p.lo) : (v - p.lo) / 
 _value(p::FitParam, x) = p.log ? p.lo * (p.hi / p.lo)^x : p.lo + (p.hi - p.lo) * x
 
 """
-    read_fit(path) -> Fit
+    read_fit(path; holdout = nothing) -> Fit
 
 Read a fit file: the datasets (each a scene, a log and what to score, exactly as in a study), and
 the parameters to fit with their bounds. A parameter applies to every dataset unless it names the
 ones it belongs to; the same name listed twice with different datasets is fitted separately for each.
+
+`holdout` names a dataset to leave out of the fit. Parameters that belong to it alone are not
+fitted; shared ones are, on the other datasets.
 """
-function read_fit(path)
+function read_fit(path; holdout = nothing)
     d = TOML.parsefile(path)
     for k in keys(d)
         k in _FIT_KEYS || error("$path: unknown key \"$k\". Keys: $(join(_FIT_KEYS, ", "))")
@@ -63,6 +70,15 @@ function read_fit(path)
     allunique(names) || error("$path: two datasets share a name")
     datasets = Study[_study(Dict(k => v for (k, v) in ds if !(k in ("name", "weight"))), base, "$path, dataset $(names[k])", dir, _DATASET_KEYS)
                      for (k, ds) in enumerate(d["dataset"])]
+    weights = Float64[Float64(get(ds, "weight", 1.0)) for ds in d["dataset"]]
+    held, held_shared, held_fixed = nothing, Int[], Pair{String,Float64}[]
+    if holdout !== nothing                                     # take it out here, so that everything below sees only the fitted datasets
+        h = findfirst(==(holdout), names)
+        h === nothing && error("$path: no dataset called \"$holdout\" to hold out. Datasets: $(join(names, ", "))")
+        held = datasets[h]
+        foreach(v -> deleteat!(v, h), (datasets, names, weights))
+        isempty(datasets) && error("$path: holding out $holdout leaves nothing to fit")
+    end
     for (k, st) in enumerate(datasets)
         n_scored(st) == 0 && error("$path: dataset $(names[k]) scores nothing (it needs a log and [dataset.score] channels, or a manifest with maps_to)")
     end
@@ -76,7 +92,15 @@ function read_fit(path)
         hi > lo || error("$path: parameter $name needs from < to")
         logscale = Bool(get(p, "log", false))
         logscale && lo <= 0 && error("$path: parameter $name is on a log scale, so its bounds must be positive")
-        which = haskey(p, "datasets") ? [something(findfirst(==(String(n)), names), 0) for n in p["datasets"]] : collect(eachindex(datasets))
+        listed = haskey(p, "datasets") ? String.(p["datasets"]) : nothing
+        on_held = held !== nothing && (listed === nothing || holdout in listed)
+        on_held && apply_overrides!(deepcopy(held.scene), ["$name=$lo"])
+        listed === nothing || filter!(!=(holdout), listed)
+        if listed !== nothing && isempty(listed)               # it belongs to the held-out dataset alone: not fitted
+            haskey(p, "start") && push!(held_fixed, name => Float64(p["start"]))
+            continue
+        end
+        which = listed !== nothing ? [something(findfirst(==(n), names), 0) for n in listed] : collect(eachindex(datasets))
         all(>(0), which) || error("$path: parameter $name names a dataset that does not exist. Datasets: $(join(names, ", "))")
         for k in which                                         # the name must exist in each scene it applies to
             apply_overrides!(deepcopy(datasets[k].scene), ["$name=$lo"])
@@ -89,16 +113,17 @@ function read_fit(path)
         end
         label = haskey(p, "datasets") ? name * "@" * join(names[which], "+") : name
         push!(params, FitParam(label, name, lo, hi, clamp(start, lo, hi), logscale, which))
+        on_held && push!(held_shared, length(params))
     end
     isempty(params) && error("$path: no [[parameter]]")
     allunique(p.label for p in params) || error("$path: a parameter is listed twice for the same datasets")
     for k in eachindex(datasets), name in unique(p.name for p in params)
         count(p -> p.name == name && k in p.datasets, params) <= 1 || error("$path: $name is fitted twice for dataset $(names[k])")
     end
-    Fit(String(get(d, "name", splitext(basename(path))[1])), dir, datasets, names, Float64[Float64(get(ds, "weight", 1.0)) for ds in d["dataset"]],
+    Fit(String(get(d, "name", splitext(basename(path))[1])), dir, datasets, names, weights,
         params, Int(get(d, "explore", 0)), Int(get(d, "seed", 1)), Int(get(d, "max_evals", 60 * length(params))),
         (m = String(get(d, "method", "lm")); m in ("lm", "nelder-mead") || error("$path: method must be \"lm\" or \"nelder-mead\""); m),
-        Float64(get(d, "jacobian_reltol", 1e-7)), Float64(get(d, "jacobian_step", 0.01)))
+        Float64(get(d, "jacobian_reltol", 1e-7)), Float64(get(d, "jacobian_step", 0.01)), something(holdout, ""), held, held_shared, held_fixed)
 end
 
 """
@@ -133,6 +158,9 @@ function evaluate(fit::Fit, x; reltol = nothing)
     end
     reduce(vcat, parts), rms, failed
 end
+
+# Several positions at once, each of them several datasets run side by side.
+_evaluate_all(fit::Fit, xs; reltol = nothing) = fetch.([Threads.@spawn evaluate(fit, x; reltol) for x in xs])
 
 "The fit's one number: as a study's score, over every dataset's scored numbers together."
 fit_score(fit::Fit, residuals) = sqrt(sum(abs2, residuals) / sum(n_scored, fit.datasets))
@@ -318,17 +346,21 @@ function identifiability(J, labels)
 end
 
 """
-    fit(path; write_scenes = false, quiet = false) -> report
+    fit(path; write_scenes = false, holdout = nothing, quiet = false) -> report
 
 Run the fit in `path`. Optionally explore the bounds first with a Latin hypercube, then search from
-the best point found (or from the given starts) with Nelder-Mead, once and then again from where
-it stopped. Then run the sensitivity of every residual to every parameter at a tighter solver
-tolerance and report what the data determine. Writes into `<fit file>_results/`: `evals.csv` (every
-evaluation), `report.txt`, a calibration record `<date>-<name>.toml`, and with `write_scenes` a
-copy of each dataset's scene with the fitted values in place and a note of where each came from.
+the best point found (or from the given starts) with Levenberg-Marquardt (or Nelder-Mead, once and
+then again from where it stopped). Then run the sensitivity of every residual to every parameter
+at a tighter solver tolerance and report what the data determine. Writes into
+`<fit file>_results/`: `evals.csv` (every evaluation of the search), `report.txt`, a calibration
+record `<date>-<name>.toml`, and with `write_scenes` a copy of each dataset's scene with the fitted
+values in place and a note of where each came from.
+
+`holdout` names a dataset to leave out of the fit and then predict with the fitted values: a check
+on a log the fit never saw.
 """
-function fit(path; write_scenes = false, quiet = false)
-    ft = read_fit(path)
+function fit(path; write_scenes = false, holdout = nothing, quiet = false)
+    ft = read_fit(path; holdout)
     mkpath(ft.dir)
     np = length(ft.params)
     say(args...) = quiet || println(args...)
@@ -336,18 +368,11 @@ function fit(path; write_scenes = false, quiet = false)
     println(log_io, "eval,score,", join((p.label for p in ft.params), ","), ",", join(("score." * n for n in ft.names), ","), ",failed")
     evals = Ref(0)
     best = Ref((Inf, Float64[]))
-    # Evaluate several positions at once (each is itself several datasets run side by side), then
-    # score and log them in the order given, so that the log does not depend on which finished first.
-    function several(xs; reltol = nothing)
-        out = Vector{Any}(undef, length(xs))
-        @sync for (i, x) in enumerate(xs)
-            Threads.@spawn out[i] = evaluate(ft, x; reltol)
-        end
-        out
-    end
+    # Evaluate several positions at once, then score and log them in the order given, so that the
+    # log does not depend on which finished first.
     function scored(xs)                                        # (score, residual vector or nothing if a dataset failed) for each
         out = Tuple{Float64,Union{Nothing,Vector{Float64}}}[]
-        for (x, (residuals, _, failed)) in zip(xs, several(xs))
+        for (x, (residuals, _, failed)) in zip(xs, _evaluate_all(ft, xs))
             s = fit_score(ft, residuals)
             evals[] += 1
             s < best[][1] && (best[] = (s, copy(x)))
@@ -393,7 +418,7 @@ function fit(path; write_scenes = false, quiet = false)
     J = zeros(length(r0), np)
     steps = [x[k] + ft.jac_step <= 1 ? ft.jac_step : -ft.jac_step for k in 1:np]
     moved = [(xk = copy(x); xk[k] += steps[k]; xk) for k in 1:np]
-    shifted = reduce(vcat, [several(collect(chunk); reltol = ft.jac_reltol) for chunk in Iterators.partition(moved, max(1, Threads.nthreads() ÷ 2))])
+    shifted = reduce(vcat, [_evaluate_all(ft, collect(chunk); reltol = ft.jac_reltol) for chunk in Iterators.partition(moved, max(1, Threads.nthreads() ÷ 2))])
     for k in 1:np
         h = steps[k]
         rk = shifted[k][1]
@@ -405,6 +430,19 @@ function fit(path; write_scenes = false, quiet = false)
     values = [_value(p, x[k]) for (k, p) in enumerate(ft.params)]
     # an approximate standard error in the parameter's own units (a factor, for a log parameter)
     spread = [p.log ? exp(std[k] * misfit * log(p.hi / p.lo)) : std[k] * misfit * (p.hi - p.lo) for (k, p) in enumerate(ft.params)]
+    each = _dataset_scores(ft, r0)                             # each fitted dataset's own score
+    # The dataset held out, run with the fitted values of the parameters it shares (its own stay
+    # where they started), and for comparison with every fitted parameter at its start value.
+    held = nothing
+    if ft.held !== nothing
+        predict(v) = begin
+            sim, why = simulate(ft.held, vcat(ft.held_fixed, [ft.params[j].name => v[j] for j in ft.held_shared]))
+            (sim === nothing || !isempty(why)) ? (NaN, vcat(_rms_names(ft.held), _offset_names(ft.held), _target_names(ft.held)), why) :
+                (s = score_run(ft.held, sim); (study_score(s), vcat(s.rms, s.offsets, s.targets), ""))
+        end
+        score, readings, why = predict(values)
+        held = (; name = ft.held_name, score, start_score = predict([p.start for p in ft.params])[1], readings, failed = why)
+    end
     io = IOBuffer()
     println(io, "Fit \"", ft.name, "\"    score ", round(fx, digits = 4), " (", round(f0, digits = 3), " at the start), ", evals[], " evaluations")
     println(io, "\nParameters (± is approximate: one scored number counted as one observation)")
@@ -415,10 +453,19 @@ function fit(path; write_scenes = false, quiet = false)
     end
     println(io, "\nHow close, per dataset, channel and phase (RMS in the log's own units; offset: what a channel with a free zero was shifted by; target: a feature in the model and in the log)")
     for (k, name) in enumerate(ft.names)
-        println(io, "  ", name, isempty(failed[k]) ? "" : "   FAILED: " * failed[k])
+        println(io, "  ", name, "    score ", round(each[k], sigdigits = 4), isempty(failed[k]) ? "" : "   FAILED: " * failed[k])
         for (key, v) in rms[k]
             println(io, "    ", rpad(replace(key, "rms." => ""), 34), round(v, sigdigits = 4))
         end
+    end
+    if held !== nothing
+        println(io, "\nHeld out: ", held.name, " took no part in the fit. Run with the fitted values of the parameters it shares:")
+        println(io, "  score ", round(held.score, sigdigits = 4), "  (", round(held.start_score, sigdigits = 4), " with every parameter at its start value)", isempty(held.failed) ? "" : "   FAILED: " * held.failed)
+        for (key, v) in held.readings
+            println(io, "    ", rpad(replace(key, "rms." => ""), 34), round(v, sigdigits = 4))
+        end
+        isempty(ft.held_fixed) || println(io, "  its own parameters stayed at: ", join(["$k = $v" for (k, v) in ft.held_fixed], ", "))
+        println(io, "  A fit that scores well on its own logs and badly here has fitted those logs, not the hardware.")
     end
     println(io, "\nWhat these data do and do not determine")
     isempty(statements) ? println(io, "  Every parameter is separately determined (no correlation over 0.9, no undetermined combination).") :
@@ -430,14 +477,14 @@ function fit(path; write_scenes = false, quiet = false)
     open(record, "w") do out
         println(out, "# Calibration record written by `fit`. Values, what they were fitted to, and how well.")
         println(out, "name = ", repr(ft.name), "\ndate = ", repr(_today()), "\ncommit = ", repr(_commit(dirname(abspath(path)))), "\nmodel_commit = ", repr(_commit(@__DIR__)), "\nscore = ", round(fx, sigdigits = 6))
-        println(out, "datasets = ", repr(ft.names))
+        println(out, "datasets = ", _list(ft.names))
         for (k, p) in enumerate(ft.params)
             println(out, "\n[[parameter]]\nname = ", repr(p.name), "\ndatasets = ", repr(ft.names[p.datasets]), "\nvalue = ", round(values[k], sigdigits = 7),
                     "\nfrom = ", p.lo, "\nto = ", p.hi, "\nlog = ", p.log, "\nspread = ", round(spread[k], sigdigits = 4))
         end
         for (k, name) in enumerate(ft.names)
             st = ft.datasets[k]
-            println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until)
+            println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until, "\nscore = ", round(each[k], sigdigits = 6))
             println(out, "channels = [", join(["{ log = $(repr(c.log)), model = $(repr(c.model)), sigma = $(c.sigma), weight = $(c.weight), offset = $(repr(c.offset)) }" for c in st.channels], ", "), "]")
             println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
             println(out, "scored = [", join(["{ name = $(repr(g.name)), sigma = $(round(g.sigma, sigdigits = 6)) }" for g in st.scored], ", "), "]")
@@ -445,6 +492,11 @@ function fit(path; write_scenes = false, quiet = false)
             for kind in ("rms", "offset", "target")
                 println(out, kind, " = { ", join(["$(repr(replace(key, kind * "." => ""))) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in rms[k] if startswith(key, kind * ".")], ", "), " }")
             end
+        end
+        if held !== nothing
+            println(out, "\n[holdout]                       # not fitted: predicted with the fitted values")
+            println(out, "name = ", repr(held.name), "\nscore = ", isnan(held.score) ? "nan" : round(held.score, sigdigits = 6), "\nstart_score = ", isnan(held.start_score) ? "nan" : round(held.start_score, sigdigits = 6))
+            println(out, "readings = { ", join(["$(repr(key)) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in held.readings], ", "), " }")
         end
         println(out, "\nidentifiability = ", _list(statements))
     end
@@ -460,7 +512,8 @@ function fit(path; write_scenes = false, quiet = false)
         end
     end
     say("\n", report, "\nwritten: ", joinpath(ft.dir, "report.txt"), ", ", record)
-    (; score = fx, start_score = f0, values = Dict(labels .=> values), spread = Dict(labels .=> spread), statements, rms = Dict(ft.names .=> rms), evals = evals[], dir = ft.dir)
+    (; score = fx, start_score = f0, values = Dict(labels .=> values), spread = Dict(labels .=> spread), statements, rms = Dict(ft.names .=> rms), evals = evals[], dir = ft.dir,
+       scores = Dict(ft.names .=> each), holdout = held)
 end
 
 # Each dataset's own score from the combined residual vector.

@@ -515,8 +515,8 @@ end
 # run several times quicker than starting empty. `extra(t)` is added to the logged pressure, and
 # `more` is further columns as name => function of (run, time).
 scoring_rig(; kw...) = rig(; tank_fill = 2.0, kw...)
-function made_up_log(path; extra = t -> 0.0, more = Pair{String,Function}[])
-    truth = scoring_rig(bottle_T = 27.0)
+function made_up_log(path; extra = t -> 0.0, more = Pair{String,Function}[], bottle_T = 27.0)
+    truth = scoring_rig(; bottle_T)
     F.apply_overrides!(truth, ["FILL.d_mm=4"])
     truth.schedule = [F.Action(1.0, "FILL", "open", 0.0), F.Action(1.0, "VENT", "open", 0.0), F.Action(15.0, "VENT", "close", 0.0)]
     sim = F.Sim(truth)
@@ -866,6 +866,42 @@ end
     @test occursin("Screening:", said) && occursin("BOTTLE.T_C", said)
     rows = split.(readlines(joinpath(dir, "scored_results", "screening.csv")), ',')
     @test Set(r[2] for r in rows[2:end]) == Set(["score", "res.PT_psig.closed", "res.PT_psig.venting"]) && all(r -> parse(Float64, r[3]) > 0, rows[2:end])
+end
+
+@testset "fitting: a log held out and predicted" begin
+    dir = mktempdir()
+    # two tests on the same hardware (a 4 mm fill valve), with the bottle at 27 °C in one and 22 °C in the other
+    made_up_log(joinpath(dir, "a.csv"))
+    made_up_log(joinpath(dir, "b.csv"); bottle_T = 22.0)
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    dataset(name) = """
+        [[dataset]]
+        name = "$name"
+        scene = "rig.toml"
+        replay = "$name.csv"
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "TANK.P", sigma = 0.5 }]
+        phases = { venting = [1, 15], closed = [15, 30] }
+        bin_s = 5
+        """
+    bottle(name, start) = "[[parameter]]\nname = \"BOTTLE.T_C\"\nfrom = 15\nto = 32\nstart = $start\ndatasets = [\"$name\"]\n"
+    file = joinpath(dir, "fit.toml")
+    write(file, "max_evals = 30\njacobian_reltol = 1e-5\n" * dataset("a") * dataset("b") *
+                "[[parameter]]\nname = \"FILL.d_mm\"\nfrom = 2\nto = 8\nstart = 6\n" * bottle("a", 24) * bottle("b", 22))
+    ft = F.read_fit(file; holdout = "b")
+    @test ft.names == ["a"] && [p.label for p in ft.params] == ["FILL.d_mm", "BOTTLE.T_C@a"] && ft.held_shared == [1] && ft.held_fixed == ["BOTTLE.T_C" => 22.0]
+    @test_throws ErrorException F.read_fit(file; holdout = "c")
+    r = redirect_stdout(() -> F.main(["fit", file, "--holdout", "b", "--write-scenes"]), devnull)
+    # b took no part, and its own bottle temperature was never fitted; the valve found from a predicts it
+    @test abs(r.values["FILL.d_mm"] - 4) < 0.1 && !haskey(r.values, "BOTTLE.T_C@b")
+    @test r.holdout.name == "b" && r.holdout.score < 1 && r.holdout.start_score > 5 * r.holdout.score && isapprox(r.scores["a"], r.score; rtol = 0.05)
+    record = F.TOML.parsefile(only(filter(f -> endswith(f, "-fit.toml"), readdir(r.dir; join = true))))
+    @test record["datasets"] == ["a"] && record["holdout"]["name"] == "b" && isapprox(record["holdout"]["score"], r.holdout.score; rtol = 1e-4)
+    @test haskey(record["holdout"]["readings"], "rms.PT_psig.closed") && isapprox(record["dataset"][1]["score"], r.scores["a"]; rtol = 1e-4)
+    @test occursin("Held out: b", read(joinpath(r.dir, "report.txt"), String)) && isfile(joinpath(r.dir, "a.toml")) && !isfile(joinpath(r.dir, "b.toml"))
+    # held out the other way round, a's bottle stays at its start value (24, not the 27 of its log), and the prediction shows it
+    r2 = F.fit(file; holdout = "a", quiet = true)
+    @test r2.holdout.score > 3 * r.holdout.score
 end
 
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
