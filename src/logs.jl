@@ -2,7 +2,8 @@
 # overlay for the plots and a valve schedule for the simulator.
 #
 # Column meaning is the trap. The same valves have been logged as `valve_AV201` with 1 = open
-# (HF3, HF4) and, in later logs, as `solenoid_AV201` with 1 = "CLOSED". So a 0/1 column is never replayed on a guess: `LogColumn.one_means` has to say.
+# (HF3, HF4) and, in later logs, as `solenoid_AV201` with 1 = "CLOSED". So a 0/1 column is never
+# replayed on a guess: `LogColumn.one_means` has to say.
 
 """
     read_csv(path; min_dt = 0.0) -> (names, columns)
