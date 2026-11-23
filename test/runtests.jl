@@ -895,6 +895,118 @@ end
     @test Set(r[2] for r in rows[2:end]) == Set(["score", "res.PT_psig.closed", "res.PT_psig.venting"]) && all(r -> parse(Float64, r[3]) > 0, rows[2:end])
 end
 
+@testset "runs a log could not rule out" begin
+    dir = mktempdir()
+    results = joinpath(dir, "results.csv")
+    write(results, """
+        id,case,A.x,B.y,score,res.P.a,res.P.b,res.target.t,t_end,failed,wall_s
+        r1,,1.0,10,0.5,0.5,-0.5,0.5,30,,0.1
+        r2,,2.0,20,2.5,-4.0,1.0,2.9,30,,0.1
+        r3,,3.0,30,3.5,-4.0,1.0,3.1,30,,0.1
+        r4,,4.0,40,0.1,0.1,0.1,,12,stopped at the work limit,0.1
+        r5,,5.0,,0.1,0.1,0.1,0.1,30,,0.1
+        r6,,6.0,60,,,,,,cannot be built,0.1
+        """)
+    k = F.keep_runs(results)
+    # one scored number over 3 is allowed (r2), two are not (r3); a run that stopped early or failed is out
+    @test (k.runs, k.kept, k.scored) == (6, 3, 3) && k.names == ["A.x", "B.y"]
+    @test k.sets == [["A.x" => 1.0, "B.y" => 10.0], ["A.x" => 2.0, "B.y" => 20.0], ["A.x" => 5.0]]      # a blank cell: left as the scene has it
+    @test k.ranges == [(name = "A.x", kept_lo = 1.0, kept_hi = 5.0, lo = 1.0, hi = 6.0), (name = "B.y", kept_lo = 10.0, kept_hi = 20.0, lo = 10.0, hi = 60.0)]
+    @test F.keep_runs(results; nth = 1).kept == 2 && F.keep_runs(results; nth = 1, cutoff = 5).kept == 4
+    @test F.keep_runs(results; cutoff = 0.2).kept == 1 && F.keep_runs(results; cutoff = 0.01).kept == 0
+    @test_throws ErrorException F.keep_runs(results; nth = 4)                                           # there are three scored numbers
+    said = mktemp() do path, io
+        redirect_stdout(() -> F.main(["study", "keep", results, "--nth", "1", "--cutoff", "5"]), io); close(io); read(path, String)
+    end
+    @test occursin("6 runs, 4 kept", said) && occursin(r"A\.x +1\.0 to 5\.0 +1\.0 to 6\.0", said)
+    @test readlines(joinpath(dir, "kept.csv")) == ["A.x,B.y", "1.0,10", "2.0,20", "3.0,30", "5.0,"]
+    write(results, "id,case,A.x,score,t_end,failed,wall_s\nr1,,1.0,,30,,0.1\n")
+    @test_throws ErrorException F.keep_runs(results)                                                    # nothing was scored
+end
+
+@testset "a study on parameter sets from a file, and prediction bands" begin
+    dir = mktempdir()
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    file(name, body) = (p = joinpath(dir, name); write(p, body); p)
+    file("kept.csv", "BOTTLE.T_C,FILL.d_mm\n20,3\n27,\n20,3\n")       # a blank cell: as the scene has it; a set may be there twice
+    body = """
+        scene = "rig.toml"
+        until = 10
+        mode = "sets"
+        sets = "kept.csv"
+        [[case]]
+        name = "fill"
+        actions = [{ t = 1.0, part = "FILL", action = "open" }]
+        [[case]]
+        name = "shut"
+        [metrics]
+        loaded_kg = { fn = "final", signal = "TANK.m" }
+        [bands]
+        signals = ["TANK.P", "TANK.m"]
+        percentiles = [0, 50, 100]
+        grid_s = 2.5
+        """
+    sets = file("sets.toml", body)
+    st = F.read_study(sets)
+    @test st.varied == ["BOTTLE.T_C", "FILL.d_mm"] && st.spans == [(20.0, 27.0, false), (3.0, 3.0, false)]
+    @test [r.id for r in st.runs] == ["s1;BOTTLE.T_C=20.0;FILL.d_mm=3.0|fill", "s1;BOTTLE.T_C=20.0;FILL.d_mm=3.0|shut", "s2;BOTTLE.T_C=27.0|fill", "s2;BOTTLE.T_C=27.0|shut",
+                                      "s3;BOTTLE.T_C=20.0;FILL.d_mm=3.0|fill", "s3;BOTTLE.T_C=20.0;FILL.d_mm=3.0|shut"]
+    @test st.runs[3].overrides == ["BOTTLE.T_C" => 27.0]
+    out = F.study(sets; quiet = true)
+    head, rows = F._table(out)
+    # each run is the scene with that set, run by hand
+    by_hand(overrides, actions) = (s = scoring_rig(); F.apply_overrides!(s, overrides); s.schedule = actions; sim = F.Sim(s; sample_dt = 0.5); F.run_until!(sim, 10.0); sim)
+    a, b = by_hand(["BOTTLE.T_C=20", "FILL.d_mm=3"], [F.Action(1.0, "FILL", "open", 0.0)]), by_hand(["BOTTLE.T_C=27"], [F.Action(1.0, "FILL", "open", 0.0)])
+    loaded(id) = parse(Float64, only(r for r in rows if r[1] == id)[findfirst(==("loaded_kg"), head)])
+    @test loaded("s1;BOTTLE.T_C=20.0;FILL.d_mm=3.0|fill") == round(a.hist["TANK.m"][end], sigdigits = 7) == loaded("s3;BOTTLE.T_C=20.0;FILL.d_mm=3.0|fill")
+    @test loaded("s2;BOTTLE.T_C=27.0|fill") == round(b.hist["TANK.m"][end], sigdigits = 7) && loaded("s2;BOTTLE.T_C=27.0|shut") == 2.0
+    # the bands: one file per case, a row per grid time, the percentiles of each signal over that case's three runs
+    bh, br = F._table(joinpath(dirname(out), "bands_fill.csv"))
+    @test bh == ["t_s", "n", "TANK.P.p0", "TANK.P.p50", "TANK.P.p100", "TANK.m.p0", "TANK.m.p50", "TANK.m.p100"]
+    @test [r[1] for r in br] == ["0.0", "2.5", "5.0", "7.5", "10.0"] && all(r -> r[2] == "3", br)
+    pa, pb = F.signal_at(a, "TANK.P", 5.0), F.signal_at(b, "TANK.P", 5.0)
+    @test parse.(Float64, br[3][3:5]) == round.([min(pa, pb), pa, max(pa, pb)], sigdigits = 7)             # two of the three runs are a
+    @test parse.(Float64, br[5][6:8]) == round.(sort([a.hist["TANK.m"][end], a.hist["TANK.m"][end], b.hist["TANK.m"][end]]), sigdigits = 7)
+    @test all(r -> r[3] == r[5] && r[6:8] == ["2.0", "2.0", "2.0"], F._table(joinpath(dirname(out), "bands_shut.csv"))[2])   # nothing happens with the valve shut
+    mh, mr = F._table(joinpath(dirname(out), "metric_bands.csv"))
+    @test mh == ["case", "metric", "n", "p0", "p50", "p100"] && mr[1] == vcat(["fill", "loaded_kg", "3"], br[5][6:8]) && mr[2] == ["shut", "loaded_kg", "3", "2.0", "2.0", "2.0"]
+    # with one case the file is bands.csv; results.csv is as for any study
+    single = F.study(file("single.toml", replace(body, "[[case]]\nname = \"shut\"\n" => "")); quiet = true)
+    @test F._table(joinpath(dirname(single), "bands.csv")) == (bh, br) && !isfile(joinpath(dirname(single), "bands_fill.csv"))
+    # on two threads the bands are the same to the last digit
+    script = "using N2OFillSim; N2OFillSim.study(ARGS[1]; quiet = true)"
+    two = file("two.toml", body)
+    run(`$(Base.julia_cmd()) -t 2 --project=$(Base.active_project()) -e $script $two`)
+    for f in ("bands_fill.csv", "bands_shut.csv", "metric_bands.csv")
+        @test read(joinpath(dir, "two_results", f)) == read(joinpath(dirname(out), f))
+    end
+    # a run that cannot be built is a row of the results and is missing from n
+    file("kept.csv", "BOTTLE.T_C,TANK.volume_L\n20,3\n27,3\n20,0\n")
+    bad = F.study(file("bad.toml", body); quiet = true)
+    @test all(r -> r[2] == "2", F._table(joinpath(dirname(bad), "bands_fill.csv"))[2]) && F._table(joinpath(dirname(bad), "metric_bands.csv"))[2][1][3] == "2"
+    @test count(r -> occursin("must be positive", r[findfirst(==("failed"), F._table(bad)[1])]), F._table(bad)[2]) == 2
+    # the arithmetic: three runs with constant signals, the third stopped after two grid times
+    runs = [fill(1.0, 4, 2), fill(2.0, 4, 2), fill(3.0, 2, 2)]
+    runs[2][:, 2] .= 20
+    n, bands = F.percentile_bands(runs, [5, 50, 95])
+    @test n == [3, 3, 2, 2] && size(bands) == (4, 2, 3)
+    @test bands[1, 1, :] ≈ [1.1, 2, 2.9] && bands[2, 2, :] ≈ [1.2, 3, 18.3] && bands[3, 1, :] ≈ [1.05, 1.5, 1.95] && bands[4, 2, :] ≈ [1.95, 10.5, 19.05]
+    @test F.percentile_bands([zeros(0, 1), fill(4.0, 1, 1)], [0, 50, 100]) == ([1], fill(4.0, 1, 1, 3))
+    # a run that stopped early gives the band what it reached and no more
+    early = F.read_study(file("early.toml", replace(body, "until = 10" => "until = 10\nwork_limit = 1")))
+    sim, failed = F.simulate(early, ["BOTTLE.T_C" => 27.0], [F.Action(1.0, "FILL", "open", 0.0)])
+    @test occursin("work limit", failed) && F.simtime(sim) < 10 && size(F._gridded(early, sim)) == (1 + floor(Int, F.simtime(sim) / 2.5), 2)
+    # what is refused when the file is read: parameters the scene does not have (all of them named), signals it does not record, [vary] beside sets
+    file("kept.csv", "BOTTLE.T_C,NOPE.x,FILL.nope\n20,1,1\n")
+    @test_throws "NOPE.x, FILL.nope" F.read_study(sets)
+    file("kept.csv", "BOTTLE.T_C\n20\n")
+    @test_throws "TANK.nope" F.read_study(file("e1.toml", replace(body, "\"TANK.m\"]" => "\"TANK.nope\"]")))
+    @test_throws ErrorException F.read_study(file("e2.toml", replace(body, "[[case]]" => "[vary]\n\"FILL.d_mm\" = [3]\n[[case]]"; count = 1)))
+    @test_throws ErrorException F.read_study(file("e3.toml", replace(body, "grid_s" => "grid")))
+    @test_throws ErrorException F.read_study(file("e4.toml", replace(body, "mode = \"sets\"\n" => "")))               # `sets` without the mode
+    @test_throws ErrorException F.study(sets; resume = true, quiet = true)                                                  # no history is left of the runs already done
+end
+
 @testset "fitting: a log held out and predicted" begin
     dir = mktempdir()
     # two tests on the same hardware (a 4 mm fill valve), with the bottle at 27 °C in one and 22 °C in the other

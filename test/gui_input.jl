@@ -1,6 +1,6 @@
 # Drives the real window with injected mouse and key events and checks what happened.
 #   julia --project test/gui_input.jl [screenshot.ppm]
-# Needs a display. Keep the mouse off the window while it runs (about 15 s): real mouse movement
+# Needs a display. Keep the mouse off the window while it runs (about 17 s): real mouse movement
 # is input too and can make a step miss. A failed step is worth re-running before believing it.
 using N2OFillSim
 const F = N2OFillSim
@@ -229,8 +229,31 @@ at(790, () -> F.new_scene!(app))
 press(794, "example hf4.toml")
 check(800, "an example opens from the empty schematic's hint", () -> endswith(app.path, "hf4.toml") && has("TANK") && !app.dirty && app.box_from === nothing)
 
+# --- prediction bands (hf4 again, in bar since the units check above): loaded through the browser, drawn behind the live lines
+const BANDS_DIR = mktempdir()
+const BAND_T = collect(0.0:5.0:600.0)
+open(joinpath(BANDS_DIR, "bands.csv"), "w") do f                # tank pressure with a median, tank mass without
+    println(f, "t_s,n,TANK.P.p5,TANK.P.p50,TANK.P.p95,TANK.m.p2.5,TANK.m.p97.5")
+    foreach(t -> println(f, join((t, 3, 4e6 + 2e3t, 4.5e6 + 2e3t, 5e6 + 2e3t, 0.01t, 1 + 0.012t), ",")), BAND_T)
+end
+at(806, () -> F.start_run!(app))
+press(810, "Load bands...")
+check(816, "'Load bands...' opens the file browser", () -> app.browse === :bands)
+at(817, () -> (app.browse_dir = BANDS_DIR))
+press(820, "file bands.csv"); press(826, "browser ok")
+check(832, "a bands file loads as one band per signal", () -> app.browse === :none && app.bands_t == BAND_T &&
+      [b.label for b in app.bands] == ["band TANK.P 5-95 %", "band TANK.m 2.5-97.5 %"] && [b.kind for b in app.bands] == [:pressure, :mass] && isempty(app.bands[2].mid))
+key(834, ig.ImGuiKey_Space)
+# Only the drawing fills the cache and gives a band its line's colour (grey until then).
+check(842, "the plots draw the bands in display units, in their lines' colours", () -> app.cache["band lo TANK.P"] == (4e6 .+ 2e3 .* BAND_T) ./ 1e5 &&
+      app.cache["band hi TANK.m"] == 1 .+ 0.012 .* BAND_T && haskey(app.cache, "band mid TANK.P") && !haskey(app.cache, "band mid TANK.m") &&
+      all(b -> b.colour != ig.ImVec4(0.7f0, 0.7f0, 0.7f0, 1f0) && b.fill.FillColor == b.colour, app.bands) && app.bands[1].colour != app.bands[2].colour)
+at(844, () -> F.load_bands!(app, joinpath(ROOT, "test", "data", "hf4_fill_10hz.csv")))
+check(846, "a file that is not a bands file is refused and the bands stay", () -> startswith(app.msg, "Could not read the bands") && length(app.bands) == 2)
+click(848, 12, 4); click(854, 21, 4)                          # AV201, AV203: something for the bands to lie behind
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "804")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "900")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)
