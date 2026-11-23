@@ -586,6 +586,65 @@ end
     @test length(record["dataset"][1]["scored"]) == 8
 end
 
+@testset "scoring: a model error stated for a phase; a fit is biased without it and recovers with it" begin
+    dir = mktempdir()
+    # The log is the model's own output at known values, except that during the venting phase it
+    # reads 25 psi higher than the model ever can: a stand-in for a mechanism the model lacks.
+    made_up_log(joinpath(dir, "log.csv"); extra = t -> 1 <= t < 15 ? 25.0 : 0.0)
+    F.save_scene(joinpath(dir, "rig.toml"), scoring_rig())
+    study(score) = (p = joinpath(dir, "s$(hash(score)).toml"); write(p, "scene = \"rig.toml\"\nreplay = \"log.csv\"\n[score]\n" * score); p)
+    one = "channels = [{ log = \"PT_psig\", model = \"TANK.P\" }]\n"
+    # the stated error widens sigma for that phase only, in quadrature: sqrt(5² + 12²) = 13
+    st = F.read_study(study(one * "phases = { venting = { from = 1, to = 14.9, discrepancy = 12 }, closed = [15, 30] }\n"))
+    @test [g.name => g.sigma for g in st.scored] == ["PT_psig.closed" => 5.0, "PT_psig.venting" => 13.0]
+    sim, = F.simulate(st, [])
+    s = F.score_run(st, sim)
+    @test Dict(s.z)["res.PT_psig.venting"] ≈ Dict(s.rms)["rms.PT_psig.venting"] / 13 && Dict(s.z)["res.PT_psig.closed"] ≈ Dict(s.rms)["rms.PT_psig.closed"] / 5
+    # it can be given per log column (here two channels read the same column's twin)
+    made_up_log(joinpath(dir, "log2.csv"); more = ["PT2_psig" => (sim, t) -> (F.signal_at(sim, "TANK.P", t) - 101325) / F.PSI])
+    two = replace(read(study("channels = [{ log = \"PT_psig\", model = \"TANK.P\" }, { log = \"PT2_psig\", model = \"TANK.P\" }]\n" *
+                             "phases = { venting = { from = 1, to = 14.9, discrepancy = { PT2_psig = 12 } } }\n"), String), "log.csv" => "log2.csv")
+    write(joinpath(dir, "two.toml"), two)
+    @test [g.sigma for g in F.read_study(joinpath(dir, "two.toml")).scored] == [5.0, 13.0]
+    write(joinpath(dir, "two.toml"), replace(two, "PT2_psig = 12" => "PT3_psig = 12"))
+    @test_throws ErrorException F.read_study(joinpath(dir, "two.toml"))                       # not a scored column
+    @test_throws ErrorException F.read_study(study(one * "phases = { venting = { from = 1, to = 14.9, discrepancy = -1 } }\n"))
+    # End to end. Two values are fitted: the bottle temperature (27 °C in the log), which the
+    # closed phase alone is enough to find, and the vent orifice (2 mm), which only acts while
+    # venting. A plain fit bends both to soak up the 25 psi it cannot explain.
+    fit(phases) = (p = joinpath(dir, "f$(hash(phases)).toml"); write(p, """
+        max_evals = 40
+        jacobian_reltol = 1e-5
+        [[dataset]]
+        name = "run1"
+        scene = "rig.toml"
+        replay = "log.csv"
+        set = { "FILL.d_mm" = 4 }
+        [dataset.score]
+        channels = [{ log = "PT_psig", model = "TANK.P", sigma = 1 }]
+        phases = { $phases }
+        bin_s = 5
+        [[parameter]]
+        name = "BOTTLE.T_C"
+        from = 15
+        to = 32
+        start = 22
+        [[parameter]]
+        name = "VENT_OR.d_mm"
+        from = 1
+        to = 4
+        start = 3
+        """); F.fit(p; quiet = true))
+    plain = fit("venting = [1, 14.9], closed = [15, 30]")
+    @test abs(plain.values["BOTTLE.T_C"] - 27) > 0.5 && abs(plain.values["VENT_OR.d_mm"] - 2) > 0.3 && plain.score > 5
+    # With the error stated (25 psi on the venting phase), the fit stops chasing it, and the
+    # bottle temperature comes back to within 0.1 °C.
+    stated = fit("venting = { from = 1, to = 14.9, discrepancy = 25 }, closed = [15, 30]")
+    @test abs(stated.values["BOTTLE.T_C"] - 27) < 0.1 && stated.score < 1
+    record = F.TOML.parsefile(only(filter(f -> occursin(r"\d-f\d+\.toml$", f), readdir(stated.dir; join = true))))
+    @test record["dataset"][1]["scored"][end]["sigma"] ≈ sqrt(1 + 25^2) rtol = 1e-5
+end
+
 @testset "command line: overrides, schedule file, columns, defaults, warnings" begin
     dir = mktempdir()
     scene, sched, out = joinpath(dir, "s.toml"), joinpath(dir, "sched.csv"), joinpath(dir, "out.csv")

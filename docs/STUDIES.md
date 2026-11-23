@@ -49,6 +49,8 @@ phases = { stall = [140, 236], vent1 = [236, 310] }      # seconds after t0, or
                                                           # { from = "AV201 open", to = "AV201 close" }
 bin_s = 30                                    # optional: one scored number per 30 s of each phase
                                               #   (a phase table can carry its own bin_s)
+# A phase written as a table can also state how far the model itself is known to be off there:
+# phases = { fill_start = { from = 140, to = 160, discrepancy = 40 }, stall = [160, 236] }
 
 [metrics]                                     # optional numbers taken from each run
 loaded_kg = { fn = "final", signal = "TANK.m" }
@@ -88,6 +90,25 @@ It keeps its sign, so a fitter can see that the model is high early and low late
 `res.<log column>.<phase>.<bin number>`; the per-phase `rms` columns stay as they are. The score is
 still the root mean square of the scored numbers, so a phase now counts once per bin: a long phase
 weighs more than a short one. A bin with no log reading is left out.
+
+**Stated model error.** Sometimes the model is known to be wrong in one stretch of a test: it
+lacks a mechanism that matters for the first seconds of a fill, say. Scored as it stands, that
+stretch dominates the score, and a fitter will bend every parameter it has to make the error
+smaller, spoiling values that the rest of the log pins down well. Leaving the stretch out hides
+the problem instead of recording it.
+
+`discrepancy` on a phase says, in the log's units, how far off the model is expected to be there
+whatever its parameters. It is added to `sigma` in quadrature for that phase's scored numbers:
+
+    trusted to = sqrt( sigma² + discrepancy² )
+
+So `discrepancy = 40` on a pressure with a sigma of 5 psi means a 40 psi miss in that phase counts
+about as one, not as eight. Give one number (`discrepancy = 40`), or one per log column when
+several channels are scored (`discrepancy = { PT202_psig = 40, TH_tank_C = 3 }`; columns not
+named get none). The phase must be written as a table, with `from` and `to` as times or events.
+The `rms` columns are not changed by it: they still show the miss in full. A stated error is a
+written admission, with a size, of what the model does not do. It belongs in the file, where the
+next reader sees it.
 
 Make bins **30 s or longer** for a slow process such as a hold or a fill. A fitter treats every
 scored number as a separate piece of information. Neighbouring samples of a slowly changing

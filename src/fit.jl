@@ -439,7 +439,7 @@ function fit(path; write_scenes = false, quiet = false)
             println(out, "\n[[dataset]]\nname = ", repr(name), "\nweight = ", ft.weights[k], "\nuntil = ", st.until)
             println(out, "channels = [", join(["{ log = $(repr(c.log)), model = $(repr(c.model)), sigma = $(c.sigma), weight = $(c.weight) }" for c in st.channels], ", "), "]")
             println(out, "phases = { ", join(["$(p) = [$(a), $(b)]" for (p, (a, b)) in st.phases], ", "), " }")
-            println(out, "scored = ", _list([g.name for g in st.scored]))
+            println(out, "scored = [", join(["{ name = $(repr(g.name)), sigma = $(round(g.sigma, sigdigits = 6)) }" for g in st.scored], ", "), "]")
             println(out, "rms = { ", join(["$(repr(replace(key, "rms." => ""))) = $(isnan(v) ? "nan" : round(v, sigdigits = 5))" for (key, v) in rms[k]], ", "), " }")
         end
         println(out, "\nidentifiability = ", _list(statements))

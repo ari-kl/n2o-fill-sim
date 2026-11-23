@@ -19,7 +19,8 @@ struct Scored
     channel::Int
     phase::Int
     idx::Vector{Int}                          # the log samples it covers
-    sigma::Float64                            # how far a difference is trusted here, in the log's units
+    sigma::Float64                            # how far a difference is trusted here, in the log's units:
+                                              #   the reading's sigma and the phase's stated model error together
     binned::Bool
 end
 
@@ -71,7 +72,7 @@ const _STUDY_KEYS = ("scene", "replay", "manifest", "t0", "until", "sample_dt", 
                      "vary", "case", "score", "metrics", "set")
 const _SCORE_KEYS = ("channels", "phases", "bin_s")
 const _CHANNEL_SCORE_KEYS = ("log", "model", "sigma", "weight")
-const _PHASE_KEYS = ("from", "to", "bin_s")
+const _PHASE_KEYS = ("from", "to", "bin_s", "discrepancy")
 const _METRIC_FNS = ("final", "max", "min", "mean_over", "time_in_band", "first_crossing")
 
 """
@@ -170,6 +171,7 @@ function _study(d, base, path, dir, allowed)
         append!(channels, [(; log = c.name, model = c.target, sigma = trust(c.name, NaN), weight = 1.0, y = cols[c.name]) for c in columns if !isempty(c.target)])
     all(c -> c.sigma > 0, channels) || error("$path: a channel's sigma must be positive")
     bin_s = Dict{String,Float64}()             # phase => bin length, where a phase gives its own
+    stated = Dict{String,Any}()                # phase => stated model error: one number, or a table of them by log column
     if haskey(score, "phases")
         sched = sort(vcat(schedule, scene.schedule); by = a -> a.t)
         phases = Pair{String,Tuple{Float64,Float64}}[]
@@ -184,6 +186,7 @@ function _study(d, base, path, dir, allowed)
             f = _phase_time(p["from"], sched)
             push!(phases, String(k) => (f, _phase_time(p["to"], sched; after = f)))
             haskey(p, "bin_s") && (bin_s[String(k)] = Float64(p["bin_s"]))
+            haskey(p, "discrepancy") && (stated[String(k)] = p["discrepancy"])
         end
     end
     isempty(phases) && push!(phases, "all" => (0.0, until))
@@ -191,20 +194,27 @@ function _study(d, base, path, dir, allowed)
     # The scored numbers: for each channel and phase, the log samples that have a reading, as one
     # group or cut into bins. An empty group or bin is left out here, so that every run of the
     # study (and every evaluation of a fit) is scored on exactly the same numbers.
+    for (phase, e) in stated, k in (e isa AbstractDict ? keys(e) : ())
+        any(c -> c.log == k, channels) || error("$path: phase $phase states a discrepancy for \"$k\", which is not a scored log column")
+    end
     scored = Scored[]
     for (ci, c) in enumerate(channels), (pi, (phase, (a, b))) in enumerate(phases)
+        e = get(stated, phase, 0.0)
+        e = Float64(e isa AbstractDict ? get(e, c.log, 0.0) : e)
+        e >= 0 || error("$path: phase $phase: a discrepancy cannot be negative")
+        sigma = sqrt(c.sigma^2 + e^2)          # independent errors add in quadrature
         idx = [i for (i, t) in enumerate(t_log) if a <= t <= b && t <= until && isfinite(c.y[i])]
         width = get(bin_s, phase, Float64(get(score, "bin_s", 0.0)))
         width >= 0 || error("$path: bin_s must be positive (or 0 for no bins)")
         if width == 0
-            isempty(idx) || push!(scored, Scored("$(c.log).$phase", ci, pi, idx, c.sigma, false))
+            isempty(idx) || push!(scored, Scored("$(c.log).$phase", ci, pi, idx, sigma, false))
             continue
         end
         nb = max(1, round(Int, (b - a) / width))             # equal bins, as near to bin_s long as fit the phase
         bin(i) = min(nb, 1 + floor(Int, (t_log[i] - a) / (b - a) * nb))
         for k in 1:nb
             mine = [i for i in idx if bin(i) == k]
-            isempty(mine) || push!(scored, Scored("$(c.log).$phase.$k", ci, pi, mine, c.sigma, true))
+            isempty(mine) || push!(scored, Scored("$(c.log).$phase.$k", ci, pi, mine, sigma, true))
         end
     end
     for (k, v) in get(d, "metrics", Dict())
@@ -241,8 +251,8 @@ no log reading are skipped.
 to read.
 
 `z` has one entry per scored number (see `Scored`), with no units: a difference divided by how far
-that reading is trusted (`sigma`), so that a pressure and a temperature can be weighed against each
-other. For a channel over a whole phase it is weight · rms / sigma. For a time bin it is
+that reading is trusted (`sigma`, widened by any model error stated for the phase), so that a
+pressure and a temperature can be weighed against each other. For a channel over a whole phase it is weight · rms / sigma. For a time bin it is
 weight · (mean of model − log over the bin) / sigma, with its sign. The one-number `score` is the
 root mean square of `z`.
 

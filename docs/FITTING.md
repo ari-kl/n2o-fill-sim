@@ -79,6 +79,12 @@ should be shared. Things that differ from day to day and were not measured (how 
 was, the air temperature) should be per dataset. Getting that split wrong in either direction is
 the commonest way to fit nonsense.
 
+**State what the model cannot do.** If the model is known to be wrong in part of a log, say so
+with a `discrepancy` on that phase (docs/STUDIES.md, "Stated model error"). Without it the fit
+spends its parameters on an error they cannot remove, and returns biased values with a small
+spread, which is the worst combination. With it, the values that the rest of the log determines
+come out as they should.
+
 ## How it searches
 
 Optionally a Latin hypercube over the bounds (`explore`) to find a good place to start. Then, by
