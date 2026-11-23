@@ -305,6 +305,22 @@ end
     write(joinpath(dir, "log.csv"), "device_timestamp,source,PT [PSI],solenoid_V1,TH1 [C],TH2 [C]\n" * join(last.(drift), "\n") * "\n")
     write(manifest, body)
     @test any(occursin("drifts", w) for w in F.load_log(manifest).warnings)
+    # A burst of C's rows stamped with A's clock, in the 10 s where C was otherwise silent: they
+    # stay where they are, are counted, and do not spoil C's offset. There are 300 of them against
+    # C's 220 ordinary rows, so a median over all of C's rows would give an offset near zero.
+    burst = [(tt, "$(round(1000 + tt, digits = 3)),C,,,$(round(20 - 0.1tt, digits = 3)),$(round(20.4 - 0.1tt, digits = 3))") for tt in 80.01 .+ (0:299) ./ 30]
+    write(joinpath(dir, "burst.csv"), "device_timestamp,source,PT [PSI],solenoid_V1,TH1 [C],TH2 [C]\n" * join(last.(sort!(vcat(rows, burst); by = first)), "\n") * "\n")
+    write(manifest, replace(body, "log.csv" => "burst.csv"))
+    log = F.load_log(manifest)
+    @test abs(log.offsets["B"] - 100.18) < 0.1 && abs(log.offsets["C"] - 1869.08) < 0.1 && log.offsets["A"] == 0
+    @test log.warnings == ["300 rows of C were already on the clock of A and were not shifted"]
+    @test abs(at("TH", 1085.0) - (20.2 - 8.5)) < 0.15 && abs(at("TH", 1050.0) - (20.2 - 5)) < 0.15 && log.cols["t_s"][end] == 1120.0
+    write(manifest, replace(body, "log.csv" => "burst.csv", "clock_offsets = \"auto\"" => "clock_offsets = { B = 100.18, C = 1869.08 }"))
+    log = F.load_log(manifest)                                   # the same with given offsets
+    @test length(log.warnings) == 1 && abs(at("TH", 1085.0) - (20.2 - 8.5)) < 0.15 && log.cols["t_s"][end] == 1120.0
+    write(manifest, replace(body, "log.csv" => "burst.csv", "sample_dt" => "already_aligned_s = 0\nsample_dt"))
+    log = F.load_log(manifest)                                   # the rule switched off: the burst drags C's median to zero
+    @test !any(occursin("already", w) for w in log.warnings) && abs(log.offsets["C"]) < 1
     # the draft generator does not guess what a 1 means on a solenoid_ column
     s = F.Scene(); F.add_part!(s, "Valve", 0, 0; name = "V1")
     draft = F.suggest_manifest(joinpath(dir, "log.csv"), s)

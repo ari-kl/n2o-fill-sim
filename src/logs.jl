@@ -175,12 +175,12 @@ struct Log
     columns::Vector{LogColumn}
     t0::Float64                                   # log time that is simulation time zero
     phases::Dict{String,Tuple{Float64,Float64}}   # seconds after t0
-    offsets::Dict{String,Float64}                 # seconds added to each source's clock
+    offsets::Dict{String,Float64}                 # seconds added to each source's clock (not to rows already on the reference clock)
     warnings::Vector{String}
 end
 
 const _MANIFEST_KEYS = ("file", "time", "t0", "window", "sample_dt", "source_column", "reference_source", "clock_offsets",
-                        "debounce_s", "channel", "phases")
+                        "already_aligned_s", "debounce_s", "channel", "phases")
 const _CHANNEL_KEYS = ("column", "role", "maps_to", "name", "gain", "offset", "one_means", "group", "source", "sigma")
 const _ROLES = ("pressure", "mass", "temperature", "valve", "heater")
 
@@ -224,16 +224,22 @@ function _each_field(f, line, wanted)
 end
 
 """
-    estimate_offsets(path; time, source_column, reference) -> (offsets, drift)
+    estimate_offsets(path; time, source_column, reference, aligned = 30.0) -> (offsets, drift)
 
 Clock offset of every source that wrote rows to a log, relative to `reference`. Rows are in the
 order they arrived, so for each row of another source the last time seen on a reference row is
 (to within one reference period) when that row arrived; the median of that minus the row's own
 time is the source's offset. `drift` is the difference between that median over the first third
 and the last third of the file: near zero if the clocks run at the same rate.
+
+Some boards stamp some of their rows with the reference clock instead of their own. Such a row
+(within `aligned` seconds of the last reference time) says nothing about the board's offset, and
+enough of them would pull the median to zero, so they are left out. A board with no other rows is
+simply on the reference clock, and its offset is taken from all its rows.
 """
-function estimate_offsets(path; time, source_column, reference)
+function estimate_offsets(path; time, source_column, reference, aligned = 30.0)
     deltas = Dict{String,Vector{Float64}}()
+    near = Dict{String,Vector{Float64}}()          # rows already on the reference clock
     wanted, order = Int[], Int[]
     last_ref = NaN
     t, src = Ref(NaN), Ref("")
@@ -253,8 +259,13 @@ function estimate_offsets(path; time, source_column, reference)
         if src[] == reference
             last_ref = t[]
         elseif !isnan(last_ref)
-            push!(get!(deltas, src[], Float64[]), last_ref - t[])
+            push!(get!(abs(last_ref - t[]) < aligned ? near : deltas, src[], Float64[]), last_ref - t[])
         end
+    end
+    # A board whose true offset is under `aligned` but which has a few stray rows far from the
+    # reference gets the strays' offset; load_log's count of unshifted rows then shows it.
+    for (s, d) in near
+        haskey(deltas, s) || (deltas[s] = d)
     end
     med(v) = (s = sort(v); s[(length(s)+1)÷2])
     offsets, drift = Dict(reference => 0.0), Dict(reference => 0.0)
@@ -313,7 +324,9 @@ end
 """
     load_log(manifest_path) -> Log
 
-Read a log as its manifest describes it: rows from several sources put on one clock, valve and
+Read a log as its manifest describes it: rows from several sources put on one clock (a row that
+is already within `already_aligned_s` of the last reference row, and would not be after its
+source's offset is added, is kept as it is and counted in a warning), valve and
 heater columns debounced, every channel scaled (`gain`, then `offset`) into psi gauge, kg or °C,
 channels sharing a `group` averaged, and everything put on an even grid of `sample_dt` seconds
 (median of the readings in each interval; the last state for valves and heaters). An interval with
@@ -326,11 +339,12 @@ function load_log(manifest_path)
     dt = Float64(get(m, "sample_dt", 0.1))
     multi = haskey(m, "source_column")
     offsets = Dict{String,Float64}()
+    aligned = Float64(get(m, "already_aligned_s", 30.0))
     if multi
         given = get(m, "clock_offsets", "auto")
         if given == "auto"
             time_name = get(m, "time", first(String.(strip.(split(readline(path), ',')))))
-            offsets, drift = estimate_offsets(path; time = time_name, source_column = m["source_column"], reference = m["reference_source"])
+            offsets, drift = estimate_offsets(path; time = time_name, source_column = m["source_column"], reference = m["reference_source"], aligned)
             for (s, d) in drift
                 abs(d) > 0.5 && push!(warnings, "the clock of $s drifts against $(m["reference_source"]): its offset changes by $(round(d, digits = 2)) s over the log")
             end
@@ -344,6 +358,7 @@ function load_log(manifest_path)
     raw_v = [Float64[] for _ in channels]
     wanted, what = Int[], Int[]                    # column numbers to read, and what each is: 0 time, -1 source, k channel
     t, off, src = Ref(NaN), Ref(0.0), Ref("")
+    last_ref, unshifted = NaN, Dict{String,Int}()  # the last reference time in file order; rows left on it, per source
     for (i, line) in enumerate(eachline(path))
         if i == 1
             h = String.(strip.(split(line, ',')))
@@ -375,6 +390,13 @@ function load_log(manifest_path)
         if multi
             haskey(offsets, src[]) || continue      # a source never seen next to the reference: no clock for it
             off[] = offsets[src[]]
+            src[] == m["reference_source"] && (last_ref = t[])
+            # Already stamped with the reference clock (some boards do this for bursts of rows):
+            # adding the board's offset would throw the row that far out of place, so leave it.
+            if abs(t[] - last_ref) < aligned && abs(t[] + off[] - last_ref) > aligned
+                unshifted[src[]] = get(unshifted, src[], 0) + 1
+                off[] = 0.0
+            end
         end
         tr = t[] + off[]
         window[1] <= tr <= window[2] || continue
@@ -385,6 +407,9 @@ function load_log(manifest_path)
             v = tryparse(Float64, field)
             v === nothing || (push!(raw_t[k], tr); push!(raw_v[k], v))
         end
+    end
+    for s in sort!(collect(keys(unshifted)))
+        push!(warnings, "$(unshifted[s]) rows of $s were already on the clock of $(m["reference_source"]) and were not shifted")
     end
     all(isempty, raw_t) && error("$manifest_path: no readings found" * (isfinite(window[1]) ? " in the window $(window)" : ""))
     lo = isfinite(window[1]) ? window[1] : minimum(first(r) for r in raw_t if !isempty(r))

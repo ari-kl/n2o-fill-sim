@@ -25,6 +25,7 @@ debounce_s = 0.5                # a valve or heater change counts only if it the
 source_column = "source"        # the column naming the board that wrote the row
 reference_source = "BOARD-A"    # every other board's clock is shifted onto this one
 clock_offsets = "auto"          # or given: { "BOARD-B" = 100.18, "BOARD-C" = 1869.08 }
+already_aligned_s = 30.0        # a row this close to the reference clock already is not shifted (default 30 s)
 
 [[channel]]
 column = "PT202 [PSI]"
@@ -61,6 +62,16 @@ Rules worth knowing:
   the row's own time, and then the median of those. It is good to about one reference sampling
   period. If the offset over the first third of the file differs from the last third by more than
   0.5 s, a warning says that board's clock drifts.
+- **Rows already on the reference clock.** A board does not always stamp with its own clock: some
+  send bursts of rows that carry the reference board's time. Adding the board's offset to such a
+  row would put it that far out of place (tens of minutes late, in one real log), and the readings
+  would be missing from where they belong. So a row whose time is already within
+  `already_aligned_s` of the last reference-board time seen before it in the file, and would be
+  further than that from it once shifted, is left as it is. This holds for estimated and given
+  offsets alike. Each board's count of such rows is reported as a warning, so it is never done
+  silently. These rows are also left out when the offset is estimated, since they say nothing
+  about the board's own clock. The rule cannot tell the two cases apart for a board whose offset
+  is itself smaller than `already_aligned_s`; there it changes nothing.
 - **The grid.** Each grid point takes the median of the readings within half a `sample_dt` either
   side (for valves and heaters, the last state in that interval). **An interval with no reading is
   left empty.** A gap is never filled in, so a silent sensor cannot pass for a steady one.
