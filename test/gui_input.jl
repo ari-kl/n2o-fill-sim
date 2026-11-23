@@ -18,7 +18,9 @@ move(wx, wy; dx = 0, dy = 0) = (pointer[] = (wx, wy, dx, dy))
 function hold()
     p = pointer[]
     p === nothing && return
-    if p isa String                                           # a widget, by the label it was drawn with
+    if p isa NTuple{2,Float32}                                # a place on the screen, whatever the view does
+        ig.AddMousePosEvent(io(), p...)
+    elseif p isa String                                       # a widget, by the label it was drawn with
         haskey(F.RECTS, p) || return
         x0, y0, x1, y1 = F.RECTS[p]
         ig.AddMousePosEvent(io(), (x0 + x1) / 2, (y0 + y1) / 2)
@@ -183,8 +185,19 @@ press(501, "Step 1 s")                                        # the button acts 
 check(506, "Step 1 s is worked off over several frames", () -> !app.paused && 0 < app.step_left < 1 && t_before_step < F.simtime(app.sim) < t_before_step + 1)
 check(700, "and ends paused, one second on", () -> app.paused && app.step_left == 0 && abs(F.simtime(app.sim) - t_before_step - 1) < 1e-6)
 
+# --- back in the editor: the right button pans when dragged and acts only when it is not
+press(702, "Stop / edit")
+at(708, () -> (move(13.5, 4); global view_before = (app.origin, nwires(), length(app.undo), F.wire_at(app, 13.5, 4))))    # on the AV201 - DUMP_TEE wire
+at(710, () -> ig.AddMouseButtonEvent(io(), 1, true))
+# The view moves under a dragging pointer, so the drag is given in screen positions.
+at(711, () -> (global drag_from = F.w2s(app, 13.5, 4); pointer[] = drag_from .+ (25f0, 0f0)))
+at(713, () -> (pointer[] = drag_from .+ (60f0, 10f0)))
+at(715, () -> ig.AddMouseButtonEvent(io(), 1, false))
+check(718, "a right-drag that starts on a wire pans and leaves the wire", () -> view_before[4] !== nothing && nwires() == view_before[2] && length(app.undo) == view_before[3] && app.origin[1] > view_before[1][1] + 30)
+at(719, () -> (app.origin = view_before[1]))
+
 shot = isempty(ARGS) ? joinpath(tempdir(), "n2o-fill-sim_gui_input.ppm") : ARGS[1]
-F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "702")), script)
+F.gui(app; shot, frames = parse(Int, get(ENV, "N2O_FILL_SIM_TEST_FRAMES", "722")), script)
 println(isempty(failures) ? "all window checks passed" : "FAILED: " * join(failures, "; "))
 println("screenshot: ", shot)
 exit(isempty(failures) ? 0 : 1)

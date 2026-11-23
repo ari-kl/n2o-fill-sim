@@ -440,6 +440,11 @@ function draw_canvas(app::App)
     live ? canvas_run_clicks(app, wx, wy) : canvas_edit_clicks(app, wx, wy)
 end
 
+# The right button both pans (drag) and acts (cut a wire, remove a corner, open a part's menu).
+# Acting on the press made every pan that happened to start on a wire cut it, so a right-click
+# counts when the button comes up without having been dragged anywhere.
+right_clicked() = ig.IsMouseReleased(1) && !ig.IsMouseDragPastThreshold(1)
+
 function canvas_edit_clicks(app::App, wx, wy)
     s = app.scene
     gx, gy = round(Int, wx), round(Int, wy)
@@ -509,7 +514,7 @@ function canvas_edit_clicks(app::App, wx, wy)
             isempty(app.sel) || setbuf!(app.name_buf, current(app))
         end
         app.dragging, app.drag_via, app.box_from = false, (0, 0), nothing
-    elseif ig.IsMouseClicked(1)
+    elseif right_clicked()
         via, wire = via_at(app, wx, wy), wire_at(app, wx, wy)
         if app.wire_from !== nothing || !isempty(app.placing)
             app.wire_from, app.placing = nothing, ""
@@ -525,13 +530,13 @@ function canvas_edit_clicks(app::App, wx, wy)
 end
 
 function canvas_run_clicks(app::App, wx, wy)
-    (ig.IsMouseClicked(0) || ig.IsMouseClicked(1)) || return
+    (ig.IsMouseClicked(0) || right_clicked()) || return
     part = part_at(app, wx, wy)
     select!(app, part === nothing ? "" : part.name)
     part === nothing && return
     if ig.IsMouseClicked(0) && part.kind == "Valve"
         act!(app.sim, part.name, "toggle")
-    elseif ig.IsMouseClicked(1)
+    elseif !ig.IsMouseClicked(0)
         ig.OpenPopup("partmenu")
     end
     nothing
