@@ -664,7 +664,7 @@ The shift at the first vent and the creep during heating have no known cause to 
 channel with `offset = "per_phase"` or state a discrepancy for the phase
 ([STUDIES.md](STUDIES.md)).
 
-**The lag is not a state of the equations.** It is advanced each time a sample is recorded, by
+The lag is not a state of the equations. It is advanced each time a sample is recorded, by
 the exact solution of τ·y′ = x − y over the interval since the last sample, taking the input `x`
 as a straight line between the two samples. That is how the recorded history is read everywhere
 else, so a lagged reading is the exact lag of the recorded history and has no step-size error of
