@@ -391,8 +391,19 @@ function derivative!(du, n::Node, u, env::Env)
     βv = s.ev.dPdT / (s.ρe * s.ev.dPdρ)
     μl, kl, μv, kv = visc_l(s.Tl), cond_l(s.Tl), visc_v(s.Tv), cond_v(s.Tv)
     βl = -s.dρl / s.ρl
-    boil = s.Tl > ss.T ? env.E : 1.0           # heat reaches the surface far faster when the liquid boils
-    q_ls = wet * boil * h_surface(s.ρl, lp.cpl, βl, μl, kl, s.Tl - ss.T) * As * (s.Tl - ss.T)
+    # Heat reaches the surface far faster when the liquid boils, but bubbles form only above
+    # saturation at the total pressure. Natural convection carries Tl - Ts; the boiling enhancement
+    # (E) acts on the superheat above Tsat(P) alone. With no air the two temperatures are the same
+    # and this is E times convection whenever the liquid is above the surface temperature. Under a
+    # pad of air the liquid can sit well above the surface temperature without boiling.
+    if s.P == s.Pn
+        boil = s.Tl > ss.T ? env.E : 1.0
+        q_ls = wet * boil * h_surface(s.ρl, lp.cpl, βl, μl, kl, s.Tl - ss.T) * As * (s.Tl - ss.T)
+    else
+        h_ls = wet * h_surface(s.ρl, lp.cpl, βl, μl, kl, s.Tl - ss.T) * As
+        superheat = max(s.Tl - sat_P(clamp(s.P, SAT_PMIN, SAT_PMAX)).T, 0.0)
+        q_ls = h_ls * ((s.Tl - ss.T) + (env.E - 1) * superheat)
+    end
     q_sv = wet * h_surface(s.ρv, cpv, βv, μv, kv, ss.T - s.Tv) * As * (ss.T - s.Tv)
     m_evap = (q_ls - q_sv) / max(ss.hv - s.hl, 2e4)
     # Supersaturated ullage condenses in the bulk and rains into the liquid.
