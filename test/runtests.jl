@@ -2071,6 +2071,22 @@ function log_rms(sim, key, D, col, t0, a, b, p_atm)
     sqrt(sum(abs2, d) / length(d))
 end
 
+@testset "a tank padded with air starts at the pad pressure, and the liquid fed into it does not boil into the pad" begin
+    # air = 40: forty atmospheres of air in an empty tank. A bottle at 20 °C (about 730 psig) then
+    # fills it through an open valve with the vent shut. Liquid arriving under a pad is subcooled at
+    # the tank pressure, so it must stay near the bottle's temperature, not boil into the pad.
+    s = chain(["Valve"])
+    s.parts[F.find_part(s, "B")].p["T_C"] = 20.0
+    T = s.parts[F.find_part(s, "T")].p; T["air"] = 40.0; T["T_C"] = 20.0
+    sim = F.Sim(s)
+    tank = sim.net.nodes[findfirst(n -> n.name == "T", sim.net.nodes)]
+    @test F.node_report(sim.net, tank, sim.u).P ≈ 40 * s.settings["P_atm_kPa"] * 1e3 rtol = 1e-3
+    F.act!(sim, "P1", "open"); F.run_until!(sim, 60.0)
+    r = F.node_report(sim.net, tank, sim.u)
+    @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
+    @test r.liquid_frac > 0.01 && r.T > 273.15 - 15             # liquid in, near -3 °C; boiling into the pad took it to -34 °C
+end
+
 @testset "HF3 cold flow replay (unvented fill, sealed period, blowdown through an injector)" begin
     # HF4's fitted values with only what was measured changed (see the scene). The model gives
     # sealed-period tank pressure 4.9 psi RMS, fill line 1.2 psi, 4.57 kg loaded against 4.3 kg on
