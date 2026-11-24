@@ -30,7 +30,7 @@ const _VESSEL_PARAMS = [
     Param("diameter_mm", 143.0, "inside diameter (vertical cylinder; sets level and wall areas)"),
     Param("fill_kg", 0.0, "N2O mass at the start"),
     Param("T_C", 25.0, "starting temperature of contents and wall"),
-    Param("air", 1.0, "1 = the rest of the volume starts as air at atmospheric pressure, 0 = N2O only"),
+    Param("air", 1.0, "starting air pressure in atmospheres: 1 = the rest of the volume is air at atmospheric pressure, 0 = N2O only, 40 = pre-pressurised to 40 atm"),
     Param("wall_kg", 6.0, "mass of wall metal that follows the contents' temperature"),
     Param("wall_cp_J_kgK", 900.0, "wall specific heat (aluminium 900, steel 470)"),
     Param("absorptivity", 0.4, "fraction of solar flux absorbed"),

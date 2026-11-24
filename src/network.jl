@@ -264,7 +264,7 @@ function compile(s::Scene)
             u0[n.i+1] = m * (st.ul + x * (st.uv - st.ul))
         else
             u0[n.i+1] = m * eos(ρ, T).u
-            air && ρ < N2O_RHOC && (u0[n.i+5] = max(env.P_atm - eos(ρ, T).P, 0.0) * n.V / (R_AIR * T))
+            air && ρ < N2O_RHOC && (u0[n.i+5] = max(p.p["air"] * env.P_atm - eos(ρ, T).P, 0.0) * n.V / (R_AIR * T))
         end
         u0[n.i], u0[n.i+4] = m, T
         n.split && (u0[n.i+6] = T)
