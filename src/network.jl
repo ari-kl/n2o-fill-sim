@@ -334,6 +334,16 @@ end
 
 sent_h(n::Node, port) = n.kind === :junction ? n.hl : n.port_h[port]
 
+# Can this part pass flow at these pressures? It needs area, and a one-way part (regulator, check or
+# relief valve) also needs the pressure across it the right way round. A regulator in its band
+# with the pressure reversed has area but passes nothing, and its flow law has no slope there:
+# kept in the solve, the junctions between it and a nearly shut part ahead of it (a leak) float,
+# and Newton crawls towards the corner a hundredth of a pascal a step. Planned out instead, that
+# section rests at the pressure of what feeds it, the part is then found open from the forward
+# side, and the next round solves it from there like any other part that opened (see
+# `solve_junctions!`).
+can_pass(e::Edge, Pa, Pb) = flow_area(e, Pa, Pb) > 0 && (Pa >= Pb || !(e.kind in (:regulator, :relief)))
+
 """
 Decide which parts can carry flow right now and which junctions actually need solving.
 
@@ -343,7 +353,7 @@ dead ends (repeatedly, since removing one can expose another) leaves the junctio
 real flow path; only those go to Newton. With every valve shut there may be none at all. Besides
 the saving, this makes dead-end flows exactly zero instead of a trickle of solver noise.
 
-A part counts as able to carry flow if it has any area at the present pressures, or if an earlier
+A part counts as able to carry flow if it can pass flow at the present pressures (`can_pass`), or if an earlier
 round of this same solve found it open (`net.opened`, see `solve_junctions!`).
 
 Sets `net.live` (per edge), `net.active` (junction node indices to solve), `net.row`, and
@@ -354,7 +364,7 @@ function plan!(net::Net)
     nodes, edges = net.nodes, net.edges
     stamp = UInt(0)
     for (k, e) in enumerate(edges)
-        net.live[k] = net.opened[k] || flow_area(e, nodes[e.a].P, nodes[e.b].P) > 0
+        net.live[k] = net.opened[k] || can_pass(e, nodes[e.a].P, nodes[e.b].P)
         net.live[k] || (e.mdot = 0.0)                   # shut: no flow, and it will not be visited again
         stamp = hash(net.live[k], stamp)
     end
@@ -537,7 +547,7 @@ function solve_junctions!(net::Net)
         # as a regulator reaching lock-up, was given its flow at those pressures, which is zero.)
         stable = true
         for (k, e) in enumerate(net.edges)
-            now_open = flow_area(e, net.nodes[e.a].P, net.nodes[e.b].P) > 0
+            now_open = can_pass(e, net.nodes[e.a].P, net.nodes[e.b].P)
             was_open = net.live[k] || e.mdot == 0 && _hangs_dead(net, k)
             now_open && !was_open && (stable = false; net.opened[k] = true)
         end
@@ -610,6 +620,10 @@ function _solve_active!(net::Net)
                 end
                 break
             end
+            # The same guard as Newton's (see `_band_cut`): a reused step must not carry a
+            # pressure-operated part across its band, or reverse a regulator or relief valve.
+            cut = _band_cut(net, r)
+            cut < 1 && (r .*= cut)
             for (q, j) in enumerate(net.active)
                 nodes[j].P = clamp(nodes[j].P + r[q], Plo, Phi)
             end
