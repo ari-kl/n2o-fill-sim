@@ -1,5 +1,5 @@
 # A fill and hold on the HF4 stand run by a controller instead of a fixed schedule (docs/STUDIES.md,
-# "Control policies"): fill to 9 kg, a vent that holds the tank between 790 and 820 psig, a mark
+# "Control policies"): fill to 9 kg, a vent that holds the tank between 770 and 800 psig, a mark
 # once the tank has sat in a band for 30 s, then a 600 s hold. Two vent settings are compared, and
 # a case freezes the vent's gauge reading at the mark.
 scene = "../scenes/hf4.toml"
@@ -34,8 +34,8 @@ name = "vent"
 kind = "hysteresis"
 reading = "PT202.P_read"
 actuator = "AV204"
-open_above_psig = 820
-close_below_psig = 790
+open_above_psig = 800
+close_below_psig = 770
 min_open_s = 1
 min_shut_s = 5
 
@@ -44,19 +44,19 @@ name = "ready"
 kind = "band_watch"
 enabled = false
 reading = "PT202.P_read"
-lo_psig = 780
-hi_psig = 830
+lo_psig = 760
+hi_psig = 810
 hold_s = 30
 
 [vary]
-"controller.vent.close_below_psig" = [790, 805]
+"controller.vent.close_below_psig" = [770, 785]
 
 [metrics]
 fill_s = { fn = "step_s", step = "fill" }
 ready_s = { fn = "t_mark", mark = "ready", from = { step = "fill", edge = "end" } }
 vent_cycles = { fn = "cycles", actuator = "AV204", from = { step = "hold" } }
 vent_duty = { fn = "duty", actuator = "AV204", from = { step = "hold" } }
-in_band = { fn = "time_in_band_frac", signal = "TANK.P", lo_psig = 780, hi_psig = 830, from = { mark = "ready" } }
+in_band = { fn = "time_in_band_frac", signal = "TANK.P", lo_psig = 760, hi_psig = 810, from = { mark = "ready" } }
 prv_margin_psi = { fn = "prv_margin_psi", part = "PRV202", signal = "TANK.P" }
 m_ready_300 = { fn = "m_at", signal = "TANK.m", at = { mark = "ready", plus_s = 300 } }
 m_fire = { fn = "m_at_fire", signal = "TANK.m" }

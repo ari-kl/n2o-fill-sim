@@ -567,8 +567,8 @@ A controller outside the simulator, talking to it over a line protocol, is not s
 ### The HF4 example
 
 `studies/hf4_control.toml` runs the HF4 stand as a procedure: fill to 9 kg (on the true mass, a
-stand-in, since the stand has no load cell), with a vent that opens above 820 psig and shuts below
-790 or 805 psig, then a 600 s hold that starts a 30 s band watch (780 to 830 psig). A second case
+stand-in, since the stand has no load cell), with a vent that opens above 800 psig and shuts below
+770 or 785 psig, then a 600 s hold that starts a 30 s band watch (760 to 810 psig). A second case
 freezes the tank gauge's reading at the mark, so the vent goes on acting on the value it had then.
 
 ```
@@ -577,16 +577,16 @@ julia -t 2 --project bin/n2o-fill-sim.jl study studies/hf4_control.toml
 
 | case | shut below | fill_s | vent cycles in hold | in band after the mark | PRV margin, psi | m_fire, kg |
 |---|---:|---:|---:|---:|---:|---:|
-| nominal | 790 | 859.6 | 1 | 1.00 | 182.1 | 8.92 |
-| nominal | 805 | 1056.0 | 2 | 1.00 | 182.1 | 8.92 |
-| frozen_gauge | 790 | 871.4 | 0 | 1.00 | 175.0 | 9.01 |
-| frozen_gauge | 805 | 947.8 | 0 | 0.98 | 169.8 | 9.00 |
+| nominal | 770 | 120.0 | 0 | 1.00 | 201.8 | 9.01 |
+| nominal | 785 | 127.4 | 1 | 1.00 | 200.8 | 8.96 |
+| frozen_gauge | 770 | 120.4 | 0 | 1.00 | 199.4 | 9.01 |
+| frozen_gauge | 785 | 127.2 | 0 | 1.00 | 199.4 | 9.00 |
 
-Holding the tank near 800 psig makes this a slow fill: the vent keeps the back pressure up and the
-bottle has little left to push with, and the narrower band (shut below 805) costs another three
-minutes. With the gauge frozen the vent never opens in the hold: the pressure creeps up in the sun, out
-of the band in one of the two runs, and the margin to the relief valve shrinks by 7 to 12 psi.
-Nothing in the frozen reading shows it.
+The vent opens during the fill and keeps the back pressure down, so the fill is quick; the narrower
+band (shut below 785) costs a few seconds and opens the vent once more in the hold. With the gauge
+frozen the vent never opens in the hold, and the pressure creeps up by a couple of psi more than it
+would have: a 600 s hold in this weather is too short for the frozen reading to matter, and a
+longer or sunnier hold is where it would. Nothing in the frozen reading shows either way.
 (Each case draws its own noise, so the two fills differ slightly before the fault.)
 
 ## Screening
@@ -732,30 +732,29 @@ julia --project bin/n2o-fill-sim.jl scenes/hf4.toml --replay test/data/hf4_fill_
 The second command prints (the first takes about 20 s on eight threads):
 
 ```
-400 runs, 220 kept (ruled out: failed, or |res| over 3.0 in 2 or more of the 4 scored numbers)
+400 runs, 235 kept (ruled out: failed, or |res| over 3.0 in 2 or more of the 4 scored numbers)
   parameter                         kept                      sampled
-  BOTTLE.fill_kg                    15.05 to 28.99            15.0 to 28.99
-  VENT_ORIFICE.Cd                   0.5059 to 0.9976          0.5005 to 0.9998
+  BOTTLE.fill_kg                    15.05 to 28.74            15.0 to 28.99
+  VENT_ORIFICE.Cd                   0.5016 to 0.9976          0.5005 to 0.9998
   settings.h_in_mult                0.1032 to 0.998           0.102 to 0.998
-  settings.interphase_E             100.9 to 1967.0           100.5 to 1994.0
+  settings.interphase_E             100.9 to 1974.0           100.5 to 1994.0
 ```
 
-Nearly half of the runs are ruled out, and yet every parameter keeps its whole range: it is
+Two runs in five are ruled out, and yet every parameter keeps its whole range: it is
 combinations that the log excludes, and no one of these four numbers can be read off it. The bands
 show what that leaves open. Tank pressure in psig and tank mass in kg, 5th to 95th percentile
 (`hf4_sample.toml` has `[bands]` too, so the spread over everything sampled can be set beside it):
 
-| t [s] | logged psig | all 400 sampled: psig | 220 kept: psig | all 400 sampled: kg | 220 kept: kg |
+| t [s] | logged psig | all 400 sampled: psig | 235 kept: psig | all 400 sampled: kg | 235 kept: kg |
 |------:|------------:|----------------------:|---------------:|--------------------:|-------------:|
-| 200 | 800.9 | 789.5 to 820.0 (30.5) | 789.5 to 812.9 (23.4) | 7.77 to 8.76 (0.99) | 7.79 to 8.77 (0.98) |
-| 500 | 788.3 | 767.3 to 811.8 (44.5) | 769.9 to 798.2 (28.3) | 8.29 to 10.13 (1.84) | 8.26 to 10.15 (1.89) |
-| 900 | 849.2 | 833.3 to 875.6 (42.2) | 835.3 to 863.2 (27.8) | 8.29 to 10.13 (1.84) | 8.26 to 10.15 (1.89) |
+| 200 | 800.9 | 786.9 to 818.7 (31.8) | 788.6 to 813.4 (24.7) | 7.83 to 8.85 (1.01) | 7.91 to 8.85 (0.94) |
+| 500 | 788.3 | 763.4 to 807.1 (43.6) | 767.5 to 797.8 (30.4) | 8.37 to 10.33 (1.96) | 8.57 to 10.33 (1.75) |
+| 900 | 849.2 | 823.8 to 864.4 (40.6) | 826.3 to 857.2 (30.9) | 8.37 to 10.33 (1.96) | 8.57 to 10.33 (1.75) |
 
-Scoring against the pressure narrows the pressure band by a quarter to a third, to 23 to 28 psi (a
+Scoring against the pressure narrows the pressure band by a fifth to a third, to 25 to 31 psi (a
 run passes with an RMS miss of up to 15 psi in all but one phase: 3 times a `sigma` of 5 psi). It
-does not narrow the mass band at all:
-the loaded mass is 8.26 to 10.15 kg with a median of 9.74 (`metric_bands.csv`), as wide as before
-any run was thrown out. This pressure log, scored this way, says almost nothing about how much
+barely narrows the mass band: the loaded mass is 8.57 to 10.33 kg with a median of 9.96
+(`metric_bands.csv`), against 8.37 to 10.33 kg before any run was thrown out. This pressure log, scored this way, says almost nothing about how much
 nitrous is in the tank. That is what a single fitted run cannot show, and the reason to draw the
 band.
 

@@ -515,6 +515,10 @@ This section and the next say how far to trust the model. The summary first:
 | Which are not? | The boiling factor `interphase_E`, the wall and outside heat-transfer multipliers, the vent coefficient on the test stand. They are published values, not calibrated ones. |
 | Is it validated? | No. It has been fitted to one fill and compared with three more. |
 
+The HF4, HF3 and HF3 cold flow subsections below give the fits and comparisons as they were made,
+with `h_in_mult` 0.3 and the earlier boiling rule. "Recalibration with boiling judged at the total
+pressure", further down, has the numbers for the scenes as they are now.
+
 ### HF4
 
 HF4 was a static hot fire on 2026-07-11. `scenes/hf4.toml` is the fill panel and tank as drawn
@@ -623,11 +627,11 @@ Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (
 
 The boiling factor used to apply whenever the liquid was warmer than the surface, which is
 saturated at the N2O partial pressure. Under a pad of air that let liquid subcooled at the tank
-pressure boil into the pad and cool far below anything a fill shows. It now applies only above
-saturation at the total pressure (section 4). With no air nothing changes, but every scene here
+pressure boil into the pad, although liquid subcooled at the total pressure cannot form bubbles.
+It now applies only above saturation at the total pressure (section 4). With no air nothing changes, but every scene here
 starts with a tank open to the air, and the 20-odd grams of it, squeezed into the ullage of an
-unvented fill, moved the HF3 cold flow's sealed period from 5.1 to 13.4 psi RMS and the HF4 heater
-period from 2.7 to 9.6.
+unvented fill, moved the HF3 cold flow's sealed period from about 5 to 13 psi RMS and the HF4
+heater period from about 3 to 10.
 
 One value was refitted, the shared `h_in_mult`, on HF4 and the HF3 cold flow together, with the
 HF3 fill and LC26 day 4 held out: 0.63 (it was 0.3). Scores (the fit's own, lower is better) and

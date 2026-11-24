@@ -2148,7 +2148,7 @@ end
     @test rms("TANK.P", "PT202_psig", 9256, 9372) < 25           # two vent pulses and rebounds
     @test rms("TANK.P", "PT202_psig", 9387, 9856) < 15           # heater segment
     @test rms("PT201.P", "PT201_psig", 9100, 10000) < 20         # bottle side: cooling and re-warming
-    @test 8.8 < sim.hist["TANK.m"][end] < 10.0                   # ≈ 9.3 kg loaded
+    @test 8.8 < sim.hist["TANK.m"][end] < 10.4                   # 9.87 kg loaded; the hot-fire report gives 10.2
     @test closes(sim)
 end
 
