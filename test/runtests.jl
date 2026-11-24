@@ -1827,9 +1827,10 @@ end
     # single solver step of 29,000 part flows.
     sim = F.Sim(chain(["Orifice", "CheckValve", "Regulator"]))
     costliest = 0
-    while sim.t < 240 && isempty(sim.failed)
+    # The tank creeps up on the set-point (it crosses about 300 s), so run on past it.
+    while sim.t < 400 && isempty(sim.failed)
         before = F.work(sim)
-        F.advance!(sim, 240 - sim.t; max_steps = 1)
+        F.advance!(sim, 400 - sim.t; max_steps = 1)
         costliest = max(costliest, F.work(sim) - before)
     end
     @test isempty(sim.failed) && sim.net.unconverged == 0 && closes(sim)
@@ -2072,7 +2073,7 @@ end
 
 @testset "HF3 cold flow replay (unvented fill, sealed period, blowdown through an injector)" begin
     # HF4's fitted values with only what was measured changed (see the scene). The model gives
-    # sealed-period tank pressure 2.5 psi RMS, fill line 3.2 psi, 4.59 kg loaded against 4.3 kg on
+    # sealed-period tank pressure 4.9 psi RMS, fill line 1.2 psi, 4.57 kg loaded against 4.3 kg on
     # the load cell.
     names, D = F.read_csv(joinpath(@__DIR__, "data", "hf3cf_fill_10hz.csv"))
     s = F.load_scene(joinpath(@__DIR__, "..", "scenes", "hf3cf.toml"))
@@ -2081,7 +2082,7 @@ end
     sim = F.Sim(s)
     F.run_until!(sim, 265.0)
     @test isempty(sim.failed) && sim.net.unconverged == 0
-    @test log_rms(sim, "TANK.P", D, "PT202_psig", t0, 106.4, 200.8, p_atm) < 6.5     # sealed after the last fill pulse (5.1 with the day's weather)
+    @test log_rms(sim, "TANK.P", D, "PT202_psig", t0, 106.4, 200.8, p_atm) < 6.5     # sealed after the last fill pulse (4.9 with h_in_mult 0.63 and the day's weather)
     @test log_rms(sim, "PT201.P", D, "PT201_psig", t0, 106.4, 200.8, p_atm) < 5      # the bottle recovering
     @test 4.4 < sim.hist["TANK.m"][searchsortedfirst(sim.t_hist, 200.0)] < 4.8
     @test closes(sim)

@@ -13,7 +13,7 @@ P_atm_kPa        = 101.325
 meop_psig        = 1000.0
 interphase_E     = 700.0      # literature mid-range; HF4 does not pin it down
 cond_tau_s       = 0.5
-h_in_mult        = 0.3        # [fit]
+h_in_mult        = 0.63       # [fit] HF4 and the HF3 cold flow together, with boiling judged at the total pressure (2026-11-24; was 0.3)
 h_ext_mult       = 1.0
 
 [[part]]

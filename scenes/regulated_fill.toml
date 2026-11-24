@@ -11,7 +11,7 @@ P_atm_kPa        = 101.325    # local atmospheric pressure; gauge readings are r
 meop_psig        = 1000.0     # maximum expected operating pressure (warning threshold)
 interphase_E     = 700.0      # boiling enhancement on liquid-to-surface heat transfer (Zilliac-Karabeyoglu E; fitted, literature 240-1300)
 cond_tau_s       = 0.5        # time constant for supersaturated ullage vapour to condense
-h_in_mult        = 0.3        # multiplier on wall-to-fluid natural convection inside vessels
+h_in_mult        = 0.63       # multiplier on wall-to-fluid natural convection inside vessels (as calibrated on HF4)
 h_ext_mult       = 1.0        # multiplier on outside convection (0 = perfectly insulated)
 
 [[part]]

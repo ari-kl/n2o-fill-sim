@@ -188,8 +188,9 @@ function outflow!(n::Node, k, mdot, u)
         # The gas part of the stream is ullage gas: N2O and air in the proportion present.
         # Once in the lines the stream is all counted as N2O (the lines carry one fluid), and
         # what comes back in from the atmosphere is N2O too. That is adequate for a tank's worth
-        # of air (tens of grams). Modelling nitrogen pressurisation would need a second species
-        # carried through the network.
+        # of air (tens of grams). A tank padded with tens of atmospheres holds up to a kilogram,
+        # and its vent then passes the pad about a fifth faster than it would while the ullage is
+        # mostly pad gas. Doing better would need a second species carried through the network.
         fl, yn = n.port_fl[k], _n2o_share(u[n.i+2], u[n.i+5])
         n.dm_l -= fl * mdot
         n.dm_v -= (1 - fl) * mdot * yn

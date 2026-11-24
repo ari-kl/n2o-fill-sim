@@ -339,7 +339,7 @@ Each path that moves heat or mass has its own law and, where the law is uncertai
 
 | Path | Law | Knob |
 |---|---|---|
-| Liquid ↔ surface | Natural convection, Nu = 0.15·Ra^⅓. When the liquid is hotter than the surface (it wants to boil) the coefficient is multiplied by a large factor. | `interphase_E`, default 700. The literature reports fitted values from 240 to 1300 and no way to predict it. |
+| Liquid ↔ surface | Natural convection, Nu = 0.15·Ra^⅓, on the difference between the liquid and the surface. Where the liquid is above saturation at the total pressure it can boil, and the coefficient on that excess is multiplied by a large factor. With no air the surface is at saturation at the total pressure, and this is the large factor whenever the liquid is warmer than the surface. Under a pad of air the liquid can be several kelvin warmer than the surface without boiling. | `interphase_E`, default 700. The literature reports fitted values from 240 to 1300 and no way to predict it. |
 | Surface ↔ ullage | Natural convection, same form | none |
 | Ullage that is denser than saturated vapour | Condenses with a time constant; the condensate joins the liquid | `cond_tau_s` |
 | Wall ↔ liquid and wall ↔ ullage | Natural convection, Nu = 0.021·Ra^0.4, over the wetted and dry areas | `h_in_mult` |
@@ -348,7 +348,10 @@ Each path that moves heat or mass has its own law and, where the law is uncertai
 | Inflow above the liquid level | Flashed at tank pressure and split between liquid and ullage | none |
 
 Air in the ullage is a second, ideal gas with its own mass, heat capacity and partial pressure. It
-leaves with vented ullage gas. Section 6 gives the limits of this.
+leaves with vented ullage gas. A tank's `air` sets how much there is at the start, in atmospheres:
+1 for a tank open to the air before the fill, 0 for none, and a larger value for a tank
+pre-pressurised with a pad of gas. Air stands in for nitrogen there; their gas constants differ by
+3 %. Section 6 gives the limits of this.
 
 ### Optional wall model
 
@@ -457,15 +460,17 @@ Each of these is a deliberate limit. The first is the one most likely to matter.
   stream is counted as N2O: the lines carry one fluid, sized by the flow law as if it were N2O
   vapour at the same pressure and temperature, which overstates the mass flow of nearly pure air
   by about a fifth. Anything that flows back in from the atmosphere arrives as N2O. A tank's worth
-  of air is tens of grams, so this matters only until the first N2O has displaced it.
+  of air is tens of grams, so this matters only until the first N2O has displaced it. A tank
+  padded to tens of atmospheres holds up to a kilogram, and its vent passes the pad about a fifth
+  too fast while the ullage is mostly pad gas.
 - Each vessel has one wall temperature (two with `wall_split`), and there is no conduction into stands and
   plumbing.
 - The heater controller is an idealisation. It is proportional and has no delay. A real
   thermostat that switches fully on and off around its set-point gives the same average power but
   a ripple this one does not show. The heater has no heat capacity of its own, and its power goes
   to the wall as a whole, wherever on the tank it sits.
-- There is no nitrogen, either as a pressurant or dissolved: the contents are pure N2O plus
-  inert air.
+- A pad of nitrogen is represented only as air in a tank's ullage. Nothing dissolves in the
+  liquid, although nitrogen does dissolve in nitrous at pad pressures, and bottles cannot be padded.
 - Hydrostatic head and elevation differences are ignored (about 1 psi per metre of liquid).
 - Flow near zero pressure difference is smoothed within about 300 Pa so that it passes through
   zero with a finite slope; the true √ΔP law has infinite slope there.
@@ -522,7 +527,7 @@ time 9020 s to 10010 s. Values fitted, in the order they were pinned down:
 | Bottle temperature | 32.2 °C | PT201 before the fill (934-952 psig) |
 | Bottle contents / volume | 20 kg / 40 L | how far bottle pressure falls as it delivers (stall pressure) |
 | Restriction bottle → panel | 2.5 mm at Cd 0.7 | fill rate; the procedure lists a 1/4" hose with a CGA 326 nipple here |
-| `h_in_mult` | 0.3 | vent drop and rebound, and the heater slope |
+| `h_in_mult` | 0.3 (0.63 since the recalibration below) | vent drop and rebound, and the heater slope |
 | Heater | 300 W | heater period, 775 → 843 psig in 469 s |
 
 Left at defaults or guesses at the time: `interphase_E` (HF4 does not constrain it: 100 to 2000
@@ -613,6 +618,33 @@ Two more logs, replayable with `scenes/hf3cf.toml` and `scenes/lc26_day4.toml` (
 - On LC26 the tower load cell is unusable, so the vent size, fill flow
   and bottle contents trade off. The scene uses vent `Cd` 1.0 and a 28 kg bottle, and follows the
   tank through the hold within 5 psi RMS but the vented fill only within about 33 psi.
+
+### Recalibration with boiling judged at the total pressure
+
+The boiling factor used to apply whenever the liquid was warmer than the surface, which is
+saturated at the N2O partial pressure. Under a pad of air that let liquid subcooled at the tank
+pressure boil into the pad and cool far below anything a fill shows. It now applies only above
+saturation at the total pressure (section 4). With no air nothing changes, but every scene here
+starts with a tank open to the air, and the 20-odd grams of it, squeezed into the ullage of an
+unvented fill, moved the HF3 cold flow's sealed period from 5.1 to 13.4 psi RMS and the HF4 heater
+period from 2.7 to 9.6.
+
+One value was refitted, the shared `h_in_mult`, on HF4 and the HF3 cold flow together, with the
+HF3 fill and LC26 day 4 held out: 0.63 (it was 0.3). Scores (the fit's own, lower is better) and
+tank pressure RMS:
+
+| Log | Before | Boiling rule, 0.3 | Boiling rule, 0.63 |
+|---|---|---|---|
+| HF4 | 1.47 | 1.62 | 1.49 |
+| HF4 stall / vent 1 / heater | 8.8 / 27.5 / 2.7 psi | 7.6 / 18.3 / 9.6 psi | 6.8 / 31.8 / 4.3 psi |
+| HF3 cold flow | 3.50 | 3.84 | 2.84 |
+| HF3 cold flow, sealed | 5.2 psi | 13.4 psi | 5.1 psi |
+| HF3 fill (held out) | 3.47 | 3.08 | 2.89 |
+| LC26 day 4 (held out, at its own 0.3) | 4.68 | 4.70 | |
+
+HF4 loads 9.87 kg by the end against 9.63 before (the hot-fire report gives 10.2 kg). The first
+vent is followed less well than before; the fills, the stalls and the sealed periods better.
+LC26 day 4 keeps its own fitted 0.3: at 0.63 it scores 4.79.
 
 ### Open findings
 
@@ -805,7 +837,8 @@ Venting to cool the load costs the boil-off column above for every kelvin remove
 
 Cooling the supply bottle reduces flash loss but also lowers the pressure difference that
 drives the fill. Padding the bottle with nitrogen restores it, but nitrogen dissolves in nitrous
-and breaks "pressure = vapour pressure of the liquid"; this model has no nitrogen.
+and breaks "pressure = vapour pressure of the liquid"; this model pads only a tank's ullage
+(`air`), not a bottle, and dissolves nothing.
 
 An unvented fill stalls at equalisation (HF4: 0.089 kg/s, then 0.008 kg/s for about 107 s).
 In a vented fill the vent sets the tank pressure, which settles where vent outflow balances flash
